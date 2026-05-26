@@ -84,12 +84,14 @@ class ExtensionHelper
      */
     public static function getConfig($type, $extension, $config = [])
     {
-        if (empty($config)) {
-            $typeClass = ($type == 'gateway') ? Gateway::class : (($type == 'server') ? Server::class : Extension::class);
-            $config = $typeClass::where('extension', $extension)->exists()
-                ? $typeClass::where('extension', $extension)->first()->settings->pluck('value', 'key')->toArray()
-                : [];
-        }
+        // Get existing DB settings first
+        $typeClass = ($type == 'gateway') ? Gateway::class : (($type == 'server') ? Server::class : Extension::class);
+        $dbConfig = $typeClass::where('extension', $extension)->exists()
+            ? $typeClass::where('extension', $extension)->first()->settings->pluck('value', 'key')->toArray()
+            : [];
+
+        // Merge with provided config (form values take precedence for live updates)
+        $config = array_merge($dbConfig, $config);
 
         return self::getExtension($type, $extension)->getConfig($config);
     }
