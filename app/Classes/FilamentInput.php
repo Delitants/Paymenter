@@ -18,6 +18,40 @@ use Spatie\Color\Factory as ColorFactory;
 class FilamentInput
 {
     /**
+     * Evaluate a condition array against the current form state
+     * Format: ['field' => 'value'] or ['field' => ['!=', 'value']]
+     * For visible_if: Returns true when field SHOULD be visible (condition matches)
+     * For disabled_if: Returns true when field SHOULD be disabled (condition matches)
+     */
+    private static function evaluateCondition($get, array $condition): bool
+    {
+        foreach ($condition as $field => $expectedValue) {
+            // Try both with and without settings. prefix
+            $currentValue = $get($field) ?? $get('settings.' . $field);
+
+            if (is_array($expectedValue)) {
+                // Handle operators like ['!=', 'value']
+                $operator = $expectedValue[0];
+                $value = $expectedValue[1];
+
+                if ($operator === '!=') {
+                    // Return true when current value is NOT equal to expected
+                    return $currentValue !== $value;
+                }
+                if ($operator === '==') {
+                    // Return true when current value IS equal to expected
+                    return $currentValue === $value;
+                }
+            } else {
+                // Simple equality check - return true when equal
+                return $currentValue === $expectedValue;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Convert array or object to Filament input
      *
      * @param  array|object  $setting
@@ -35,9 +69,10 @@ class FilamentInput
 
         switch ($setting->type) {
             case 'select':
-                return Select::make($setting->name)
+                $select = Select::make($setting->name)
                     ->label($setting->label ?? $setting->name)
                     ->helperText($setting->description ?? null)
+                    ->columnSpan($setting->column_span ?? 1)
                     ->options(function () use ($setting) {
                         /* Possiblities:
                             1. ['value1', 'value2', 'value3']
@@ -88,9 +123,49 @@ class FilamentInput
                     ->default($setting->default ?? '')
                     ->suffix($setting->suffix ?? null)
                     ->prefix($setting->prefix ?? null)
-                    ->disabled($setting->disabled ?? false)
                     ->hintActions(isset($setting->action) ? [($setting->action)::make()] : [])
                     ->rules($setting->validation ?? []);
+
+                // Handle visible_if condition
+                if (isset($setting->visible_if)) {
+                    $select->visible(fn ($get) => self::evaluateCondition($get, $setting->visible_if));
+                }
+
+                // Handle disabled_if condition - use JavaScript for client-side reactivity
+                if (isset($setting->disabled_if) || (isset($setting->disabled_when_strategy_not_specific) && $setting->disabled_when_strategy_not_specific)) {
+                    // First set disabled state
+                    $select->disabled(false);
+
+                    // Build the JavaScript condition for disabling
+                    if (isset($setting->disabled_if)) {
+                        // Convert PHP condition to JS
+                        $condition = $setting->disabled_if;
+                        $jsConditions = [];
+                        foreach ($condition as $field => $expectedValue) {
+                            if (is_array($expectedValue) && $expectedValue[0] === '!=') {
+                                $jsConditions[] = "get('{$field}') !== '{$expectedValue[1]}'";
+                            } elseif (is_array($expectedValue) && $expectedValue[0] === '==') {
+                                $jsConditions[] = "get('{$field}') === '{$expectedValue[1]}'";
+                            } else {
+                                $jsConditions[] = "get('{$field}') === '{$expectedValue}'";
+                            }
+                        }
+                        $jsCondition = implode(' && ', $jsConditions);
+                    } else {
+                        // disabled_when_strategy_not_specific - use full field path
+                        $jsCondition = "get('settings.node_selection_strategy') !== 'specific'";
+                    }
+
+                    $select->disabledJs($jsCondition);
+                }
+                // Handle needs_strategy_watcher - add JavaScript watcher
+                elseif (isset($setting->needs_strategy_watcher) && $setting->needs_strategy_watcher) {
+                    $select->disabledJs("get('settings.node_selection_strategy') !== 'specific'");
+                } else {
+                    $select->disabled($setting->disabled ?? false);
+                }
+
+                return $select;
                 break;
 
             case 'tags':
@@ -107,20 +182,28 @@ class FilamentInput
                 break;
 
             case 'text':
-                return TextInput::make($setting->name)
+                $input = TextInput::make($setting->name)
                     ->label($setting->label ?? $setting->name)
                     ->helperText($setting->description ?? null)
                     ->placeholder($setting->placeholder ?? $setting->default ?? '')
                     ->hint($setting->hint ?? null)
-                    ->hintColor('primary')
+                    ->hintColor($setting->hintColor ?? 'primary')
                     ->required($setting->required ?? false)
                     ->live(condition: $setting->live ?? false)
                     ->default($setting->default ?? '')
                     ->suffix($setting->suffix ?? null)
                     ->prefix($setting->prefix ?? null)
                     ->disabled($setting->disabled ?? false)
+                    ->columnSpan($setting->column_span ?? 1)
                     ->hintActions(isset($setting->action) ? [($setting->action)::make()] : [])
                     ->rules($setting->validation ?? []);
+
+                // Apply error state styling if needed
+                if (isset($setting->state_color) && $setting->state_color === 'danger') {
+                    $input = $input->hintColor('danger')->helperText($setting->error_message ?? 'This field is required');
+                }
+
+                return $input;
                 break;
 
             case 'time':
@@ -217,6 +300,7 @@ class FilamentInput
                     ->suffix($setting->suffix ?? null)
                     ->prefix($setting->prefix ?? null)
                     ->disabled($setting->disabled ?? false)
+                    ->columnSpan($setting->column_span ?? 1)
                     ->rules($setting->validation ?? []);
 
                 break;
@@ -282,6 +366,7 @@ class FilamentInput
                 break;
 
             case 'checkbox':
+            case 'boolean':
                 return Checkbox::make($setting->name)
                     ->label($setting->label ?? $setting->name)
                     ->helperText($setting->description ?? null)
@@ -289,17 +374,48 @@ class FilamentInput
                     ->hint($setting->hint ?? null)
                     ->hintColor('primary')
                     ->live(condition: $setting->live ?? false)
-                    ->default($setting->default ?? '')
+                    ->default($setting->default ?? false)
                     ->disabled($setting->disabled ?? false)
+                    ->columnSpan($setting->column_span ?? 1)
                     ->rules($setting->validation ?? []);
+                break;
+
+            case 'multiselect':
+                $select = Select::make($setting->name)
+                    ->label($setting->label ?? $setting->name)
+                    ->helperText($setting->description ?? null)
+                    ->columnSpan($setting->column_span ?? 1)
+                    ->options(function () use ($setting) {
+                        if (isset($setting->options) && is_array($setting->options)) {
+                            return $setting->options;
+                        }
+                        return [];
+                    })
+                    ->multiple()
+                    ->preload()
+                    ->required($setting->required ?? false)
+                    ->hint($setting->hint ?? null)
+                    ->hintColor('primary')
+                    ->live(condition: $setting->live ?? false)
+                    ->default($setting->default ?? [])
+                    ->suffix($setting->suffix ?? null)
+                    ->prefix($setting->prefix ?? null)
+                    ->rules($setting->validation ?? []);
+
+                // Handle visible_if condition
+                if (isset($setting->visible_if)) {
+                    $select->visible(fn ($get) => self::evaluateCondition($get, $setting->visible_if));
+                }
+
+                return $select;
                 break;
 
             case 'placeholder':
                 return Placeholder::make($setting->name)
-                    ->content($setting->label ?? null)
+                    ->content($setting->content ?? $setting->label ?? null)
                     ->helperText($setting->description ?? null)
                     ->hint($setting->hint ?? null)
-                    ->hintColor('primary');
+                    ->hintColor($setting->hintColor ?? 'primary');
                 break;
 
             default:

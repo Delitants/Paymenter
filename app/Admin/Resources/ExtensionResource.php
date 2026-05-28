@@ -86,7 +86,7 @@ class ExtensionResource extends Resource
 
     public static function getEloquentQuery(): Builder
     {
-        return parent::getEloquentQuery()->whereNotIn('type', ['gateway', 'server']);
+        return parent::getEloquentQuery();
     }
 
     public static function getPages(): array

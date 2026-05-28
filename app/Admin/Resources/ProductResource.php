@@ -136,31 +136,37 @@ class ProductResource extends Resource
                                         ->getChildSchema()
                                         ->fill()),
 
-                                Grid::make()
+                                \Filament\Schemas\Components\Section::make('Server Settings')
                                     ->hidden(fn (Get $get) => $get('server_id') === null)
-                                    ->columns(2)
-                                    ->key('extension_settings')
-                                    ->schema(
-                                        function (Get $get, Component $livewire) {
-                                            $server = $get('server_id');
-                                            if ($server == null) {
-                                                return [];
-                                            }
-                                            $settings = [];
+                                    ->description('Configuration options from the selected server.')
+                                    ->schema([
+                                        Grid::make()
+                                            ->columns(2)
+                                            ->key('extension_settings')
+                                            ->schema(
+                                                function (Get $get, Component $livewire) {
+                                                    $server = $get('server_id');
+                                                    if ($server == null) {
+                                                        return [];
+                                                    }
+                                                    $settings = [];
 
-                                            try {
-                                                foreach (ExtensionHelper::getProductConfigOnce(Server::findOrFail($server), $get('settings')) as $setting) {
-                                                    // Easier to use dot notation for settings
-                                                    $setting['name'] = 'settings.' . $setting['name'];
-                                                    $settings[] = FilamentInput::convert($setting);
+                                                    try {
+                                                        foreach (ExtensionHelper::getProductConfigOnce(Server::findOrFail($server), $get('settings')) as $setting) {
+                                                            // Easier to use dot notation for settings
+                                                            $setting['name'] = 'settings.' . $setting['name'];
+                                                            $settings[] = FilamentInput::convert($setting);
+                                                        }
+                                                    } catch (Exception $e) {
+                                                        $settings[] = TextEntry::make('error')->state($e->getMessage());
+                                                    }
+
+                                                    return $settings;
                                                 }
-                                            } catch (Exception $e) {
-                                                $settings[] = TextEntry::make('error')->state($e->getMessage());
-                                            }
-
-                                            return $settings;
-                                        }
-                                    ),
+                                            ),
+                                    ])
+                                    ->collapsible()
+                                    ->collapsed(false),
 
                             ]),
                     ]),

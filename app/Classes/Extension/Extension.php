@@ -31,9 +31,11 @@ class Extension
             if (in_array($type, ['Servers', 'Gateways'])) {
                 $type = substr($type, 0, -1);
                 $type = ($type == 'Gateway') ? Gateway::class : Server::class;
-                $this->config = $type::where('extension', class_basename(static::class))->first()->settings->pluck('value', 'key')->toArray();
+                $record = $type::where('extension', class_basename(static::class))->first();
+                $this->config = $record ? $record->settings->pluck('value', 'key')->toArray() : [];
             } else {
-                $this->config = ModelsExtension::where('extension', class_basename(static::class))->first()->settings->pluck('value', 'key')->toArray();
+                $record = ModelsExtension::where('extension', class_basename(static::class))->first();
+                $this->config = $record ? $record->settings->pluck('value', 'key')->toArray() : [];
             }
         }
 

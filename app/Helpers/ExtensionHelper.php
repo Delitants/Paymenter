@@ -86,11 +86,15 @@ class ExtensionHelper
     {
         // Get existing DB settings first
         $typeClass = ($type == 'gateway') ? Gateway::class : (($type == 'server') ? Server::class : Extension::class);
-        $dbConfig = $typeClass::where('extension', $extension)->exists()
-            ? $typeClass::where('extension', $extension)->first()->settings->pluck('value', 'key')->toArray()
-            : [];
+        $record = $typeClass::where('extension', $extension)->first();
+        $dbConfig = $record ? ($record->settings?->pluck('value', 'key')->toArray() ?? []) : [];
 
-        // Merge with provided config (form values take precedence for live updates)
+        // Ensure config is always an array
+        if (!is_array($config)) {
+            $config = [];
+        }
+
+        // Merge DB config with live form values (form values take precedence)
         $config = array_merge($dbConfig, $config);
 
         return self::getExtension($type, $extension)->getConfig($config);
@@ -271,6 +275,11 @@ class ExtensionHelper
     {
         if (!$name) {
             return [];
+        }
+
+        // Ensure config is always an array
+        if (!is_array($config)) {
+            $config = [];
         }
 
         $settings = [];
