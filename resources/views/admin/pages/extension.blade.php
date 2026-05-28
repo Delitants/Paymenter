@@ -11,6 +11,15 @@
                 Browse Marketplace
             </button>
             <button
+                wire:click="$set('activeTab', 'installed')"
+                @class([
+                    'whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm',
+                    'border-primary-500 text-primary-600' => $activeTab === 'installed',
+                    'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300 dark:hover:border-gray-600' => $activeTab !== 'installed',
+                ])>
+                Installed Extensions
+            </button>
+            <button
                 wire:click="$set('activeTab', 'installable')"
                 @class([
                     'whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm',
@@ -21,7 +30,59 @@
             </button>
         </nav>
     </div>
-    @if ($activeTab === 'marketplace')
+    @if ($activeTab === 'installed')
+        <div class="mt-6">
+            @php
+                // Get all installed extensions from the database
+                $installedExtensions = \App\Models\Extension::with('settings')->get();
+            @endphp
+            @if($installedExtensions->isEmpty())
+                <div class="p-4 text-center text-gray-500 bg-white border border-gray-300 rounded-lg shadow-sm dark:bg-gray-800 dark:border-gray-600 dark:text-gray-400">
+                    <h3 class="text-xl font-semibold text-gray-700 dark:text-gray-200">No extensions installed</h3>
+                    <p class="mt-2">Install extensions from the "Ready to Install / Upload" tab.</p>
+                </div>
+            @else
+                <div class="grid grid-cols-1 gap-4">
+                    @foreach ($installedExtensions->sortBy('extension') as $ext)
+                        <div class="p-4 bg-white border border-gray-200 rounded-lg shadow-sm dark:bg-gray-800 dark:border-gray-700">
+                            <div class="flex items-center justify-between">
+                                <div class="flex items-center gap-4">
+                                    <div class="flex items-center justify-center w-12 h-12 rounded-lg bg-primary-100 dark:bg-primary-900">
+                                        <x-ri-puzzle-line class="w-6 h-6 text-primary-600 dark:text-primary-400" />
+                                    </div>
+                                    <div>
+                                        <h3 class="text-lg font-semibold text-gray-900 dark:text-white">{{ $ext->extension }}</h3>
+                                        <p class="text-sm text-gray-500 dark:text-gray-400">Type: {{ ucfirst($ext->type) }} | Status:
+                                            <span class="px-2 py-1 text-xs font-medium rounded-full {{ $ext->enabled ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200' }}">
+                                                {{ $ext->enabled ? 'Enabled' : 'Disabled' }}
+                                            </span>
+                                        </p>
+                                    </div>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <button
+                                        wire:click="toggleExtension('{{ $ext->id }}')"
+                                        @class([
+                                            'px-4 py-2 text-sm font-medium rounded-lg transition-colors',
+                                            'bg-green-600 text-white hover:bg-green-700' => !$ext->enabled,
+                                            'bg-red-600 text-white hover:bg-red-700' => $ext->enabled,
+                                        ])>
+                                        {{ $ext->enabled ? 'Disable' : 'Enable' }}
+                                    </button>
+                                    <button
+                                        wire:click="uninstallExtension('{{ $ext->id }}')"
+                                        wire:confirm="Are you sure you want to uninstall this extension?"
+                                        class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-300 dark:border-gray-600 dark:hover:bg-gray-700">
+                                        Uninstall
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    @endforeach
+                </div>
+            @endif
+        </div>
+    @elseif ($activeTab === 'marketplace')
         <div class="">
             <div class="flex flex-col gap-4">
                 <div class="relative">

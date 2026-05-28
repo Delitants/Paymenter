@@ -45,7 +45,7 @@ class Extension extends Page implements HasActions, HasTable
     #[Url(except: 'marketplace', as: 'tab')]
     public string $activeTab = 'marketplace';
 
-    private const PER_PAGE = 12;
+    private const PER_PAGE = 50;
 
     #[Url(except: '', as: 'q')]
     public string $search = '';
@@ -58,6 +58,33 @@ class Extension extends Page implements HasActions, HasTable
     public ?array $allExtensions = [];
 
     public ?string $error = null;
+
+    public function toggleExtension(string $extensionId): void
+    {
+        $extension = \App\Models\Extension::find($extensionId);
+        if ($extension) {
+            $extension->update(['enabled' => !$extension->enabled]);
+            Notification::make()
+                ->title($extension->enabled ? 'Extension Enabled' : 'Extension Disabled')
+                ->body($extension->extension . ' has been ' . ($extension->enabled ? 'enabled' : 'disabled') . '.')
+                ->success()
+                ->send();
+        }
+    }
+
+    public function uninstallExtension(string $extensionId): void
+    {
+        $extension = \App\Models\Extension::find($extensionId);
+        if ($extension) {
+            ExtensionHelper::call($extension, 'uninstalled', mayFail: true);
+            $extension->delete();
+            Notification::make()
+                ->title('Extension Uninstalled')
+                ->body('The extension has been successfully uninstalled.')
+                ->success()
+                ->send();
+        }
+    }
 
     public function mount(): void
     {
@@ -124,11 +151,19 @@ class Extension extends Page implements HasActions, HasTable
         return $this->filteredExtensions->take($this->loadedItems);
     }
 
+    /**
+     * Get all extensions including installed ones
+     */
+    public function getAllInstallableExtensions(): array
+    {
+        return ExtensionHelper::getAvailableExtensions();
+    }
+
     public function table(Table $table): Table
     {
         return $table
-            ->records(fn () => collect(ExtensionHelper::getInstallableExtensions()))
-            ->description('List of available extensions (not gateway or server extensions) that can be installed.')
+            ->records(fn () => collect($this->getAllInstallableExtensions()))
+            ->description('List of all available extensions. Install button is hidden for already installed extensions.')
             ->columns([
                 ImageColumn::make('meta.icon')
                     ->label('Icon')
@@ -142,15 +177,23 @@ class Extension extends Page implements HasActions, HasTable
                     ->label('Description')
                     ->searchable()
                     ->sortable(),
+                TextColumn::make('type')
+                    ->label('Type')
+                    ->badge()
+                    ->formatStateUsing(fn ($state) => ucfirst($state)),
             ])
             ->recordActions([
                 Action::make('install')
                     ->label('Install')
+                    ->visible(function ($record) {
+                        return !\App\Models\Extension::where('extension', $record['name'])->exists();
+                    })
                     ->action(function ($record) {
                         $extension = \App\Models\Extension::create([
                             'name' => $record['name'],
                             'type' => $record['type'],
                             'extension' => $record['name'],
+                            'enabled' => true,
                         ]);
                         ExtensionHelper::call($extension, 'installed', mayFail: true);
 
@@ -160,7 +203,14 @@ class Extension extends Page implements HasActions, HasTable
                             ->success()
                             ->send();
 
-                        $this->redirect(ExtensionResource::getUrl('edit', ['record' => $extension->id]), true);
+                        // Redirect to appropriate resource based on type
+                        $redirectUrl = match ($record['type']) {
+                            'server' => ServerResource::getUrl('edit', ['record' => $extension->id]),
+                            'gateway' => GatewayResource::getUrl('edit', ['record' => $extension->id]),
+                            default => ExtensionResource::getUrl('edit', ['record' => $extension->id]),
+                        };
+
+                        $this->redirect($redirectUrl, true);
                     })
                     ->requiresConfirmation(),
             ])

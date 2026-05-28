@@ -597,6 +597,39 @@ class Settings
                     'description' => 'Save a snapshot of important data (name, address, etc.) on the invoice when it is paid. This ensures that if someone changes their details later, old invoices will still have the correct information.',
                 ],
             ],
+            'cloudflare' => [
+                [
+                    'name' => 'cloudflare_enabled',
+                    'label' => 'Enable Cloudflare Integration',
+                    'type' => 'checkbox',
+                    'database_type' => 'boolean',
+                    'default' => false,
+                    'description' => 'Restore real client IPs from Cloudflare headers',
+                ],
+                [
+                    'name' => 'cloudflare_whitelist_enabled',
+                    'label' => 'Enable IP Whitelist',
+                    'type' => 'checkbox',
+                    'database_type' => 'boolean',
+                    'default' => false,
+                    'description' => 'Only allow requests from Cloudflare IP ranges (blocks direct IP access)',
+                ],
+                [
+                    'name' => 'cloudflare_custom_whitelist',
+                    'label' => 'Additional Allowed IPs',
+                    'type' => 'textarea',
+                    'default' => '',
+                    'description' => 'One IP or CIDR per line. Cloudflare IPs are always allowed.',
+                ],
+                [
+                    'name' => 'cloudflare_auto_update_ranges',
+                    'label' => 'Auto-update IP Ranges',
+                    'type' => 'checkbox',
+                    'database_type' => 'boolean',
+                    'default' => true,
+                    'description' => 'Automatically fetch latest IP ranges from Cloudflare daily',
+                ],
+            ],
             'other' => [
                 [
                     'name' => 'gravatar_default',

@@ -3,6 +3,7 @@
 namespace App\Livewire\Components;
 
 use App\Classes\Cart;
+use App\Classes\Settings;
 use App\Livewire\Component;
 use App\Models\Currency;
 
@@ -17,7 +18,7 @@ class LocaleSwitch extends Component
     public function mount()
     {
         $this->currentLocale = session('locale', config('app.locale'));
-        $this->currentCurrency = session('currency', config('settings.default_currency'));
+        $this->currentCurrency = session('currency', Settings::getSetting('default_currency')->value ?? 'USD');
         $this->currencies = Currency::all()->map(fn ($currency) => [
             'value' => $currency->code,
             'label' => $currency->name,
@@ -35,7 +36,7 @@ class LocaleSwitch extends Component
         ]);
         if (Cart::items()->count() > 0) {
             $this->notify('You cannot change the currency while there are items in the cart.', 'error');
-            $this->currentCurrency = session('currency', config('settings.default_currency'));
+            $this->currentCurrency = session('currency', Settings::getSetting('default_currency')->value ?? 'USD');
 
             return;
         }

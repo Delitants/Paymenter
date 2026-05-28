@@ -69,66 +69,57 @@ class ServerResource extends Resource
                         array_column($servers, 'name'),
                         array_column($servers, 'name')
                     ))
-                    ->live()
+                    ->live(onBlur: true)
                     ->disabledOn('edit')
+                    ->afterStateUpdated(fn (Select $component) => $component
+                        ->getContainer()
+                        ->getComponent('settings')
+                        ->getChildSchema()
+                        ->fill())
                     ->placeholder('Select the type of the server')
-                    ->searchPrompt('Type to search...')
-                    ->hint('After selecting, settings fields will load below.')
                     ->hintAction(
-                        Action::make('testConnection')
-                            ->label('Test Connection')
-                            ->requiresConfirmation()
-                            ->modalHeading('Test Proxmox Connection')
-                            ->modalDescription('This will attempt to connect to your Proxmox server using the current settings.')
-                            ->modalSubmitActionLabel('Yes, test it')
+                        Action::make('Test Configuration')
                             ->action(function (Get $get, $record) {
-                                try {
-                                    $connection = ExtensionHelper::testConfig($record, $get('settings'));
+                                // Dd settings
+                                $connection = ExtensionHelper::testConfig($record, $get('settings'));
 
-                                    if ($connection === true) {
-                                        Notification::make()
-                                            ->title('Connection Successful')
-                                            ->body('Successfully connected to Proxmox server.')
-                                            ->success()
-                                            ->send();
-                                    } else {
-                                        Notification::make()
-                                            ->title('Connection Failed')
-                                            ->body($connection)
-                                            ->warning()
-                                            ->send();
-                                    }
-                                } catch (\Exception $e) {
+                                if ($connection === true) {
                                     Notification::make()
-                                        ->title('Connection Error')
-                                        ->body($e->getMessage())
-                                        ->danger()
-                                        ->send();
+                                        ->title('Configuration is correct')
+                                        ->success()->send();
+                                } else {
+                                    Notification::make()
+                                        ->title('Connection failed: ' . $connection)
+                                        ->danger()->send();
                                 }
                             })
+                            ->label('Test Connection')
                             ->hidden(function ($record) {
+                                // If record is empty or textConfig is not available, then hide the button
                                 return empty($record) || !ExtensionHelper::hasFunction($record, 'testConfig');
                             })
                     ),
                 Section::make('Server Settings')
                     ->columnSpanFull()
-                    ->description('Specific settings for the selected server.')
+                    ->description('Specific settings for the selected server')
                     ->schema([
-                        Grid::make(2)->schema(fn (Get $get) => ExtensionHelper::getConfigAsInputs(
-                            'server',
-                            $get('extension'),
-                            array_merge(
-                                $get('settings') ?? [],
-                                [
-                                    'host' => $get('settings.host') ?? '',
-                                    'api_token_id' => $get('settings.api_token_id') ?? '',
-                                    'api_token_secret' => $get('settings.api_token_secret') ?? '',
-                                    'ceph_mode' => $get('settings.ceph_mode') ?? false,
-                                ]
-                            )
-                        ))->key('settings')
-                        ->live()
-                        ->visible(fn (callable $get) => !empty($get('extension'))),
+                        Grid::make()->schema(function (Get $get) {
+                            $settings = $get('settings') ?? [];
+                            return ExtensionHelper::getConfigAsInputs(
+                                'server',
+                                $get('extension'),
+                                array_merge(
+                                    $settings,
+                                    [
+                                        'host' => $settings['host'] ?? '',
+                                        'api_token_id' => $settings['api_token_id'] ?? '',
+                                        'api_token_secret' => $settings['api_token_secret'] ?? '',
+                                        'ceph_mode' => $settings['ceph_mode'] ?? false,
+                                    ]
+                                )
+                            );
+                        })->key('settings')
+                        ->live(),
                     ]),
             ]);
     }
