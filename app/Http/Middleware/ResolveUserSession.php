@@ -5,6 +5,7 @@ namespace App\Http\Middleware;
 use App\Actions\Auth\Logout;
 use App\Models\UserSession;
 use Closure;
+use Filament\Facade\Filament;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cookie;
@@ -43,7 +44,8 @@ class ResolveUserSession
                 $session->put('user_session', $token->ulid);
             }
 
-            // Login user
+            // Login user to the correct auth guard
+            // For admin panel, use Filament's auth which defaults to 'web' guard
             if (!Auth::check() || Auth::id() !== $token->user_id) {
                 Auth::login($token->user);
             }

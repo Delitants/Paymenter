@@ -14,9 +14,11 @@ class IpPool extends Model
     protected $fillable = [
         'name',
         'description',
+        'network_address',
         'ip_version',
         'subnet_mask',
         'gateway',
+        'broadcast_address',
         'dns_primary',
         'dns_secondary',
         'server_id',

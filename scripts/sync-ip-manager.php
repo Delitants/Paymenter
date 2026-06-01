@@ -289,6 +289,7 @@ foreach ($rangesByOwner as $owner => $ranges) {
                         'is_assigned' => !$isFree,
                         'assigned_to_type' => $isFree ? null : 'App\\Models\\User',
                         'assigned_to_id' => null,
+                        'hostname' => $domainName ?? null,
                     ]
                 );
 
