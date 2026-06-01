@@ -18,6 +18,9 @@ use Filament\Actions\EditBulkAction;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Textarea;
+use Filament\Forms\Get;
+use Illuminate\Support\Facades\DB;
+use App\Rules\UniqueNetwork;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Schema;
@@ -47,42 +50,90 @@ class IpPoolResource extends Resource
                 Grid::make()
                     ->columns(2)
                     ->schema([
+                        TextInput::make('network_address')
+                            ->label('Network Address')
+                            ->required()
+                            ->maxLength(255)
+                            ->placeholder('e.g., 192.168.1.0/24 or 2001:db8::/64')
+                            ->live(onBlur: true)
+                            ->debounce(500)
+                            ->regex('/^[0-9a-fA-F.:]+\/[0-9]{1,3}$/', 'Invalid CIDR notation. Use format like 192.168.1.0/24')
+                            ->rule(new UniqueNetwork())
+                            ->afterStateUpdated(function (callable $set, $state) {
+                                if (empty($state)) {
+                                    return;
+                                }
+
+                                // Parse network address
+                                if (strpos($state, '/') === false) {
+                                    return;
+                                }
+
+                                [$ip, $cidr] = explode('/', $state);
+                                $cidr = (int) $cidr;
+                                $ipVersion = filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? 'ipv6' : 'ipv4';
+
+                                // Auto-populate name from network
+                                $set('name', $state);
+
+                                // Detect IP version
+                                $set('ip_version', $ipVersion);
+
+                                // Calculate subnet mask
+                                if ($ipVersion === 'ipv4') {
+                                    $mask = -1 << (32 - $cidr);
+                                    $subnetMask = long2ip($mask);
+                                    $set('subnet_mask', $subnetMask);
+
+                                    // Calculate gateway (first usable IP)
+                                    $ipLong = ip2long($ip);
+                                    $gatewayLong = $ipLong + 1;
+                                    $set('gateway', long2ip($gatewayLong));
+
+                                    // Calculate broadcast
+                                    $broadcastLong = $ipLong + pow(2, (32 - $cidr)) - 1;
+                                    $set('broadcast_address', long2ip($broadcastLong));
+                                } else {
+                                    // IPv6
+                                    $set('subnet_mask', '/' . $cidr);
+                                    $set('gateway', $ip . '::1');
+                                    $set('broadcast_address', null); // No broadcast in IPv6
+                                }
+                            })
+                            ->columnSpanFull(),
+
                         TextInput::make('name')
                             ->label('Pool Name')
                             ->required()
                             ->maxLength(255)
-                            ->placeholder('e.g., Production IPv4 Pool'),
+                            ->placeholder('Auto-filled from network, can be customized'),
 
-                        Select::make('ip_version')
+                        TextInput::make('ip_version')
                             ->label('IP Version')
-                            ->options([
-                                'ipv4' => 'IPv4',
-                                'ipv6' => 'IPv6',
-                                'both' => 'Both',
-                            ])
-                            ->default('ipv4')
-                            ->required()
-                            ->live(),
+                            ->readOnly()
+                            ->disabled()
+                            ->dehydrated(true)
+                            ->placeholder('Auto-detected from network'),
 
                         TextInput::make('subnet_mask')
                             ->label('Subnet Mask')
-                            ->placeholder('255.255.255.0')
-                            ->maxLength(255),
+                            ->readOnly()
+                            ->disabled()
+                            ->dehydrated(true)
+                            ->placeholder('Auto-calculated from CIDR'),
 
                         TextInput::make('gateway')
                             ->label('Gateway IP')
-                            ->placeholder('192.168.1.1')
+                            ->placeholder('Auto-calculated, can be overridden')
                             ->maxLength(255),
 
-                        TextInput::make('dns_primary')
-                            ->label('Primary DNS')
-                            ->placeholder('8.8.8.8')
-                            ->maxLength(255),
-
-                        TextInput::make('dns_secondary')
-                            ->label('Secondary DNS')
-                            ->placeholder('8.8.4.4')
-                            ->maxLength(255),
+                        TextInput::make('broadcast_address')
+                            ->label('Broadcast Address')
+                            ->readOnly()
+                            ->disabled()
+                            ->dehydrated(true)
+                            ->hidden(fn (callable $get) => $get('ip_version') === 'ipv6')
+                            ->placeholder('Auto-calculated from network'),
 
                         Select::make('server_id')
                             ->label('Associated Server')
@@ -110,15 +161,33 @@ class IpPoolResource extends Resource
     {
         return $table
             ->columns([
+                TextColumn::make('network_address')
+                    ->label('Network')
+                    ->searchable()
+                    ->sortable(),
+
                 TextColumn::make('name')
                     ->label('Pool Name')
                     ->searchable()
-                    ->sortable(),
+                    ->sortable()
+                    ->toggleable(isToggledHiddenByDefault: true),
 
                 TextColumn::make('ip_version')
                     ->label('IP Version')
                     ->badge()
-                    ->formatStateUsing(fn ($state) => strtoupper($state)),
+                    ->formatStateUsing(fn ($state) => strtoupper($state))
+                    ->colors([
+                        'success' => 'ipv6',
+                        'primary' => 'ipv4',
+                    ]),
+
+                TextColumn::make('subnet_mask')
+                    ->label('Subnet Mask')
+                    ->toggleable(isToggledHiddenByDefault: true),
+
+                TextColumn::make('gateway')
+                    ->label('Gateway')
+                    ->toggleable(isToggledHiddenByDefault: true),
 
                 TextColumn::make('server.name')
                     ->label('Server')
@@ -135,7 +204,8 @@ class IpPoolResource extends Resource
 
                 TextColumn::make('created_at')
                     ->label('Created')
-                    ->dateTime(),
+                    ->dateTime()
+                    ->toggleable(isToggledHiddenByDefault: true),
             ])
             ->filters([
                 //

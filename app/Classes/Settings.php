@@ -103,7 +103,7 @@ class Settings
                     'label' => 'Favicon',
                     'type' => 'file',
                     'required' => false,
-                    'accept' => ['image/x-icon', 'image/png', 'image/svg+xml'],
+                    'accept' => ['image/x-icon', 'image/vnd.microsoft.icon', 'image/png', 'image/svg+xml', '.ico'],
                     'file_name' => 'favicon.ico',
                     'description' => 'Upload a .ico, .png, or .svg file to be used as the browser icon.',
                 ],

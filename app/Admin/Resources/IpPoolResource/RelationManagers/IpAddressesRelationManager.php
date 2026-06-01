@@ -10,6 +10,9 @@ use Filament\Actions\CreateAction;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
+use Filament\Forms\Components\Select;
+use Filament\Forms\Components\TextInput;
+use Filament\Forms\Components\Toggle;
 use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Tables\Columns\BadgeColumn;
 use Filament\Tables\Columns\TextColumn;
@@ -38,38 +41,20 @@ class IpAddressesRelationManager extends RelationManager
 
                 TextColumn::make('hostname')
                     ->label('Hostname')
-                    ->state(function (IpAddress $record): ?string {
-                        if (!$record->assigned_to_id || !$record->assigned_to_type) {
-                            return null;
-                        }
-
-                        // Look up hostname from settings table
-                        $hostname = DB::table('settings')
-                            ->where('settingable_type', 'App\\Models\\Service')
-                            ->where('settingable_id', $record->assigned_to_id)
-                            ->where('key', 'hostname')
-                            ->value('value');
-
-                        return $hostname ?: null;
-                    })
+                    ->state(fn (IpAddress $record) => $record->hostname ?: '-')
                     ->placeholder('-'),
 
-                TextColumn::make('assignedTo.name')
-                    ->label('Assigned To')
+                TextColumn::make('assignedToUserEmail')
+                    ->label('Assigned To User')
                     ->state(function (IpAddress $record): ?string {
-                        if (!$record->assigned_to_id || !$record->assigned_to_type) {
-                            return null;
+                        if (!$record->assigned_to_id || $record->assigned_to_type !== 'App\\Models\\User') {
+                            return '-';
                         }
 
-                        $model = $record->assigned_to_type;
-                        if (class_exists($model)) {
-                            $related = $model::find($record->assigned_to_id);
-                            return $related?->name ?? $related?->email ?? null;
-                        }
-
-                        return null;
+                        $user = User::find($record->assigned_to_id);
+                        return $user?->email ?? '-';
                     })
-                    ->placeholder('Free')
+                    ->placeholder('-')
                     ->searchable(),
 
                 BadgeColumn::make('status')
@@ -107,7 +92,44 @@ class IpAddressesRelationManager extends RelationManager
                     ->icon('ri-add-line'),
             ])
             ->recordActions([
-                EditAction::make(),
+                EditAction::make()
+                    ->modalHeading(fn (IpAddress $record) => "Edit IP: {$record->ip_address}")
+                    ->modalSubmitAction(fn (EditAction $action) => $action->label('Save'))
+                    ->form([
+                        TextInput::make('ip_address')
+                            ->label('IP Address')
+                            ->required()
+                            ->maxLength(255)
+                            ->readOnly(),
+
+                        Toggle::make('is_assigned')
+                            ->label('Is Assigned')
+                            ->default(false)
+                            ->live()
+                            ->afterStateUpdated(function (callable $set, $state) {
+                                if (!$state) {
+                                    $set('hostname', null);
+                                    $set('assigned_to_id', null);
+                                }
+                            }),
+
+                        Select::make('assigned_to_id')
+                            ->label('Assigned To User')
+                            ->options(function () {
+                                return \App\Models\User::pluck('email', 'id');
+                            })
+                            ->placeholder('Select user')
+                            ->searchable()
+                            ->hidden(fn (callable $get) => !$get('is_assigned'))
+                            ->columnSpanFull(),
+
+                        TextInput::make('hostname')
+                            ->label('Hostname')
+                            ->placeholder('e.g., vm.example.com')
+                            ->maxLength(255)
+                            ->hidden(fn (callable $get) => !$get('is_assigned'))
+                            ->columnSpanFull(),
+                    ]),
                 DeleteAction::make(),
             ])
             ->bulkActions([

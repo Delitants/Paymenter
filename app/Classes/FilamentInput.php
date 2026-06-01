@@ -349,9 +349,9 @@ class FilamentInput
                     ->live(condition: $setting->live ?? false)
                     ->default($setting->default ?? '')
                     ->disk($setting->disk ?? 'public')
-                    ->preserveFilenames($setting->preserve_filenames ?? true)
+                    ->preserveFilenames($setting->preserve_filenames ?? false)
                     ->disabled($setting->disabled ?? false)
-                    ->visibility($setting->visibility ?? 'private')
+                    ->visibility($setting->visibility ?? 'public')
                     ->downloadable()
                     ->rules($setting->validation ?? []);
 
