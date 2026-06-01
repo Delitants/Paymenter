@@ -14,6 +14,7 @@ class IpAddress extends Model
     protected $fillable = [
         'ip_pool_id',
         'ip_address',
+        'hostname',
         'is_assigned',
         'assigned_to_type',
         'assigned_to_id',
