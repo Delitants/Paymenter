@@ -94,7 +94,7 @@ class IpAddressesRelationManager extends RelationManager
             ->recordActions([
                 EditAction::make()
                     ->modalHeading(fn (IpAddress $record) => "Edit IP: {$record->ip_address}")
-                    ->modalSubmitAction(fn (EditAction $action) => $action->label('Save'))
+                    ->modalSubmitAction(fn ($action) => $action->label('Save'))
                     ->form([
                         TextInput::make('ip_address')
                             ->label('IP Address')
