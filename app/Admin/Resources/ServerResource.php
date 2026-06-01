@@ -133,6 +133,7 @@ class ServerResource extends Resource
             ->filters([
                 //
             ])
+            ->modifyQueryUsing(fn ($query) => $query->where('extension', '!=', 'ResellerClub'))
             ->recordActions([
                 EditAction::make(),
             ])
