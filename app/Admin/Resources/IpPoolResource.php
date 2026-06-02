@@ -33,7 +33,7 @@ class IpPoolResource extends Resource
 
     protected static string|\BackedEnum|null $navigationIcon = 'ri-global-line';
 
-    protected static string|\UnitEnum|null $navigationGroup = 'Extensions';
+    protected static string|\UnitEnum|null $navigationGroup = 'Configuration';
 
     protected static ?string $navigationLabel = 'IP Pools';
 
