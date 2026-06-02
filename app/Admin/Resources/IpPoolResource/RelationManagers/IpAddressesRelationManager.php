@@ -128,6 +128,7 @@ class IpAddressesRelationManager extends RelationManager
                             ->placeholder('e.g., vm.example.com')
                             ->maxLength(255)
                             ->hidden(fn (callable $get) => !$get('is_assigned'))
+                            ->dehydrateStateUsing(fn ($state, callable $get) => $get('is_assigned') ? $state : null)
                             ->columnSpanFull(),
                     ]),
                 DeleteAction::make(),
