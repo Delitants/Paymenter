@@ -105,9 +105,10 @@ class CloudflareSettings extends Page implements HasForms
             $data = $this->form->getState();
 
             // Ensure checkbox values are always present (unchecked = false)
-            $enabled = isset($data['enabled']) ? (bool) $data['enabled'] : false;
-            $whitelistEnabled = isset($data['whitelist_enabled']) ? (bool) $data['whitelist_enabled'] : false;
-            $autoUpdateRanges = isset($data['auto_update_ranges']) ? (bool) $data['auto_update_ranges'] : true;
+            // Filament may not include unchecked checkboxes in state
+            $enabled = isset($data['enabled']) && $data['enabled'] !== false && $data['enabled'] !== '0' && $data['enabled'] !== 0;
+            $whitelistEnabled = isset($data['whitelist_enabled']) && $data['whitelist_enabled'] !== false && $data['whitelist_enabled'] !== '0' && $data['whitelist_enabled'] !== 0;
+            $autoUpdateRanges = isset($data['auto_update_ranges']) && $data['auto_update_ranges'] !== false && $data['auto_update_ranges'] !== '0' && $data['auto_update_ranges'] !== 0;
 
             $settings = [
                 'cloudflare_enabled' => $enabled ? '1' : '0',
@@ -119,6 +120,12 @@ class CloudflareSettings extends Page implements HasForms
             foreach ($settings as $key => $value) {
                 Setting::updateOrCreate(['key' => $key], ['value' => $value]);
             }
+
+            // Clear config cache so new values are picked up immediately
+            \Illuminate\Support\Facades\Config::set('settings.cloudflare_enabled', $enabled);
+            \Illuminate\Support\Facades\Config::set('settings.cloudflare_whitelist_enabled', $whitelistEnabled);
+            \Illuminate\Support\Facades\Config::set('settings.cloudflare_custom_whitelist', $settings['cloudflare_custom_whitelist']);
+            \Illuminate\Support\Facades\Config::set('settings.cloudflare_auto_update_ranges', $autoUpdateRanges);
 
             // Update web server configuration automatically
             if ($settings['cloudflare_enabled'] === '1') {

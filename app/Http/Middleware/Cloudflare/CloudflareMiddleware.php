@@ -49,8 +49,14 @@ class CloudflareMiddleware
      */
     protected function isCloudflareEnabled(): bool
     {
-        $value = Setting::where('key', 'cloudflare_enabled')->first()?->value;
-        return in_array($value, ['1', 1, true], true);
+        // Always check DB directly, not config (config may be stale)
+        $setting = Setting::where('key', 'cloudflare_enabled')->first();
+        if (!$setting) {
+            return false;
+        }
+        $value = $setting->value;
+        // Handle both boolean true and string '1'
+        return $value === true || $value === 1 || $value === '1';
     }
 
     /**
@@ -58,8 +64,14 @@ class CloudflareMiddleware
      */
     protected function isWhitelistEnabled(): bool
     {
-        $value = Setting::where('key', 'cloudflare_whitelist_enabled')->first()?->value;
-        return in_array($value, ['1', 1, true], true);
+        // Always check DB directly, not config (config may be stale)
+        $setting = Setting::where('key', 'cloudflare_whitelist_enabled')->first();
+        if (!$setting) {
+            return false;
+        }
+        $value = $setting->value;
+        // Handle both boolean true and string '1'
+        return $value === true || $value === 1 || $value === '1';
     }
 
     /**
