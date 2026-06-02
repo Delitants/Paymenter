@@ -27,12 +27,11 @@ class CloudflareMiddleware
             return $next($request);
         }
 
-        // Restore real IP
-        $this->restoreRealIp();
-
-        // Check IP whitelist if enabled
+        // Check IP whitelist if enabled (BEFORE restoring real IP)
         if ($this->isWhitelistEnabled()) {
-            $check = $this->checkWhitelist($request->ip());
+            // Check the connecting IP (should be Cloudflare proxy)
+            $connectingIp = $request->server('REMOTE_ADDR') ?? $request->ip();
+            $check = $this->checkWhitelist($connectingIp);
 
             if (!$check['allowed']) {
                 return response()->view('errors.403', [
@@ -40,6 +39,9 @@ class CloudflareMiddleware
                 ], 403);
             }
         }
+
+        // Restore real IP after whitelist check passes
+        $this->restoreRealIp();
 
         return $next($request);
     }
