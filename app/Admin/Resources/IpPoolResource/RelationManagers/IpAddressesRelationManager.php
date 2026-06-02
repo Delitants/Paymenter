@@ -130,15 +130,15 @@ class IpAddressesRelationManager extends RelationManager
                             ->hidden(fn (callable $get) => !$get('is_assigned'))
                             ->columnSpanFull(),
                     ])
-                    ->mutateFormDataBeforeSaveUsing(function (array $data): array {
+                    ->action(function (EditAction $action, array $data, IpAddress $record): void {
+                        // Clear hostname and assigned_to_id when unassigning
                         if (empty($data['is_assigned'])) {
                             $data['hostname'] = null;
                             $data['assigned_to_id'] = null;
                         }
-                        return $data;
+                        $record->update($data);
                     })
-                    ->successNotificationTitle('IP address updated')
-                    ->after(fn () => $this->table->refresh()),
+                    ->successNotificationTitle('IP address updated'),
                 DeleteAction::make(),
             ])
             ->bulkActions([
