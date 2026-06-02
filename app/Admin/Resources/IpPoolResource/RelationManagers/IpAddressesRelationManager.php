@@ -128,9 +128,17 @@ class IpAddressesRelationManager extends RelationManager
                             ->placeholder('e.g., vm.example.com')
                             ->maxLength(255)
                             ->hidden(fn (callable $get) => !$get('is_assigned'))
-                            ->dehydrateStateUsing(fn ($state, callable $get) => $get('is_assigned') ? $state : null)
                             ->columnSpanFull(),
-                    ]),
+                    ])
+                    ->mutateFormDataBeforeSaveUsing(function (array $data): array {
+                        if (empty($data['is_assigned'])) {
+                            $data['hostname'] = null;
+                            $data['assigned_to_id'] = null;
+                        }
+                        return $data;
+                    })
+                    ->successNotificationTitle('IP address updated')
+                    ->after(fn () => $this->table->refresh()),
                 DeleteAction::make(),
             ])
             ->bulkActions([
