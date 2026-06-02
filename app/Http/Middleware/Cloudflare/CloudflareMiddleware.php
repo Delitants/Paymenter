@@ -27,21 +27,33 @@ class CloudflareMiddleware
             return $next($request);
         }
 
-        // Check IP whitelist if enabled (BEFORE restoring real IP)
-        if ($this->isWhitelistEnabled()) {
-            // Check the connecting IP (should be Cloudflare proxy)
-            $connectingIp = $request->server('REMOTE_ADDR') ?? $request->ip();
-            $check = $this->checkWhitelist($connectingIp);
+        // Check if request came through Cloudflare (check for CF headers)
+        $cfConnectingIp = $request->header('CF-Connecting-IP');
+        $cfRay = $request->header('CF-Ray');
+        $cdnLoop = $request->header('CDN-Loop');
+        $cameThroughCloudflare = !empty($cfConnectingIp) && (!empty($cfRay) || str_contains($cdnLoop ?? '', 'cloudflare'));
 
-            if (!$check['allowed']) {
-                return response()->view('errors.403', [
-                    'message' => $check['reason'],
-                ], 403);
+        // Check IP whitelist if enabled
+        if ($this->isWhitelistEnabled()) {
+            // If came through Cloudflare, trust the CF headers
+            if (!$cameThroughCloudflare) {
+                // Direct connection - check if IP is allowed
+                $connectingIp = $request->server('REMOTE_ADDR') ?? $request->ip();
+                $check = $this->checkWhitelist($connectingIp);
+
+                if (!$check['allowed']) {
+                    return response()->view('errors.403', [
+                        'message' => $check['reason'],
+                    ], 403);
+                }
             }
         }
 
-        // Restore real IP after whitelist check passes
-        $this->restoreRealIp();
+        // Restore real IP from Cloudflare headers if present
+        if ($cameThroughCloudflare) {
+            $_SERVER['REMOTE_ADDR'] = $cfConnectingIp;
+            $_SERVER['REMOTE_HOST'] = gethostbyaddr($cfConnectingIp) ?: $cfConnectingIp;
+        }
 
         return $next($request);
     }
@@ -176,24 +188,43 @@ class CloudflareMiddleware
     {
         list($subnet, $mask) = explode('/', $cidr);
 
-        $ip = inet_pton($ip);
-        $subnet = inet_pton($subnet);
+        $ipBin = inet_pton($ip);
+        $subnetBin = inet_pton($subnet);
 
-        if ($ip === false || $subnet === false) {
+        if ($ipBin === false || $subnetBin === false) {
             return false;
         }
 
-        $ipBin = '';
-        $subnetBin = '';
-
-        for ($i = 0; $i < 16; $i++) {
-            $ipBin .= str_pad(decbin(ord($ip[$i])), 8, '0', STR_PAD_LEFT);
-            $subnetBin .= str_pad(decbin(ord($subnet[$i])), 8, '0', STR_PAD_LEFT);
+        // Ensure we have 16 bytes for IPv6
+        if (strlen($ipBin) !== 16 || strlen($subnetBin) !== 16) {
+            return false;
         }
 
-        $ipBin = substr($ipBin, 0, (int)$mask);
-        $subnetBin = substr($subnetBin, 0, (int)$mask);
+        $maskInt = (int)$mask;
+        if ($maskInt < 0 || $maskInt > 128) {
+            return false;
+        }
 
-        return $ipBin === $subnetBin;
+        // Compare byte by byte
+        for ($i = 0; $i < 16; $i++) {
+            $byteIp = ord($ipBin[$i]);
+            $byteSubnet = ord($subnetBin[$i]);
+
+            // If we're past the mask boundary, no need to check
+            if ($i * 8 >= $maskInt) {
+                break;
+            }
+
+            // Calculate how many bits to check in this byte
+            $bitsRemaining = $maskInt - ($i * 8);
+            $bitsToCheck = min(8, $bitsRemaining);
+            $maskByte = (0xFF << (8 - $bitsToCheck)) & 0xFF;
+
+            if (($byteIp & $maskByte) !== ($byteSubnet & $maskByte)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 }
