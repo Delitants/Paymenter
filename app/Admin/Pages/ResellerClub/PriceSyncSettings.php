@@ -26,7 +26,7 @@ class PriceSyncSettings extends Page implements HasForms
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-currency-dollar';
     protected static ?string $title = 'ResellerClub';
     protected static ?string $navigationLabel = 'ResellerClub';
-    protected static string|\UnitEnum|null $navigationGroup = 'Extensions';
+    protected static string|\UnitEnum|null $navigationGroup = 'Extensions/Gateways';
 
     protected string $view = 'admin.pages.resellerclub.price-sync-settings';
 

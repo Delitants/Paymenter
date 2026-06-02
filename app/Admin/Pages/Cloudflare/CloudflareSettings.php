@@ -23,7 +23,7 @@ class CloudflareSettings extends Page implements HasForms
     protected static string|\BackedEnum|null $navigationIcon = 'ri-cloud-line';
     protected static ?string $title = 'Cloudflare';
     protected static ?string $navigationLabel = 'Cloudflare';
-    protected static string|\UnitEnum|null $navigationGroup = 'Extensions';
+    protected static string|\UnitEnum|null $navigationGroup = 'System';
 
     protected string $view = 'admin.pages.cloudflare.settings';
 
