@@ -19,7 +19,7 @@ class FilamentInput
 {
     /**
      * Evaluate a condition array against the current form state
-     * Format: ['field' => 'value'] or ['field' => ['!=', 'value']]
+     * Format: ['field' => 'value'] or ['field' => ['!=', 'value']] or ['field' => ['!=', 'value1', 'value2']]
      * For visible_if: Returns true when field SHOULD be visible (condition matches)
      * For disabled_if: Returns true when field SHOULD be disabled (condition matches)
      */
@@ -30,17 +30,17 @@ class FilamentInput
             $currentValue = $get($field) ?? $get('settings.' . $field);
 
             if (is_array($expectedValue)) {
-                // Handle operators like ['!=', 'value']
+                // Handle operators like ['!=', 'value'] or ['!=', 'value1', 'value2']
                 $operator = $expectedValue[0];
-                $value = $expectedValue[1];
+                $values = array_slice($expectedValue, 1);
 
                 if ($operator === '!=') {
-                    // Return true when current value is NOT equal to expected
-                    return $currentValue !== $value;
+                    // Return true when current value is NOT equal to any of the expected values
+                    return !in_array($currentValue, $values, true);
                 }
                 if ($operator === '==') {
-                    // Return true when current value IS equal to expected
-                    return $currentValue === $value;
+                    // Return true when current value IS equal to one of the expected values
+                    return in_array($currentValue, $values, true);
                 }
             } else {
                 // Simple equality check - return true when equal
@@ -114,7 +114,8 @@ class FilamentInput
 
                         return [];
                     })
-                    ->preload()
+                    ->preload() // Always preload selected values
+                    ->searchable($setting->searchable ?? false) // Enable search for large lists
                     ->multiple($setting->multiple ?? false)
                     ->required($setting->required ?? false)
                     ->hint($setting->hint ?? null)
@@ -126,26 +127,110 @@ class FilamentInput
                     ->hintActions(isset($setting->action) ? [($setting->action)::make()] : [])
                     ->rules($setting->validation ?? []);
 
-                // Handle visible_if condition
+                // Handle dynamic IP address loading based on selected pool
+                if (isset($setting->loadIpAddresses) && $setting->loadIpAddresses) {
+                    $select->options(function ($get, $component) use ($setting) {
+                        // Determine which pool field to read based on the address field name
+                        if ($setting->name === 'ipv4_address') {
+                            $poolField = 'ipv4_pool_id';
+                        } elseif ($setting->name === 'ipv4_private_address') {
+                            $poolField = 'ipv4_private_pool_id';
+                        } elseif ($setting->name === 'ipv6_address') {
+                            $poolField = 'ipv6_pool_id';
+                        } else {
+                            return ['auto' => 'Auto-select from pool'];
+                        }
+
+                        $poolId = $get($poolField);
+
+                        if (!$poolId || $poolId === 'auto' || $poolId === 'disabled') {
+                            return ['auto' => 'Auto-select from pool'];
+                        }
+
+                        $ips = \App\Models\IpAddress::where('ip_pool_id', $poolId)
+                            ->where('is_assigned', false)
+                            ->pluck('ip_address', 'ip_address')
+                            ->toArray();
+
+                        return ['auto' => 'Auto-select from pool'] + $ips;
+                    });
+                }
+
+                // Handle visible_if condition - both server-side and client-side JavaScript for reactivity
                 if (isset($setting->visible_if)) {
                     $select->visible(fn ($get) => self::evaluateCondition($get, $setting->visible_if));
+
+                    // Convert PHP condition to JavaScript for client-side reactivity
+                    $condition = $setting->visible_if;
+                    $jsConditions = [];
+                    foreach ($condition as $field => $expectedValue) {
+                        if (is_array($expectedValue) && $expectedValue[0] === '!=') {
+                            $values = array_slice($expectedValue, 1);
+                            if (count($values) > 1) {
+                                // Multiple values: field !== 'val1' && field !== 'val2'
+                                foreach ($values as $val) {
+                                    $jsConditions[] = "get('{$field}') !== '{$val}'";
+                                }
+                            } else {
+                                $jsConditions[] = "get('{$field}') !== '{$values[0]}'";
+                            }
+                        } elseif (is_array($expectedValue) && $expectedValue[0] === '==') {
+                            $values = array_slice($expectedValue, 1);
+                            if (count($values) > 1) {
+                                // Multiple values: field === 'val1' || field === 'val2'
+                                $orConditions = [];
+                                foreach ($values as $val) {
+                                    $orConditions[] = "get('{$field}') === '{$val}'";
+                                }
+                                $jsConditions[] = '(' . implode(' || ', $orConditions) . ')';
+                            } else {
+                                $jsConditions[] = "get('{$field}') === '{$values[0]}'";
+                            }
+                        } else {
+                            $jsConditions[] = "get('{$field}') === '{$expectedValue}'";
+                        }
+                    }
+                    $jsCondition = implode(' && ', $jsConditions);
+                    $select->visibleJs($jsCondition);
                 }
 
                 // Handle disabled_if condition - use JavaScript for client-side reactivity
                 if (isset($setting->disabled_if) || (isset($setting->disabled_when_strategy_not_specific) && $setting->disabled_when_strategy_not_specific)) {
-                    // First set disabled state
-                    $select->disabled(false);
+                    // Set initial disabled state based on current form values (server-side)
+                    if (isset($setting->disabled_if)) {
+                        $select->disabled(fn ($get) => self::evaluateCondition($get, $setting->disabled_if));
+                    } else {
+                        $select->disabled(fn ($get) => $get('settings.node_selection_strategy') !== 'specific');
+                    }
 
-                    // Build the JavaScript condition for disabling
+                    // Build the JavaScript condition for client-side reactivity
                     if (isset($setting->disabled_if)) {
                         // Convert PHP condition to JS
                         $condition = $setting->disabled_if;
                         $jsConditions = [];
                         foreach ($condition as $field => $expectedValue) {
-                            if (is_array($expectedValue) && $expectedValue[0] === '!=') {
-                                $jsConditions[] = "get('{$field}') !== '{$expectedValue[1]}'";
-                            } elseif (is_array($expectedValue) && $expectedValue[0] === '==') {
-                                $jsConditions[] = "get('{$field}') === '{$expectedValue[1]}'";
+                            if (is_array($expectedValue) && $expectedValue[0] === '==') {
+                                $values = array_slice($expectedValue, 1);
+                                if (count($values) > 1) {
+                                    // Multiple values: field === 'val1' || field === 'val2'
+                                    $orConditions = [];
+                                    foreach ($values as $val) {
+                                        $orConditions[] = "get('{$field}') === '{$val}'";
+                                    }
+                                    $jsConditions[] = '(' . implode(' || ', $orConditions) . ')';
+                                } else {
+                                    $jsConditions[] = "get('{$field}') === '{$values[0]}'";
+                                }
+                            } elseif (is_array($expectedValue) && $expectedValue[0] === '!=') {
+                                $values = array_slice($expectedValue, 1);
+                                if (count($values) > 1) {
+                                    // Multiple values: field !== 'val1' && field !== 'val2'
+                                    foreach ($values as $val) {
+                                        $jsConditions[] = "get('{$field}') !== '{$val}'";
+                                    }
+                                } else {
+                                    $jsConditions[] = "get('{$field}') !== '{$values[0]}'";
+                                }
                             } else {
                                 $jsConditions[] = "get('{$field}') === '{$expectedValue}'";
                             }
