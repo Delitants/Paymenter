@@ -543,6 +543,23 @@ class FilamentInput
                     ->hintColor($setting->hintColor ?? 'primary');
                 break;
 
+            case 'string':
+            case 'text':
+                // Use key as name if name is empty (database storage format)
+                $fieldName = !empty($setting->name) ? $setting->name : $setting->key;
+                return TextInput::make($fieldName)
+                    ->label($setting->label ?? $setting->key ?? $fieldName)
+                    ->helperText($setting->description ?? null)
+                    ->required($setting->required ?? false)
+                    ->hint($setting->hint ?? null)
+                    ->hintColor('primary')
+                    ->live(condition: $setting->live ?? false)
+                    ->default($setting->default ?? '')
+                    ->disabled($setting->disabled ?? false)
+                    ->columnSpan($setting->column_span ?? 1)
+                    ->rules($setting->validation ?? []);
+                break;
+
             default:
                 throw new Exception("Unknown input type: {$setting->type}");
         }
