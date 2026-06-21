@@ -73,47 +73,6 @@ class FilamentInput
                     ->label($setting->label ?? $setting->name)
                     ->helperText($setting->description ?? null)
                     ->columnSpan($setting->column_span ?? 1)
-                    ->options(function () use ($setting) {
-                        /* Possiblities:
-                            1. ['value1', 'value2', 'value3']
-                            2. ['value1' => 'label1', 'value2' => 'label2', 'value3' => 'label3']
-                            3. [[
-                                    'value' => 'value1',
-                                    'label' => 'label1',
-                                ], [
-                                    'value' => 'value2',
-                                    'label' => 'label2',
-                                ]]
-                        */
-                        if (isset($setting->options)) {
-                            if (is_array($setting->options)) {
-                                $options = [];
-                                // Check if the keys are explicitly set or sequential
-                                $keys = array_keys($setting->options);
-                                $isSequential = $keys === range(0, count($keys) - 1);
-
-                                foreach ($setting->options as $key => $value) {
-                                    // Explicitly set keys (e.g., ['key1' => 'value1', 'key2' => 'value2'])
-                                    if (is_array($value)) {
-                                        $options[$value['value']] = $value['label'];
-                                    } else {
-                                        if ($isSequential) {
-                                            // Sequential keys (e.g., [0 => 'value1', 1 => 'value2'])
-                                            $options[$value] = $value;
-                                        } else {
-                                            $options[$key] = $value;
-                                        }
-                                    }
-                                }
-
-                                return $options;
-                            } else {
-                                return (array) $setting->options;
-                            }
-                        }
-
-                        return [];
-                    })
                     ->preload() // Always preload selected values
                     ->searchable($setting->searchable ?? false) // Enable search for large lists
                     ->multiple($setting->multiple ?? false)
@@ -129,31 +88,112 @@ class FilamentInput
 
                 // Handle dynamic IP address loading based on selected pool
                 if (isset($setting->loadIpAddresses) && $setting->loadIpAddresses) {
-                    $select->options(function ($get, $component) use ($setting) {
-                        // Determine which pool field to read based on the address field name
-                        if ($setting->name === 'ipv4_address') {
-                            $poolField = 'ipv4_pool_id';
-                        } elseif ($setting->name === 'ipv4_private_address') {
-                            $poolField = 'ipv4_private_pool_id';
-                        } elseif ($setting->name === 'ipv6_address') {
-                            $poolField = 'ipv6_pool_id';
+                    // Store the address field type for the closure
+                    $fieldName = str_replace('settings.', '', $setting->name);
+
+                    // Map address field to pool field
+                    $poolFieldMap = [
+                        'ipv4_address' => 'settings.ipv4_pool_id',
+                        'ipv4_private_address' => 'settings.ipv4_private_pool_id',
+                        'ipv6_address' => 'settings.ipv6_pool_id',
+                    ];
+
+                    $poolField = $poolFieldMap[$fieldName] ?? null;
+
+                    if ($poolField) {
+                        // Load options dynamically based on pool selection
+                        $select->options(function ($get, $component) use ($poolField) {
+                            $poolId = $get($poolField);
+
+                            \Illuminate\Support\Facades\Log::info('IP options callback', [
+                                'poolField' => $poolField,
+                                'poolId' => $poolId,
+                                'poolIdType' => gettype($poolId),
+                            ]);
+
+                            if (empty($poolId) || $poolId === 'auto' || $poolId === 'disabled') {
+                                return ['auto' => 'Auto-select from pool'];
+                            }
+
+                            if (!is_numeric($poolId)) {
+                                return ['auto' => 'Auto-select from pool'];
+                            }
+
+                            $ips = \App\Models\IpAddress::where('ip_pool_id', (int)$poolId)
+                                ->where('is_assigned', false)
+                                ->pluck('ip_address', 'ip_address')
+                                ->toArray();
+
+                            \Illuminate\Support\Facades\Log::info('IPs fetched', [
+                                'poolId' => $poolId,
+                                'count' => count($ips),
+                            ]);
+
+                            if (empty($ips)) {
+                                return ['auto' => 'Auto-select from pool', 'no_ips' => 'No IPs available in this pool'];
+                            }
+
+                            return ['auto' => 'Auto-select from pool'] + $ips;
+                        })
+                        ->getOptionLabelUsing(function ($value) {
+                            if ($value === 'auto') return 'Auto-select from pool';
+                            if ($value === 'no_ips') return 'No IPs available';
+                            return $value;
+                        })
+                        ->getSearchResultsUsing(function ($search, $get, $component) use ($poolField) {
+                            $poolId = $get($poolField);
+                            if (empty($poolId) || $poolId === 'auto' || $poolId === 'disabled' || !is_numeric($poolId)) {
+                                return ['auto' => 'Auto-select from pool'];
+                            }
+                            $ips = \App\Models\IpAddress::where('ip_pool_id', (int)$poolId)
+                                ->where('is_assigned', false)
+                                ->where('ip_address', 'like', "%{$search}%")
+                                ->pluck('ip_address', 'ip_address')
+                                ->toArray();
+                            return ['auto' => 'Auto-select from pool'] + $ips;
+                        });
+                    }
+                } elseif (isset($setting->options)) {
+                    // Only set static options if not using dynamic IP loading
+                    $select->options(function () use ($setting) {
+                        /* Possiblities:
+                            1. ['value1', 'value2', 'value3']
+                            2. ['value1' => 'label1', 'value2' => 'label2', 'value3' => 'label3']
+                            3. [[
+                                    'value' => 'value1',
+                                    'label' => 'label1',
+                                ], [
+                                    'value' => 'value2',
+                                    'label' => 'label2',
+                                ]]
+                        */
+                        if (is_array($setting->options)) {
+                            $options = [];
+                            // Check if the keys are explicitly set or sequential
+                            $keys = array_keys($setting->options);
+                            $isSequential = $keys === range(0, count($keys) - 1);
+
+                            foreach ($setting->options as $key => $value) {
+                                // Explicitly set keys (e.g., ['key1' => 'value1', 'key2' => 'value2'])
+                                if (is_array($value)) {
+                                    $options[$value['value']] = $value['label'];
+                                } else {
+                                    if ($isSequential) {
+                                        // Sequential keys (e.g., [0 => 'value1', 1 => 'value2'])
+                                        $options[$value] = $value;
+                                    } else {
+                                        $options[$key] = $value;
+                                    }
+                                }
+                            }
+
+                            return $options;
                         } else {
-                            return ['auto' => 'Auto-select from pool'];
+                            return (array) $setting->options;
                         }
-
-                        $poolId = $get($poolField);
-
-                        if (!$poolId || $poolId === 'auto' || $poolId === 'disabled') {
-                            return ['auto' => 'Auto-select from pool'];
-                        }
-
-                        $ips = \App\Models\IpAddress::where('ip_pool_id', $poolId)
-                            ->where('is_assigned', false)
-                            ->pluck('ip_address', 'ip_address')
-                            ->toArray();
-
-                        return ['auto' => 'Auto-select from pool'] + $ips;
                     });
+                } else {
+                    $select->options([]);
                 }
 
                 // Handle visible_if condition - both server-side and client-side JavaScript for reactivity
