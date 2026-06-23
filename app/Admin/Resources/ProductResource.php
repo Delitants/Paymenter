@@ -152,7 +152,27 @@ class ProductResource extends Resource
                                                     $settings = [];
 
                                                     try {
-                                                        foreach (ExtensionHelper::getProductConfigOnce(Server::findOrFail($server), $get('settings')) as $setting) {
+                                                        // Get settings from the record being edited (for EditProduct page)
+                                                        // or from form state (for CreateProduct page)
+                                                        $formSettings = [];
+
+                                                        // Check if we're on an edit page with a record
+                                                        if ($livewire instanceof \Filament\Resources\Pages\EditRecord) {
+                                                            $record = $livewire->getRecord();
+                                                            if ($record && method_exists($record, 'settings')) {
+                                                                $formSettings = $record->settings->pluck('value', 'key')->toArray();
+                                                            }
+                                                        }
+
+                                                        // If no settings from record, try to get from form state
+                                                        if (empty($formSettings)) {
+                                                            $settingsData = $get('settings');
+                                                            if (!empty($settingsData) && is_array($settingsData)) {
+                                                                $formSettings = $settingsData;
+                                                            }
+                                                        }
+
+                                                        foreach (ExtensionHelper::getProductConfigOnce(Server::findOrFail($server), $formSettings) as $setting) {
                                                             // Easier to use dot notation for settings
                                                             $setting['name'] = 'settings.' . $setting['name'];
                                                             $settings[] = FilamentInput::convert($setting);

@@ -8,6 +8,7 @@ use App\Admin\Resources\Common\RelationManagers\PropertiesRelationManager;
 use App\Admin\Resources\ServiceResource\Pages\CreateService;
 use App\Admin\Resources\ServiceResource\Pages\EditService;
 use App\Admin\Resources\ServiceResource\Pages\ListService;
+use App\Admin\Resources\ServiceResource\Pages\ViewCredentials;
 use App\Admin\Resources\ServiceResource\RelationManagers\ConfigOptionsRelationManager;
 use App\Admin\Resources\ServiceResource\RelationManagers\InvoicesRelationManager;
 use App\Helpers\ExtensionHelper;
@@ -19,6 +20,9 @@ use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\DatePicker;
+use Filament\Forms\Components\Fieldset;
+use Filament\Forms\Components\Placeholder;
+use Filament\Forms\Components\Section;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
@@ -260,6 +264,11 @@ class ServiceResource extends Resource
             })
             ->recordActions([
                 EditAction::make(),
+                Action::make('viewCredentials')
+                    ->label('Credentials')
+                    ->icon('ri-key-line')
+                    ->color('success')
+                    ->url(fn (Service $record): string => ViewCredentials::getUrl(['record' => $record])),
             ])
             ->toolbarActions([
                 BulkActionGroup::make([
@@ -283,6 +292,7 @@ class ServiceResource extends Resource
             'index' => ListService::route('/'),
             'create' => CreateService::route('/create'),
             'edit' => EditService::route('/{record}/edit'),
+            'credentials' => ViewCredentials::route('/{record}/credentials'),
         ];
     }
 }

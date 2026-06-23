@@ -85,6 +85,10 @@ class EditProduct extends EditRecord
 
     protected function mutateFormDataBeforeFill(array $data): array
     {
+        // Initialize settings array
+        $data['settings'] = [];
+
+        // Load saved settings from database
         foreach ($this->record->settings as $setting) {
             $data['settings'][$setting->key] = $setting->value;
         }

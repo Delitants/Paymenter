@@ -45,6 +45,7 @@ Route::group(['middleware' => ['web', 'auth', MustVerfiyEmail::class]], function
     Route::get('/services', Services\Index::class)->name('services');
     Route::get('/services/{service}', Services\Show::class)->name('services.show')->middleware('can:view,service');
     Route::get('/services/{service}/upgrade', Services\Upgrade::class)->name('services.upgrade')->middleware('can:view,service');
+    Route::get('/services/{service}/credentials', Services\Credentials::class)->name('services.credentials')->middleware('can:view,service');
 });
 
 Route::group(['middleware' => ['web', 'auth']], function () {
