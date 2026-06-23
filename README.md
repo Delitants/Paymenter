@@ -77,15 +77,6 @@ Paymenter is an open-source billing platform tailored for hosting companies. It 
 
 Paymenter is available under the MIT license, offering you the freedom to adapt and evolve the platform to meet your specific requirements.
 
-## Sponsors
-
-Thanks to all sponsors for helping fund Paymenter's development. [Interested in becoming a sponsor?](https://github.com/sponsors/Paymenter)
-
-
-<a href="https://www.kuroit.com/?rel=paymenter">
-  <img src="https://github.com/user-attachments/assets/8d00b4bb-a66c-449f-94e4-cbb9ea1c0d11" width="400">
-</a>
-
 ## License
 
 Licensed under the [MIT License](https://github.com/Paymenter/Paymenter/blob/master/LICENSE).
