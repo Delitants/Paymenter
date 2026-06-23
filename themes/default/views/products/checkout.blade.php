@@ -15,11 +15,14 @@
             <x-form.select wire:model.live="plan_id" class="text-white bg-primary-800 px-2.5 py-2.5 rounded-md w-full"
                 name="plan_id" label="Select a plan">
                 @foreach ($product->availablePlans() as $availablePlan)
+                    @php
+                        $planPrice = $availablePlan->price();
+                    @endphp
                     <option value="{{ $availablePlan->id }}">
                         {{ $availablePlan->name }} -
-                        {{ $availablePlan->price()->formatted->price }}
-                        @if ($availablePlan->price()->has_setup_fee)
-                            + {{ $availablePlan->price()->formatted->setup_fee }} {{ __('product.setup_fee') }}
+                        {{ $planPrice->formatted->price }}
+                        @if ($planPrice->has_setup_fee)
+                            + {{ $planPrice->formatted->setup_fee }} {{ __('product.setup_fee') }}
                         @endif
                     </option>
                 @endforeach
@@ -28,25 +31,41 @@
 
         @foreach ($product->configOptions as $configOption)
             @php
-                $showPriceTag = $configOption->children->filter(fn ($value) => !$value->price(billing_period: $plan->billing_period, billing_unit: $plan->billing_unit)->is_free)->count() > 0;
+                // Pre-calculate all prices for this config option to avoid repeated DB queries
+                $configOptionPrices = [];
+                $hasPaidOptions = false;
+                foreach ($configOption->children as $child) {
+                    $childPrice = $child->price(billing_period: $plan->billing_period, billing_unit: $plan->billing_unit);
+                    $configOptionPrices[$child->id] = $childPrice;
+                    if (!$childPrice->is_free) {
+                        $hasPaidOptions = true;
+                    }
+                }
+                $showPriceTag = $hasPaidOptions;
             @endphp
             <x-form.configoption :config="$configOption" :name="'configOptions.' . $configOption->id" :showPriceTag="$showPriceTag" :plan="$plan">
                 @if ($configOption->type == 'select')
                     @foreach ($configOption->children as $configOptionValue)
+                        @php
+                            $price = $configOptionPrices[$configOptionValue->id];
+                            $priceDisplay = ($showPriceTag && $price->available) ? ' - ' . $price : '';
+                        @endphp
                         <option value="{{ $configOptionValue->id }}">
-                            {{ $configOptionValue->name }}
-                            {{ ($showPriceTag && $configOptionValue->price(billing_period: $plan->billing_period, billing_unit: $plan->billing_unit)->available) ? ' - ' . $configOptionValue->price(billing_period: $plan->billing_period, billing_unit: $plan->billing_unit) : '' }}
+                            {{ $configOptionValue->name }}{{ $priceDisplay }}
                         </option>
                     @endforeach
                 @elseif($configOption->type == 'radio')
                     @foreach ($configOption->children as $configOptionValue)
+                        @php
+                            $price = $configOptionPrices[$configOptionValue->id];
+                            $priceDisplay = ($showPriceTag && $price->available) ? ' - ' . $price : '';
+                        @endphp
                         <div class="flex items-center gap-2">
                             <input type="radio" id="{{ $configOptionValue->id }}" name="{{ $configOption->id }}"
                                 wire:model.live="configOptions.{{ $configOption->id }}"
                                 value="{{ $configOptionValue->id }}" />
                             <label for="{{ $configOptionValue->id }}">
-                                {{ $configOptionValue->name }}
-                                {{ ($showPriceTag && $configOptionValue->price(billing_period: $plan->billing_period, billing_unit: $plan->billing_unit)->available) ? ' - ' . $configOptionValue->price(billing_period: $plan->billing_period, billing_unit: $plan->billing_unit) : '' }}
+                                {{ $configOptionValue->name }}{{ $priceDisplay }}
                             </label>
                         </div>
                     @endforeach

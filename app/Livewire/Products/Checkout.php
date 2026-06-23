@@ -94,33 +94,49 @@ class Checkout extends Component
 
     public function updatePricing()
     {
-        $total = $this->plan->price()->price;
-        $setup_fee = $this->plan->price()->setup_fee;
+        // Cache plan price to avoid duplicate calculations
+        $planPrice = $this->plan->price();
+        $total = $planPrice->price;
+        $setup_fee = $planPrice->setup_fee;
+        $currency = $planPrice->currency;
 
-        $this->product->configOptions->each(function ($option) use (&$total, &$setup_fee) {
+        // Pre-load all config option children with their plans/prices
+        $configOptionPrices = [];
+        foreach ($this->product->configOptions as $option) {
+            foreach ($option->children as $child) {
+                $childPrice = $child->price(billing_period: $this->plan->billing_period, billing_unit: $this->plan->billing_unit);
+                $configOptionPrices[$child->id] = [
+                    'price' => $childPrice->price,
+                    'setup_fee' => $childPrice->setup_fee,
+                ];
+            }
+        }
+
+        $this->product->configOptions->each(function ($option) use (&$total, &$setup_fee, $configOptionPrices) {
             // Check if checkbox is set, if so, add price if checked
             if ($option->type === 'checkbox' && (isset($this->configOptions[$option->id]) && $this->configOptions[$option->id])) {
-                $total += $option->children->first()?->price(billing_period: $this->plan->billing_period, billing_unit: $this->plan->billing_unit)->price;
-                $setup_fee += $option->children->first()?->price(billing_period: $this->plan->billing_period, billing_unit: $this->plan->billing_unit)->setup_fee;
+                $childId = $option->children->first()->id;
+                $total += $configOptionPrices[$childId]['price'] ?? 0;
+                $setup_fee += $configOptionPrices[$childId]['setup_fee'] ?? 0;
 
                 return;
             }
             // Skip text, number and checkbox types as they have no price
             if (in_array($option->type, ['text', 'number', 'checkbox'])) {
-                $total += 0;
-                $setup_fee += 0;
-
                 return;
             }
 
-            // Add price of selected option
-            $total += $option->children->where('id', $this->configOptions[$option->id])->first()?->price(billing_period: $this->plan->billing_period, billing_unit: $this->plan->billing_unit)->price;
-            $setup_fee += $option->children->where('id', $this->configOptions[$option->id])->first()?->price(billing_period: $this->plan->billing_period, billing_unit: $this->plan->billing_unit)->setup_fee;
+            // Add price of selected option from pre-loaded prices
+            $selectedId = $this->configOptions[$option->id] ?? null;
+            if ($selectedId && isset($configOptionPrices[$selectedId])) {
+                $total += $configOptionPrices[$selectedId]['price'];
+                $setup_fee += $configOptionPrices[$selectedId]['setup_fee'];
+            }
         });
 
         $this->total = new Price([
             'price' => $total,
-            'currency' => $this->plan->price()->currency,
+            'currency' => $currency,
             'setup_fee' => $setup_fee,
         ], apply_exclusive_tax: true);
     }
