@@ -40,6 +40,10 @@ class FilamentInput
                 }
                 if ($operator === 'not_in') {
                     // Return true when current value is NOT in the list of values
+                    // Treat null/empty as "not set" which should NOT match the condition (field stays enabled)
+                    if ($currentValue === null || $currentValue === '') {
+                        return false;
+                    }
                     return !in_array($currentValue, $values, true);
                 }
                 if ($operator === '==') {
