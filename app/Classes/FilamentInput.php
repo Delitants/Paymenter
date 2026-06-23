@@ -114,12 +114,6 @@ class FilamentInput
                         $select->options(function ($get, $component) use ($poolField) {
                             $poolId = $get($poolField);
 
-                            \Illuminate\Support\Facades\Log::info('IP options callback', [
-                                'poolField' => $poolField,
-                                'poolId' => $poolId,
-                                'poolIdType' => gettype($poolId),
-                            ]);
-
                             if (empty($poolId) || $poolId === 'auto' || $poolId === 'disabled') {
                                 return ['auto' => 'Auto-select from pool'];
                             }
@@ -128,15 +122,14 @@ class FilamentInput
                                 return ['auto' => 'Auto-select from pool'];
                             }
 
-                            $ips = \App\Models\IpAddress::where('ip_pool_id', (int)$poolId)
-                                ->where('is_assigned', false)
-                                ->pluck('ip_address', 'ip_address')
-                                ->toArray();
-
-                            \Illuminate\Support\Facades\Log::info('IPs fetched', [
-                                'poolId' => $poolId,
-                                'count' => count($ips),
-                            ]);
+                            // Cache IP addresses to reduce database queries
+                            $cacheKey = "available_ips_{$poolId}";
+                            $ips = \Illuminate\Support\Facades\Cache::remember($cacheKey, 60, function () use ($poolId) {
+                                return \App\Models\IpAddress::where('ip_pool_id', (int)$poolId)
+                                    ->where('is_assigned', false)
+                                    ->pluck('ip_address', 'ip_address')
+                                    ->toArray();
+                            });
 
                             if (empty($ips)) {
                                 return ['auto' => 'Auto-select from pool', 'no_ips' => 'No IPs available in this pool'];
@@ -154,6 +147,7 @@ class FilamentInput
                             if (empty($poolId) || $poolId === 'auto' || $poolId === 'disabled' || !is_numeric($poolId)) {
                                 return ['auto' => 'Auto-select from pool'];
                             }
+                            // Don't cache search results - they're too specific
                             $ips = \App\Models\IpAddress::where('ip_pool_id', (int)$poolId)
                                 ->where('is_assigned', false)
                                 ->where('ip_address', 'like', "%{$search}%")

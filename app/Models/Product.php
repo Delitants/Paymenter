@@ -24,6 +24,11 @@ class Product extends Model implements Auditable
     ];
 
     /**
+     * Relationships to eager load by default
+     */
+    protected $with = ['category', 'server'];
+
+    /**
      * Get the category of the product.
      */
     public function category(): BelongsTo

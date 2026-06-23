@@ -145,13 +145,24 @@ class ProductResource extends Resource
                                             ->key('extension_settings')
                                             ->schema(
                                                 function (Get $get, Component $livewire) {
-                                                    $server = $get('server_id');
-                                                    if ($server == null) {
+                                                    $serverId = $get('server_id');
+                                                    if ($serverId == null) {
                                                         return [];
                                                     }
                                                     $settings = [];
 
                                                     try {
+                                                        // Cache server lookup to avoid repeated database queries
+                                                        $server = \Illuminate\Support\Facades\Cache::remember(
+                                                            "server_{$serverId}",
+                                                            300, // 5 minutes
+                                                            fn () => Server::find($serverId)
+                                                        );
+
+                                                        if (!$server) {
+                                                            return [TextEntry::make('error')->state('Server not found')];
+                                                        }
+
                                                         // Get settings from the record being edited (for EditProduct page)
                                                         // or from form state (for CreateProduct page)
                                                         $formSettings = [];
@@ -172,7 +183,7 @@ class ProductResource extends Resource
                                                             }
                                                         }
 
-                                                        foreach (ExtensionHelper::getProductConfigOnce(Server::findOrFail($server), $formSettings) as $setting) {
+                                                        foreach (ExtensionHelper::getProductConfigOnce($server, $formSettings) as $setting) {
                                                             // Easier to use dot notation for settings
                                                             $setting['name'] = 'settings.' . $setting['name'];
                                                             $settings[] = FilamentInput::convert($setting);
