@@ -40,6 +40,7 @@ class Show extends Component
 
     public function mount()
     {
+        $this->authorize('view', $this->service);
         // Only fetch the actions if the service is active
         if ($this->service->status == Service::STATUS_ACTIVE) {
             $actions = [];
@@ -139,6 +140,7 @@ class Show extends Component
 
     public function render()
     {
+        $this->authorize('view', $this->service);
         $view = null;
         $previousView = $this->currentView;
 

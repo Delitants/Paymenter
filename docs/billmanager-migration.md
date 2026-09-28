@@ -122,3 +122,38 @@ make a document look paid. Historical native invoices are held, and original
 transaction references represent their documented allocations without submitting
 new payments. The report explains why documents remain history-only. Replaying
 the same snapshot verifies records and creates no duplicate invoice or credit.
+
+Use `--stage=services --apply` to prepare native services after customer identities.
+Each imported service has a private negotiated plan, a hidden product with no
+orderable stock, and its own billing/provider hold. The original status separates
+ordered and processing records even though both map to Paymenter's pending state.
+Lifetime periods become non-recurring plans. The service screen retains the exact
+source renewal amount and selected account/domain/network details.
+
+The source `item.cost` is a calculated renewal total; addons and discounts must not
+be applied a second time. Matching-period billed expenses provide reconciliation
+evidence, while fractional cents, changed periods and unmatched amounts remain
+explicit review reasons. Exact source amounts, discounts, catalog rows and addon
+selections are encrypted in the archive. Native two-decimal amounts include a
+recorded rounding delta. Tax and discount policy must be reconciled before removing
+the service hold. Replaying the service stage rejects changed ownership, price,
+status, plan or catalog rather than silently overwriting a prepared record.
+
+Existing Proxmox resources can be attached with `--stage=proxmox --apply
+--proxmox-servers=/private/proxmox-servers.json`. The file contains `source_host`
+and `servers_by_module`, an explicit mapping of source module IDs to native
+Paymenter server IDs. Install the corresponding Proxmox extension with
+`getResourceInventory()` and current-node identity validation first. Attachment
+requires both an identifier and hostname match, rejects duplicate assignment,
+checks each resource through live GET requests, and never creates or powers a VM.
+An attached source processing record remains pending. Other providers and manual
+services require their own reviewed resource bindings.
+
+Existing IP reservations are inspected and archived without changing ownership.
+Missing/stale owners or hostname disagreements are reported for reconciliation;
+they never authorize freeing or replacing an address. The Proxmox stage needs
+read-only network access; the service stage and verification can run without it.
+`verify-services.php SNAPSHOT SOURCE LOGIN_CUTOFF` checks native ownership, holds,
+original rows, addons, parameters, source/native amounts and billing periods.
+Provider lifecycle, console relay, IP ownership handover and all real write tests
+remain separate acceptance gates.

@@ -1,4 +1,18 @@
 <div class="container mt-14">
+    @if($legacy = $service->billmanagerDetails)
+    <div class="bg-background-secondary border border-neutral p-4 rounded-lg mb-4">
+        <p>{{ __('Imported from BILLmanager') }} #{{ $legacy->source_id }} — {{ __(ucfirst($legacy->source_status)) }}</p>
+        <p>{{ __('Original renewal total') }}: {{ $legacy->details['price']['source_amount'] }} {{ $service->currency_code }}</p>
+        @foreach($legacy->details['parameters'] as $parameter)
+            @if(in_array($parameter['intname'], ['domain', 'ip', 'username', 'nameserver1', 'nameserver2'], true))
+            <p>{{ __(ucfirst($parameter['intname'])) }}: {{ $parameter['value'] }}</p>
+            @endif
+        @endforeach
+        @if(\App\Services\BillmanagerMigration\MigrationHold::isHeld($service))
+        <p>{{ __('Billing remains with the original billing system while this service is prepared.') }}</p>
+        @endif
+    </div>
+    @endif
     @if($invoice = $service->invoices()->where('status', 'pending')->first())
     <div class="w-full mb-4">
         <div class="bg-yellow-600/20 border-l-4 border-yellow-500 text-yellow-300 p-4 rounded-lg">

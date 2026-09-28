@@ -51,6 +51,11 @@ class Service extends Model implements Auditable
         return $this->belongsTo(Order::class);
     }
 
+    public function billmanagerDetails()
+    {
+        return $this->hasOne(BillmanagerServiceDetail::class);
+    }
+
     /**
      * Get the coupon that owns the service.
      */

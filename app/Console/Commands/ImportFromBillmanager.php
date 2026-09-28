@@ -8,6 +8,8 @@ use App\Services\BillmanagerMigration\CustomerImporter;
 use App\Services\BillmanagerMigration\FinancialImporter;
 use App\Services\BillmanagerMigration\ImportContext;
 use App\Services\BillmanagerMigration\ImportReport;
+use App\Services\BillmanagerMigration\ProxmoxAttacher;
+use App\Services\BillmanagerMigration\ServiceImporter;
 use App\Services\BillmanagerMigration\Snapshot;
 use App\Services\BillmanagerMigration\TicketImporter;
 use Illuminate\Console\Command;
@@ -15,7 +17,7 @@ use Illuminate\Support\Facades\DB;
 
 class ImportFromBillmanager extends Command
 {
-    protected $signature = 'billmanager:import {snapshot} {--source=} {--login-cutoff=} {--dry-run} {--apply} {--stage=all} {--report=} {--attachment-manifest=} {--attachment-directory=} {--credential-bundle=} {--disable-unsupported-otp}';
+    protected $signature = 'billmanager:import {snapshot} {--source=} {--login-cutoff=} {--dry-run} {--apply} {--stage=all} {--report=} {--attachment-manifest=} {--attachment-directory=} {--credential-bundle=} {--disable-unsupported-otp} {--proxmox-servers=}';
 
     protected $description = 'Validate a scoped BILLmanager snapshot before importing into an explicitly allowed database';
 
@@ -39,7 +41,7 @@ class ImportFromBillmanager extends Command
         try {
             $snapshot = Snapshot::load($this->argument('snapshot'), $this->option('source'), $this->option('login-cutoff'));
             if ($this->option('apply')) {
-                if (!in_array($this->option('stage'), ['customers', 'tickets', 'attachments', 'credentials', 'financial'], true)) {
+                if (!in_array($this->option('stage'), ['customers', 'tickets', 'attachments', 'credentials', 'financial', 'services', 'proxmox'], true)) {
                     $this->error('Full import is not yet available; use an explicitly supported stage');
 
                     return self::FAILURE;
@@ -75,7 +77,16 @@ class ImportFromBillmanager extends Command
                             'status' => 'running', 'created_at' => now(), 'updated_at' => now(),
                         ]);
                         $context = new ImportContext($id, $snapshot->sourceHost());
-                        if ($this->option('stage') === 'credentials') {
+                        if ($this->option('stage') === 'proxmox') {
+                            if (!$this->option('proxmox-servers')) {
+                                throw new \RuntimeException('A private Proxmox server mapping file is required');
+                            }
+                            $mapping = json_decode(file_get_contents($this->option('proxmox-servers')), true, flags: JSON_THROW_ON_ERROR);
+                            if (($mapping['source_host'] ?? null) !== $snapshot->sourceHost() || !is_array($mapping['servers_by_module'] ?? null)) {
+                                throw new \RuntimeException('Invalid Proxmox server mapping source');
+                            }
+                            $report = (new ProxmoxAttacher)->attach($snapshot, $context, $mapping['servers_by_module']);
+                        } elseif ($this->option('stage') === 'credentials') {
                             if (!$this->option('credential-bundle')) {
                                 throw new \RuntimeException('An encrypted credential bundle is required');
                             }
@@ -84,6 +95,7 @@ class ImportFromBillmanager extends Command
                             $importer = match ($this->option('stage')) {
                                 'customers' => new CustomerImporter,
                                 'financial' => new FinancialImporter,
+                                'services' => new ServiceImporter,
                                 default => new TicketImporter,
                             };
                             $report = $importer->import($snapshot, $context);
