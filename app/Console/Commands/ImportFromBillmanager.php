@@ -8,6 +8,8 @@ use App\Services\BillmanagerMigration\CustomerImporter;
 use App\Services\BillmanagerMigration\FinancialImporter;
 use App\Services\BillmanagerMigration\ImportContext;
 use App\Services\BillmanagerMigration\ImportReport;
+use App\Services\BillmanagerMigration\ProviderAttacher;
+use App\Services\BillmanagerMigration\ProviderConfigurer;
 use App\Services\BillmanagerMigration\ProxmoxAttacher;
 use App\Services\BillmanagerMigration\ServiceImporter;
 use App\Services\BillmanagerMigration\Snapshot;
@@ -17,7 +19,7 @@ use Illuminate\Support\Facades\DB;
 
 class ImportFromBillmanager extends Command
 {
-    protected $signature = 'billmanager:import {snapshot} {--source=} {--login-cutoff=} {--dry-run} {--apply} {--stage=all} {--report=} {--attachment-manifest=} {--attachment-directory=} {--credential-bundle=} {--disable-unsupported-otp} {--proxmox-servers=}';
+    protected $signature = 'billmanager:import {snapshot} {--source=} {--login-cutoff=} {--dry-run} {--apply} {--stage=all} {--report=} {--attachment-manifest=} {--attachment-directory=} {--credential-bundle=} {--disable-unsupported-otp} {--proxmox-servers=} {--provider-bundle=} {--provider-servers=}';
 
     protected $description = 'Validate a scoped BILLmanager snapshot before importing into an explicitly allowed database';
 
@@ -41,7 +43,7 @@ class ImportFromBillmanager extends Command
         try {
             $snapshot = Snapshot::load($this->argument('snapshot'), $this->option('source'), $this->option('login-cutoff'));
             if ($this->option('apply')) {
-                if (!in_array($this->option('stage'), ['customers', 'tickets', 'attachments', 'credentials', 'financial', 'services', 'proxmox'], true)) {
+                if (!in_array($this->option('stage'), ['customers', 'tickets', 'attachments', 'credentials', 'financial', 'services', 'proxmox', 'provider-configuration', 'provider-accounts'], true)) {
                     $this->error('Full import is not yet available; use an explicitly supported stage');
 
                     return self::FAILURE;
@@ -77,7 +79,22 @@ class ImportFromBillmanager extends Command
                             'status' => 'running', 'created_at' => now(), 'updated_at' => now(),
                         ]);
                         $context = new ImportContext($id, $snapshot->sourceHost());
-                        if ($this->option('stage') === 'proxmox') {
+                        if ($this->option('stage') === 'provider-configuration') {
+                            if (!$this->option('provider-bundle')) {
+                                throw new \RuntimeException('An encrypted provider bundle is required');
+                            }
+                            $servers = (new ProviderConfigurer)->configure($context, $this->option('provider-bundle'));
+                            $report = new ImportReport('providers_configured_disabled', ['servers' => count($servers)]);
+                        } elseif ($this->option('stage') === 'provider-accounts') {
+                            if (!$this->option('provider-servers')) {
+                                throw new \RuntimeException('An explicit provider server mapping is required');
+                            }
+                            $mapping = json_decode(file_get_contents($this->option('provider-servers')), true, flags: JSON_THROW_ON_ERROR);
+                            if (($mapping['source_host'] ?? null) !== $snapshot->sourceHost() || !is_array($mapping['servers_by_module'] ?? null)) {
+                                throw new \RuntimeException('Invalid provider server mapping source');
+                            }
+                            $report = (new ProviderAttacher)->attach($snapshot, $context, $mapping['servers_by_module']);
+                        } elseif ($this->option('stage') === 'proxmox') {
                             if (!$this->option('proxmox-servers')) {
                                 throw new \RuntimeException('A private Proxmox server mapping file is required');
                             }

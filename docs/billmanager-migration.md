@@ -157,3 +157,41 @@ read-only network access; the service stage and verification can run without it.
 original rows, addons, parameters, source/native amounts and billing periods.
 Provider lifecycle, console relay, IP ownership handover and all real write tests
 remain separate acceptance gates.
+
+Provider preparation has two explicit stages. `--stage=provider-configuration
+--apply --provider-bundle=/private/provider-settings.enc` consumes a source-bound
+encrypted bundle of allowlisted provider settings. It creates migration-owned,
+disabled native server records with encrypted settings; repeat runs reject changed
+credentials or configuration. Disabled source providers remain recorded dependencies.
+The bundle must be delivered directly between the authorized hosts, outside Git.
+
+`--stage=provider-accounts --apply --provider-servers=/private/providers.json`
+accepts `source_host` and `servers_by_module` for reviewed ISPmanager or DNSmanager
+bindings. The server must have been configured by this import. The stage matches
+the exact source username, verifies active/suspended state, preserves the provider
+owner and rejects duplicate bindings or later ownership drift. Existing source
+services and their billing holds remain unchanged. This stage reads provider APIs
+but never provisions or changes a remote account.
+
+ISPmanager/DNSmanager currently expose authenticated native account status;
+SSLStore checks credentials through its health API without ordering a certificate.
+The Manual server identifies services requiring an operator. Automated lifecycle,
+DNS-zone editing, registrar renewal and certificate ordering are not implemented
+by these preparation adapters. Such operations raise explicit errors, including
+on direct invocation; they must not be represented as a completed integration or
+used for billing handover. DNSmanager uses the ISPmanager account-list contract
+and still requires live acceptance against its particular installed version.
+
+The companion ResellerClub preparation branch validates existing order, customer
+and domain identity through the documented read endpoint and exposes supported
+native status actions. Its unverified legacy lifecycle calls are unavailable.
+Configuration, read-only connectivity, resource attachment, sandbox lifecycle
+acceptance and public customer views are separate readiness gates.
+
+`export-provider-settings.py` takes the source identity, native `mgrctl` path,
+manager name and repeated explicit module IDs as runtime arguments. It performs
+only `processing.edit` reads without a submission flag and emits allowlisted
+settings. Pipe it directly to `receive-provider-settings.php PRIVATE_OUTPUT
+EXPECTED_SOURCE`; the receiver encrypts an exclusively created private file and
+verifies readback, without changing native settings. Apply configuration separately
+through the explicit provider stage after reviewing the source/module mapping.
