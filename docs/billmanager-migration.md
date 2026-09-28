@@ -2,7 +2,7 @@
 
 The migration foundation validates a scoped export and provides encrypted archival,
 stable source mappings and operational holds. The customer stage creates native users and shared-account membership under
-billing and login holds. Ticket, service and financial stages are still being
+billing and login holds. Ticket and attachment stages preserve native support history and a staff-only archive. Service and financial stages are still being
 implemented; the default full `--apply` remains unavailable. Do not enable destination billing during preparation.
 
 Export only approved accounts using `tools/billmanager/export-selected.py`. Run it
@@ -66,3 +66,28 @@ directory. Never send this output to a terminal or ordinary local file. Compatib
 legacy hashes upgrade on successful authentication, and a password reset disables
 legacy fallback. Required MFA must be preserved; unsupported or missing factors
 leave login blocked. No credential payload belongs in this repository.
+
+After customers, use `--stage=tickets --apply`. Historical timestamps require an
+IANA region in the snapshot's `source_timezone`, or an explicit
+`BILLMANAGER_SOURCE_TIMEZONE` environment value. Original timestamp strings remain
+in the encrypted archive. Historical staff names do not create staff logins.
+Deleted messages and internal notes are visible only in the permission-scoped
+administrator archive. Imported tickets stay read-only until support handover.
+
+Build an attachment manifest from the same snapshot. Each entry has `id`,
+`account`, `ticket_message`, `filename`, account-relative `path`, integer `size`,
+lowercase `sha256`, and `original` containing the exact source attachment row.
+Use `stream-attachments.py SOURCE_ROOT` on the source with the manifest on stdin,
+piped directly to `receive-attachments.py MANIFEST DESTINATION_DIRECTORY` on the
+destination. These tools validate account containment, file sizes and hashes;
+shared physical files are transferred once while each attachment record survives.
+The receiver can safely resume a partial transfer when existing hashes match.
+
+Apply `--stage=attachments --apply --attachment-manifest=MANIFEST
+--attachment-directory=DESTINATION_DIRECTORY` against the same snapshot. Visible
+messages receive native attachments. Files belonging to deleted messages remain
+available to authorized support staff from the archive, never through a customer
+ticket. The importer validates every source file before writing and removes its
+newly created files if its database transaction fails. Run as the application
+storage owner, or explicitly give that owner access to the resulting private files.
+Do not expose the attachment directory through a public storage symlink.

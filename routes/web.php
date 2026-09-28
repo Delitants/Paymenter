@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\BillmanagerAttachmentController;
 use App\Http\Controllers\SocialLoginController;
 use App\Http\Controllers\TicketAttachmentController;
 use App\Http\Middleware\MustVerfiyEmail;
@@ -45,6 +46,7 @@ Route::group(['middleware' => ['web', 'auth', MustVerfiyEmail::class]], function
     Route::get('/services', Services\Index::class)->name('services');
     Route::get('/services/{service}', Services\Show::class)->name('services.show')->middleware('can:view,service');
     Route::get('/services/{service}/upgrade', Services\Upgrade::class)->name('services.upgrade')->middleware('can:view,service');
+    Route::get('/services/{service}/credentials', Services\Credentials::class)->name('services.credentials')->middleware('can:view,service');
 });
 
 Route::group(['middleware' => ['web', 'auth']], function () {
@@ -61,6 +63,7 @@ Route::group(['middleware' => ['web', 'auth']], function () {
         return redirect()->route('dashboard');
     })->middleware(['signed'])->name('verification.verify');
     Route::get('/tickets/attachments/{attachment:uuid}', [TicketAttachmentController::class, 'download'])->name('tickets.attachments.show')->middleware('can:view,attachment');
+    Route::get('/legacy-ticket-attachments/{legacyAttachment}', [BillmanagerAttachmentController::class, 'download'])->name('billmanager.attachments.show')->middleware('can:view,legacyAttachment');
 });
 
 Route::get('cart', Cart::class)->name('cart')->middleware('checkout');

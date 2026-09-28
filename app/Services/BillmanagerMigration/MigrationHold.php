@@ -4,6 +4,8 @@ namespace App\Services\BillmanagerMigration;
 
 use App\Models\Invoice;
 use App\Models\Service;
+use App\Models\Ticket;
+use App\Models\TicketMessage;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
@@ -12,7 +14,7 @@ final class MigrationHold
 {
     public static function isHeld(Model $model): bool
     {
-        foreach (['invoice_id' => Invoice::class, 'service_id' => Service::class] as $key => $class) {
+        foreach (['invoice_id' => Invoice::class, 'service_id' => Service::class, 'ticket_id' => Ticket::class, 'ticket_message_id' => TicketMessage::class] as $key => $class) {
             if ($id = $model->getAttribute($key)) {
                 $parent = $class::find($id);
                 if ($parent && self::isHeld($parent)) {

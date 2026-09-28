@@ -78,6 +78,11 @@ final class Snapshot
         return $this->digest;
     }
 
+    public function sourceTimezone(): ?string
+    {
+        return $this->data['source_timezone'] ?? null;
+    }
+
     public function counts(): array
     {
         return array_map('count', $this->data['tables']);

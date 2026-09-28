@@ -8,6 +8,7 @@ import argparse
 import binascii
 import datetime
 import json
+import os
 import re
 import subprocess
 import sys
@@ -106,7 +107,9 @@ if not tables['users'] or not tables['accounts']:
     raise RuntimeError('Empty selection')
 for user in tables['users']:
     user['last_login'] = last_login[user['name']]
-result = {'schema_version': 1, 'source_host': args.source_id, 'login_cutoff': args.login_cutoff,
+zone_path = os.path.realpath('/etc/localtime')
+source_timezone = zone_path.split('/zoneinfo/', 1)[1] if '/zoneinfo/' in zone_path else None
+result = {'source_timezone': source_timezone, 'schema_version': 1, 'source_host': args.source_id, 'login_cutoff': args.login_cutoff,
           'captured_at_utc': metadata['captured_at_utc'].replace(' ', 'T') + 'Z',
           'database_timezone': metadata['database_timezone'], 'auth_log_timezone': list(time.tzname),
           'date_boundary': 'Inclusive local timestamp as recorded in the authentication log',
