@@ -6,6 +6,7 @@ use App\Models\Credit;
 use App\Models\Invoice;
 use App\Models\Service;
 use App\Models\ServiceUpgrade;
+use App\Services\BillmanagerMigration\MigrationHold;
 use App\Services\Service\RenewServiceService;
 use App\Services\ServiceUpgrade\ServiceUpgradeService;
 
@@ -16,6 +17,7 @@ class ProcessPaidInvoiceService
      */
     public function handle(Invoice $invoice): void
     {
+        MigrationHold::assertAllowed($invoice, 'process payment');
         // Update services if invoice is paid (suspended -> active etc.)
         $invoice->items->each(function ($item) use ($invoice) {
             if ($item->reference_type == Service::class) {

@@ -14,6 +14,7 @@ use App\Models\Service;
 use App\Models\ServiceUpgrade;
 use App\Models\Setting;
 use App\Models\Ticket;
+use App\Services\BillmanagerMigration\MigrationHold;
 use App\Services\Service\RenewServiceService;
 use Exception;
 use Illuminate\Console\Command;
@@ -51,6 +52,9 @@ class CronJob extends Command
             // Send invoices if due date is x days away
             $this->runCronJob('invoices_created', function ($number = 0) {
                 Service::where('status', 'active')->where('expires_at', '<', now()->addDays((int) config('settings.cronjob_invoice', 7)))->get()->each(function ($service) use (&$number) {
+                    if (MigrationHold::isHeld($service)) {
+                        return;
+                    }
                     // Does the service have already a pending invoice?
                     if ($service->invoices()->where('status', 'pending')->exists() || $service->cancellation()->exists()) {
                         return;
@@ -126,6 +130,9 @@ class CronJob extends Command
                 Service::where('status', 'pending')->whereDoesntHave('invoices', function ($query) {
                     $query->where('status', 'paid');
                 })->where('created_at', '<', now()->subDays((int) config('settings.cronjob_order_cancel', 7)))->get()->each(function ($service) use (&$number) {
+                    if (MigrationHold::isHeld($service)) {
+                        return;
+                    }
                     $service->invoices()->where('status', 'pending')->update(['status' => 'cancelled']);
 
                     $service->update(['status' => 'cancelled']);
@@ -143,6 +150,9 @@ class CronJob extends Command
             $this->runCronJob('upgrade_invoices_updated', function ($number = 0) {
                 // Update pending upgrade invoices
                 ServiceUpgrade::where('status', 'pending')->get()->each(function ($upgrade) use (&$number) {
+                    if (MigrationHold::isHeld($upgrade->service)) {
+                        return;
+                    }
                     if ($upgrade->service->expires_at < now()) {
                         $upgrade->update(['status' => 'cancelled']);
                         // Somehow people manage to have an upgrade without an invoice
@@ -171,6 +181,9 @@ class CronJob extends Command
             $this->runCronJob('services_suspended', function ($number = 0) {
                 // Suspend orders if due date is overdue for x days
                 Service::where('status', 'active')->where('expires_at', '<', now()->subDays((int) config('settings.cronjob_order_suspend', 2)))->get()->each(function ($service) use (&$number) {
+                    if (MigrationHold::isHeld($service)) {
+                        return;
+                    }
                     SuspendJob::dispatch($service);
 
                     $service->update(['status' => 'suspended']);
@@ -183,6 +196,9 @@ class CronJob extends Command
             $this->runCronJob('services_terminated', function ($number = 0) {
                 // Terminate orders if due date is overdue for x days
                 Service::where('status', 'suspended')->where('expires_at', '<', now()->subDays((int) config('settings.cronjob_order_terminate', 14)))->each(function ($service) use (&$number) {
+                    if (MigrationHold::isHeld($service)) {
+                        return;
+                    }
                     TerminateJob::dispatch($service);
 
                     $service->update(['status' => 'cancelled']);
@@ -202,6 +218,9 @@ class CronJob extends Command
             $this->runCronJob('tickets_closed', function ($number = 0) {
                 // Close tickets if no response for x days
                 Ticket::where('status', 'replied')->each(function ($ticket) use (&$number) {
+                    if (MigrationHold::isHeld($ticket)) {
+                        return;
+                    }
                     $lastMessage = $ticket->messages()->latest('created_at')->first();
                     if ($lastMessage && $lastMessage->created_at < now()->subDays((int) config('settings.cronjob_close_ticket', 7))) {
                         $ticket->update(['status' => 'closed']);

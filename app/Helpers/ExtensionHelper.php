@@ -14,6 +14,7 @@ use App\Models\Product;
 use App\Models\Server;
 use App\Models\Service;
 use App\Models\User;
+use App\Services\BillmanagerMigration\MigrationHold;
 use Exception;
 use Filament\Forms\Components\Placeholder;
 use Illuminate\Database\Eloquent\Collection;
@@ -231,6 +232,9 @@ class ExtensionHelper
 
     public static function call($extension, $function, $args = [], $mayFail = false)
     {
+        if (($args[0] ?? null) instanceof Service) {
+            MigrationHold::assertAllowed($args[0], 'extension action');
+        }
         try {
             if (!self::hasFunction($extension, $function)) {
                 throw new Exception('Function not found');
@@ -252,6 +256,7 @@ class ExtensionHelper
 
     public static function callService(Service $service, $function, $args = [], $mayFail = false)
     {
+        MigrationHold::assertAllowed($service, 'service action');
         $server = $service->product->server;
 
         if (!$server) {
@@ -409,11 +414,15 @@ class ExtensionHelper
      */
     public static function pay($gateway, $invoice)
     {
+        MigrationHold::assertAllowed($invoice, 'pay');
+
         return self::getExtension('gateway', $gateway->extension, $gateway->settings)->pay($invoice, $invoice->remaining);
     }
 
     public static function charge(Gateway $gateway, Invoice $invoice, BillingAgreement $billingAgreement): bool
     {
+        MigrationHold::assertAllowed($invoice, 'charge');
+
         return self::getExtension('gateway', $gateway->extension, $gateway->settings)->charge($invoice, $invoice->remaining, $billingAgreement);
     }
 
@@ -441,6 +450,8 @@ class ExtensionHelper
      */
     public static function createBillingAgreement($user, $gateway)
     {
+        MigrationHold::assertAllowed($user, 'createBillingAgreement');
+
         return self::getExtension('gateway', $gateway->extension, $gateway->settings)->createBillingAgreement($user);
     }
 
@@ -451,11 +462,14 @@ class ExtensionHelper
      */
     public static function cancelBillingAgreement(BillingAgreement $billingAgreement)
     {
+        MigrationHold::assertAllowed($billingAgreement, 'cancelBillingAgreement');
+
         return self::getExtension('gateway', $billingAgreement->gateway->extension, $billingAgreement->gateway->settings)->cancelBillingAgreement($billingAgreement);
     }
 
     public static function makeBillingAgreement(User $user, $gateway, $name, $externalReference, $type = null, $expiry = null)
     {
+        MigrationHold::assertAllowed($user, 'makeBillingAgreement');
         $gateway = Gateway::where('extension', $gateway)->firstOrFail();
 
         $billingAgreement = BillingAgreement::updateOrCreate([
@@ -482,7 +496,8 @@ class ExtensionHelper
             $gateway = Gateway::where('extension', $gateway)->first();
         }
 
-        $invoice = Invoice::findOrFail($invoice);
+        $invoice = $invoice instanceof Invoice ? $invoice : Invoice::findOrFail($invoice);
+        MigrationHold::assertAllowed($invoice, 'add payment');
 
         if (!$transactionId) {
             $transaction = $invoice->transactions()->create([
@@ -600,6 +615,7 @@ class ExtensionHelper
      */
     public static function createServer(Service $service)
     {
+        MigrationHold::assertAllowed($service, 'createServer');
         $server = self::checkServer($service, 'createServer');
 
         self::recordAudit($service, 'extension_action', [], ['action' => 'create_server']);
@@ -612,6 +628,7 @@ class ExtensionHelper
      */
     public static function suspendServer(Service $service)
     {
+        MigrationHold::assertAllowed($service, 'suspendServer');
         $server = self::checkServer($service, 'suspendServer');
 
         self::recordAudit($service, 'extension_action', [], ['action' => 'suspend_server']);
@@ -624,6 +641,7 @@ class ExtensionHelper
      */
     public static function unsuspendServer(Service $service)
     {
+        MigrationHold::assertAllowed($service, 'unsuspendServer');
         $server = self::checkServer($service, 'unsuspendServer');
 
         self::recordAudit($service, 'extension_action', [], ['action' => 'unsuspend_server']);
@@ -636,6 +654,7 @@ class ExtensionHelper
      */
     public static function terminateServer(Service $service)
     {
+        MigrationHold::assertAllowed($service, 'terminateServer');
         $server = self::checkServer($service, 'terminateServer');
 
         self::recordAudit($service, 'extension_action', [], ['action' => 'terminate_server']);
@@ -648,6 +667,7 @@ class ExtensionHelper
      */
     public static function upgradeServer(Service $service)
     {
+        MigrationHold::assertAllowed($service, 'upgradeServer');
         $server = self::checkServer($service, 'upgradeServer');
 
         self::recordAudit($service, 'extension_action', [], ['action' => 'upgrade_server']);

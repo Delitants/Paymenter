@@ -5,6 +5,7 @@ namespace App\Services\Service;
 use App\Jobs\Server\CreateJob;
 use App\Jobs\Server\UnsuspendJob;
 use App\Models\Service;
+use App\Services\BillmanagerMigration\MigrationHold;
 
 class RenewServiceService
 {
@@ -15,6 +16,7 @@ class RenewServiceService
      */
     public function handle(Service $service)
     {
+        MigrationHold::assertAllowed($service, 'renew service');
         if ($service->product->server) {
             if ($service->status == Service::STATUS_SUSPENDED) {
                 UnsuspendJob::dispatch($service);
