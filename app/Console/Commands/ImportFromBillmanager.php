@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Services\BillmanagerMigration\AttachmentImporter;
+use App\Services\BillmanagerMigration\CredentialImporter;
 use App\Services\BillmanagerMigration\CustomerImporter;
 use App\Services\BillmanagerMigration\ImportContext;
 use App\Services\BillmanagerMigration\ImportReport;
@@ -13,7 +14,7 @@ use Illuminate\Support\Facades\DB;
 
 class ImportFromBillmanager extends Command
 {
-    protected $signature = 'billmanager:import {snapshot} {--source=} {--login-cutoff=} {--dry-run} {--apply} {--stage=all} {--report=} {--attachment-manifest=} {--attachment-directory=}';
+    protected $signature = 'billmanager:import {snapshot} {--source=} {--login-cutoff=} {--dry-run} {--apply} {--stage=all} {--report=} {--attachment-manifest=} {--attachment-directory=} {--credential-bundle=} {--disable-unsupported-otp}';
 
     protected $description = 'Validate a scoped BILLmanager snapshot before importing into an explicitly allowed database';
 
@@ -37,7 +38,7 @@ class ImportFromBillmanager extends Command
         try {
             $snapshot = Snapshot::load($this->argument('snapshot'), $this->option('source'), $this->option('login-cutoff'));
             if ($this->option('apply')) {
-                if (!in_array($this->option('stage'), ['customers', 'tickets', 'attachments'], true)) {
+                if (!in_array($this->option('stage'), ['customers', 'tickets', 'attachments', 'credentials'], true)) {
                     $this->error('Full import is not yet available; use an explicitly supported stage');
 
                     return self::FAILURE;
@@ -72,8 +73,16 @@ class ImportFromBillmanager extends Command
                             'source_host' => $snapshot->sourceHost(), 'snapshot_sha256' => $snapshot->checksum(),
                             'status' => 'running', 'created_at' => now(), 'updated_at' => now(),
                         ]);
-                        $importer = $this->option('stage') === 'customers' ? new CustomerImporter : new TicketImporter;
-                        $report = $importer->import($snapshot, new ImportContext($id, $snapshot->sourceHost()));
+                        $context = new ImportContext($id, $snapshot->sourceHost());
+                        if ($this->option('stage') === 'credentials') {
+                            if (!$this->option('credential-bundle')) {
+                                throw new \RuntimeException('An encrypted credential bundle is required');
+                            }
+                            $report = (new CredentialImporter)->import($snapshot, $context, $this->option('credential-bundle'), $this->option('disable-unsupported-otp'));
+                        } else {
+                            $importer = $this->option('stage') === 'customers' ? new CustomerImporter : new TicketImporter;
+                            $report = $importer->import($snapshot, $context);
+                        }
                         DB::table('billmanager_imports')->where('id', $id)->update([
                             'status' => 'prepared_partial', 'report' => json_encode($report, JSON_THROW_ON_ERROR), 'updated_at' => now(),
                         ]);

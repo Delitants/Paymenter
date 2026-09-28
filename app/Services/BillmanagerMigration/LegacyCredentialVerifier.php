@@ -10,6 +10,18 @@ use RuntimeException;
 
 final class LegacyCredentialVerifier
 {
+    public function findByLogin(string $login): ?User
+    {
+        $login = strtolower(trim($login));
+        $emailUser = User::where('email', $login)->first();
+        $aliasId = DB::table('billmanager_login_aliases')->where('alias', $login)->value('user_id');
+        if ($emailUser && $aliasId && $emailUser->id != $aliasId) {
+            return null;
+        }
+
+        return $emailUser ?? ($aliasId ? User::find($aliasId) : null);
+    }
+
     private function isMapped(User $user): bool
     {
         return DB::table('billmanager_mappings')->where([

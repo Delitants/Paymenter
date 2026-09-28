@@ -67,6 +67,20 @@ legacy hashes upgrade on successful authentication, and a password reset disable
 legacy fallback. Required MFA must be preserved; unsupported or missing factors
 leave login blocked. No credential payload belongs in this repository.
 
+Install an authorized encrypted bundle with `--stage=credentials --apply
+--credential-bundle=/private/credentials.enc`. Every bundle identity must match the
+selected snapshot. Legacy usernames remain login aliases alongside email, sharing
+the account's rate limit. Alias collisions require explicit reconciliation. OTP
+is preserved when compatible; the explicit `--disable-unsupported-otp` option is
+available only for an operator-authorized fallback and records an audit event.
+Replaying the bundle never reinstates a password after a native password change.
+
+`export-mail-settings.py` and `receive-mail-settings.php` transfer SMTP settings
+directly into encrypted destination storage and application settings. The receiver
+requires an allowed database and keeps delivery disabled. `verify-mail.php` checks
+TLS/authentication and disconnects without sending mail. Keep the rehearsal mail
+transport non-delivering until the approved deployment and communication phase.
+
 After customers, use `--stage=tickets --apply`. Historical timestamps require an
 IANA region in the snapshot's `source_timezone`, or an explicit
 `BILLMANAGER_SOURCE_TIMEZONE` environment value. Original timestamp strings remain

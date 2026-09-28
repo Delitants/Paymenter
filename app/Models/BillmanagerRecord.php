@@ -18,7 +18,7 @@ class BillmanagerRecord extends Model
     {
         $groups = [
             'admin.tickets.view' => ['tickets', 'ticket_messages', 'ticket_notes', 'ticket_history', 'ticket_attachments', 'ticket_authors'],
-            'admin.users.view' => ['users', 'accounts', 'profiles'],
+            'admin.users.view' => ['users', 'accounts', 'profiles', 'credential_migration_events'],
             'admin.invoices.view' => ['payments', 'invoices', 'invoiceitems', 'subaccounts', 'expenses', 'expense_changes', 'expense_payments', 'invoice_history', 'invoiceitem_history', 'payment_history', 'payment_refunds', 'invoiceitem_expenses', 'invoiceitem_payments'],
             'admin.services.view' => ['items', 'addons', 'itemparams', 'pricelists', 'prices', 'pricelistprices', 'fixedprices', 'fixedpricesprice', 'itemtypes', 'discounts', 'discountprices'],
         ];
