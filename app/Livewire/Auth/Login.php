@@ -4,8 +4,8 @@ namespace App\Livewire\Auth;
 
 use App\Livewire\Component;
 use App\Models\User;
+use App\Services\BillmanagerMigration\LegacyCredentialVerifier;
 use App\Traits\Captchable;
-use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Session;
 use Livewire\Attributes\Validate;
@@ -40,7 +40,7 @@ class Login extends Component
         // Manually validate credentials instead of Auth::attempt
         $user = User::where('email', $this->email)->first();
 
-        if (!$user || !Hash::check($this->password, $user->password)) {
+        if (!$user || !app(LegacyCredentialVerifier::class)->verifyAndUpgrade($user, $this->password)) {
             $this->addError('email', 'These credentials do not match our records.');
 
             return;

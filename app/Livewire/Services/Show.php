@@ -69,6 +69,7 @@ class Show extends Component
 
     public function updateBillingAgreement()
     {
+        $this->authorize('update', $this->service);
         $agreement = Auth::user()->billingAgreements()->where('ulid', $this->selectedMethod)->first();
         $this->service->billing_agreement_id = $agreement->id;
         $this->service->save();
@@ -78,6 +79,7 @@ class Show extends Component
 
     public function clearBillingAgreement()
     {
+        $this->authorize('update', $this->service);
         $this->service->billing_agreement_id = null;
         $this->service->save();
         $this->selectedMethod = null;
@@ -85,6 +87,7 @@ class Show extends Component
 
     public function updateLabel()
     {
+        $this->authorize('update', $this->service);
         $this->validate([
             'label' => 'nullable|string|max:255',
         ]);
@@ -119,6 +122,7 @@ class Show extends Component
 
     public function goto($function)
     {
+        $this->authorize('update', $this->service);
         // Check if function is allowed
         if (!in_array($function, array_column($this->buttons, 'function'))) {
             $this->notify('This action is not allowed', 'error');

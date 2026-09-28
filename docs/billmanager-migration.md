@@ -1,9 +1,9 @@
 # BILLmanager migration preparation
 
 The migration foundation validates a scoped export and provides encrypted archival,
-stable source mappings and operational holds. Native customer, ticket, service and
-financial import stages are still being implemented. `--apply` currently refuses
-to write records. Do not enable destination billing during preparation.
+stable source mappings and operational holds. The customer stage creates native users and shared-account membership under
+billing and login holds. Ticket, service and financial stages are still being
+implemented; the default full `--apply` remains unavailable. Do not enable destination billing during preparation.
 
 Export only approved accounts using `tools/billmanager/export-selected.py`. Run it
 on the source with existing local database access. It reads the authentication log
@@ -26,8 +26,7 @@ php artisan billmanager:import /private/snapshot.json \
 ```
 
 The expected source and cutoff are explicit inputs; no deployment identity is
-embedded in application code. Omitting `--apply` defaults to validation. Future
-apply operations also require the destination database to appear in the
+embedded in application code. Omitting `--apply` defaults to validation. Apply operations also require the destination database to appear in the
 `BILLMANAGER_ALLOWED_DATABASES` environment setting.
 
 Use a separate filesystem and database for rehearsal, a database account without
@@ -52,3 +51,18 @@ Run the migration tests against the isolated test database:
 ```sh
 vendor/bin/phpunit tests/Feature/BillmanagerMigration tests/Unit
 ```
+
+To rehearse only customer identities, explicitly use `--stage=customers --apply`.
+This does not transfer credentials or enable billing. Repeating the same snapshot
+preserves native identities. Existing normalized-email collisions require an
+explicit reconciliation; they are never merged automatically. Shared account
+members get read access, while mutations still require the owner's permission.
+
+Credential migration is a separate protected operation requiring operator
+authorization. `export-credentials.py` accepts only a selected user-ID list on
+stdin; pipe its output directly to `receive-credentials.php` on the destination.
+The receiver encrypts before writing a private file outside the application
+directory. Never send this output to a terminal or ordinary local file. Compatible
+legacy hashes upgrade on successful authentication, and a password reset disables
+legacy fallback. Required MFA must be preserved; unsupported or missing factors
+leave login blocked. No credential payload belongs in this repository.

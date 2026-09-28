@@ -4,6 +4,7 @@ namespace App\Policies;
 
 use App\Models\Invoice;
 use App\Models\User;
+use App\Services\BillmanagerMigration\AccountAccess;
 
 class InvoicePolicy extends BasePolicy
 {
@@ -20,7 +21,7 @@ class InvoicePolicy extends BasePolicy
      */
     public function view(User $user, Invoice $invoice): bool
     {
-        return $this->adminPermission($user, 'admin.invoices.view') || $invoice->user_id === $user->id;
+        return $this->adminPermission($user, 'admin.invoices.view') || AccountAccess::canRead($user, $invoice);
     }
 
     /**

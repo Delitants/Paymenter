@@ -6,7 +6,7 @@ use InvalidArgumentException;
 
 final class Snapshot
 {
-    private function __construct(private readonly array $data) {}
+    private function __construct(private readonly array $data, private readonly string $digest) {}
 
     public static function load(string $path, string $expectedSource, string $expectedCutoff): self
     {
@@ -55,12 +55,27 @@ final class Snapshot
             }
         }
 
-        return new self($data);
+        return new self($data, $digest);
     }
 
     public function rows(string $table): array
     {
         return $this->data['tables'][$table] ?? [];
+    }
+
+    public function sourceHost(): string
+    {
+        return $this->data['source_host'];
+    }
+
+    public function capturedAt(): string
+    {
+        return $this->data['captured_at_utc'];
+    }
+
+    public function checksum(): string
+    {
+        return $this->digest;
     }
 
     public function counts(): array

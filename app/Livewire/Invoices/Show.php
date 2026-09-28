@@ -90,6 +90,7 @@ class Show extends Component
 
     public function processPayment()
     {
+        $this->authorize('update', $this->invoice);
         if (is_null($this->selectedMethod)) {
             return;
         }
