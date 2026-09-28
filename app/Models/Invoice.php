@@ -16,7 +16,7 @@ use OwenIt\Auditing\Contracts\Auditable;
 #[ObservedBy([InvoiceObserver::class])]
 class Invoice extends Model implements Auditable
 {
-    use HasFactory, HasProperties, Traits\Auditable;
+    use HasFactory, HasProperties, Traits\Auditable, Traits\GuardsMigrationWrites;
 
     public const STATUS_PENDING = 'pending';
 

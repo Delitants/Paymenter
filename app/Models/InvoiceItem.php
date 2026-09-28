@@ -12,7 +12,7 @@ use OwenIt\Auditing\Contracts\Auditable;
 #[ObservedBy([InvoiceItemObserver::class])]
 class InvoiceItem extends Model implements Auditable
 {
-    use HasFactory, Traits\Auditable;
+    use HasFactory, Traits\Auditable, Traits\GuardsMigrationWrites;
 
     protected $fillable = [
         'invoice_id',
