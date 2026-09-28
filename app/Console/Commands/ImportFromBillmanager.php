@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Services\BillmanagerMigration\AttachmentImporter;
 use App\Services\BillmanagerMigration\CredentialImporter;
 use App\Services\BillmanagerMigration\CustomerImporter;
+use App\Services\BillmanagerMigration\FinancialImporter;
 use App\Services\BillmanagerMigration\ImportContext;
 use App\Services\BillmanagerMigration\ImportReport;
 use App\Services\BillmanagerMigration\Snapshot;
@@ -38,7 +39,7 @@ class ImportFromBillmanager extends Command
         try {
             $snapshot = Snapshot::load($this->argument('snapshot'), $this->option('source'), $this->option('login-cutoff'));
             if ($this->option('apply')) {
-                if (!in_array($this->option('stage'), ['customers', 'tickets', 'attachments', 'credentials'], true)) {
+                if (!in_array($this->option('stage'), ['customers', 'tickets', 'attachments', 'credentials', 'financial'], true)) {
                     $this->error('Full import is not yet available; use an explicitly supported stage');
 
                     return self::FAILURE;
@@ -80,7 +81,11 @@ class ImportFromBillmanager extends Command
                             }
                             $report = (new CredentialImporter)->import($snapshot, $context, $this->option('credential-bundle'), $this->option('disable-unsupported-otp'));
                         } else {
-                            $importer = $this->option('stage') === 'customers' ? new CustomerImporter : new TicketImporter;
+                            $importer = match ($this->option('stage')) {
+                                'customers' => new CustomerImporter,
+                                'financial' => new FinancialImporter,
+                                default => new TicketImporter,
+                            };
                             $report = $importer->import($snapshot, $context);
                         }
                         DB::table('billmanager_imports')->where('id', $id)->update([

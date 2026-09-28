@@ -2,7 +2,7 @@
 
 The migration foundation validates a scoped export and provides encrypted archival,
 stable source mappings and operational holds. The customer stage creates native users and shared-account membership under
-billing and login holds. Ticket and attachment stages preserve native support history and a staff-only archive. Service and financial stages are still being
+billing and login holds. Ticket and attachment stages preserve native support history and a staff-only archive. Financial history preserves exact amounts and source states. Service and integration stages are still being
 implemented; the default full `--apply` remains unavailable. Do not enable destination billing during preparation.
 
 Export only approved accounts using `tools/billmanager/export-selected.py`. Run it
@@ -105,3 +105,20 @@ ticket. The importer validates every source file before writing and removes its
 newly created files if its database transaction fails. Run as the application
 storage owner, or explicitly give that owner access to the resulting private files.
 Do not expose the attachment directory through a public storage symlink.
+
+Use `--stage=financial --apply` after customer identities. This creates an exact
+financial history accessible to account members through Billing history, with
+payment states kept separate from accounting document states. It preserves
+original receipt numbers, external references, payer/issuer profiles, balances,
+credit limits, fees, taxes and audit revisions. Preliminary accounting documents
+remain hidden from customers. Source decimal strings and computed rounding
+differences are retained; preparation does not create spendable credit.
+
+Native paid invoices are created only when confirmed payments in the same currency
+fully cover matching invoice lines, amounts fit native precision, the issuer is
+known, and zero-tax treatment is proven. Other accounting documents stay available
+with their truthful source state in Billing history; no payment is invented to
+make a document look paid. Historical native invoices are held, and original
+transaction references represent their documented allocations without submitting
+new payments. The report explains why documents remain history-only. Replaying
+the same snapshot verifies records and creates no duplicate invoice or credit.

@@ -57,7 +57,7 @@ queries = {
     'processingnodes': 'SELECT id,name,processingmodule,panelid,ip,failed FROM processingnode',
     'paymethods': 'SELECT id,name,module,active,currency,recurring FROM paymethod',
     'profiles': 'SELECT id,name,person,account,profiletype,email,phone,country_legal,postcode_legal,state_legal,city_legal,address_legal,vatnum,active FROM profile WHERE account' + account_filter,
-    'payments': 'SELECT id,subaccount,paymethod,status,number,subaccountamount,paymethodamount,usedamount,commissionamount,paydate,createdate,taxrate,taxamount,currency,externalid,billorder,invoice,refund FROM payment WHERE id IN (' + payments + ')',
+    'payments': 'SELECT id,subaccount,paymethod,status,number,subaccountamount,paymethodamount,usedamount,commissionamount,paydate,createdate,taxrate,taxamount,currency,externalid,billorder,invoice,refund,documentnumber,documentdate,sender,recipient,description FROM payment WHERE id IN (' + payments + ')',
     'invoices': 'SELECT id,company,customer,number,cdate,sdate,currency,amount,realamount,invoice_status,revision,fromdate,todate FROM invoice WHERE customer IN (' + profiles + ')',
     'invoiceitems': 'SELECT ii.* FROM invoiceitem ii JOIN invoice i ON i.id=ii.invoice WHERE i.customer IN (' + profiles + ')',
     'tickets': 'SELECT id,name,account_client,date_start,responsible,item,priority,status,date_last,summary,alt_status FROM ticket WHERE id IN (' + tickets + ')',
@@ -70,6 +70,8 @@ expenses = 'SELECT id FROM expense WHERE subaccount IN (SELECT id FROM subaccoun
 selected_invoices = 'SELECT id FROM invoice WHERE customer IN (' + profiles + ')'
 selected_invoiceitems = 'SELECT id FROM invoiceitem WHERE invoice IN (' + selected_invoices + ')'
 queries.update({
+    'countries': 'SELECT id,name,iso2,iso3 FROM country',
+    'company_profiles': 'SELECT id,name,person,account,profiletype,email,phone,country_legal,postcode_legal,state_legal,city_legal,address_legal,vatnum,active FROM profile WHERE id IN (SELECT company FROM invoice WHERE id IN (' + selected_invoices + ') UNION SELECT recipient FROM payment WHERE id IN (' + payments + '))',
     'expenses': 'SELECT id,subaccount,item,period,discount,amount,discountamount,notpayd,cdate,name,realdate,operation,taxrate,taxamount FROM expense WHERE id IN (' + expenses + ')',
     'expense_payments': 'SELECT * FROM expense2payment WHERE expense IN (' + expenses + ') AND payment IN (' + payments + ')',
     'invoiceitem_expenses': 'SELECT * FROM invoiceitem2expense WHERE invoiceitem IN (' + selected_invoiceitems + ')',

@@ -5,6 +5,7 @@ use App\Http\Controllers\SocialLoginController;
 use App\Http\Controllers\TicketAttachmentController;
 use App\Http\Middleware\MustVerfiyEmail;
 use App\Livewire\Auth;
+use App\Livewire\Billing\LegacyHistory;
 use App\Livewire\Cart;
 use App\Livewire\Client;
 use App\Livewire\Dashboard;
@@ -38,6 +39,8 @@ Route::group(['middleware' => ['web', 'auth', MustVerfiyEmail::class]], function
 
     Route::get('/invoices', Invoices\Index::class)->name('invoices');
     Route::get('/invoices/{invoice}', Invoices\Show::class)->name('invoices.show')->middleware('can:view,invoice');
+    Route::get('/billing/history', LegacyHistory::class)->name('billing.history');
+    Route::get('/billing/history/{record}', LegacyHistory::class)->name('billing.history.show')->middleware('can:view,record');
 
     Route::get('/tickets', Tickets\Index::class)->name('tickets');
     Route::get('/tickets/create', Tickets\Create::class)->name('tickets.create');
