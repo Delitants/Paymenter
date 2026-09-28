@@ -416,7 +416,7 @@ class ExtensionHelper
     {
         MigrationHold::assertAllowed($invoice, 'pay');
 
-        return self::getExtension('gateway', $gateway->extension, $gateway->settings)->pay($invoice, $invoice->remaining);
+        return self::getExtension('gateway', $gateway->extension, $gateway->settings)->bindRecord($gateway)->pay($invoice, $invoice->remaining);
     }
 
     public static function charge(Gateway $gateway, Invoice $invoice, BillingAgreement $billingAgreement): bool
@@ -492,7 +492,7 @@ class ExtensionHelper
      */
     public static function addPayment($invoice, $gateway, $amount, $fee = null, $transactionId = null, InvoiceTransactionStatus $status = InvoiceTransactionStatus::Succeeded, $isCreditTransaction = false)
     {
-        if (isset($gateway)) {
+        if (isset($gateway) && !($gateway instanceof Gateway)) {
             $gateway = Gateway::where('extension', $gateway)->first();
         }
 

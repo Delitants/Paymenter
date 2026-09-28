@@ -13,6 +13,18 @@ use Illuminate\Support\Facades\View;
  */
 abstract class Gateway extends Extension
 {
+    protected ?\App\Models\Gateway $gatewayRecord = null;
+
+    public function bindRecord(\App\Models\Gateway $gateway): static
+    {
+        if ($gateway->extension !== class_basename(static::class)) {
+            throw new \RuntimeException('Gateway record does not match the extension');
+        }
+        $this->gatewayRecord = $gateway;
+
+        return $this;
+    }
+
     /**
      * Pay the given invoice with the given total amount.
      *

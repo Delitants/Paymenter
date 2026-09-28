@@ -6,6 +6,7 @@ use App\Services\BillmanagerMigration\AttachmentImporter;
 use App\Services\BillmanagerMigration\CredentialImporter;
 use App\Services\BillmanagerMigration\CustomerImporter;
 use App\Services\BillmanagerMigration\FinancialImporter;
+use App\Services\BillmanagerMigration\GatewayConfigurer;
 use App\Services\BillmanagerMigration\ImportContext;
 use App\Services\BillmanagerMigration\ImportReport;
 use App\Services\BillmanagerMigration\ProviderAttacher;
@@ -19,7 +20,7 @@ use Illuminate\Support\Facades\DB;
 
 class ImportFromBillmanager extends Command
 {
-    protected $signature = 'billmanager:import {snapshot} {--source=} {--login-cutoff=} {--dry-run} {--apply} {--stage=all} {--report=} {--attachment-manifest=} {--attachment-directory=} {--credential-bundle=} {--disable-unsupported-otp} {--proxmox-servers=} {--provider-bundle=} {--provider-servers=}';
+    protected $signature = 'billmanager:import {snapshot} {--source=} {--login-cutoff=} {--dry-run} {--apply} {--stage=all} {--report=} {--attachment-manifest=} {--attachment-directory=} {--credential-bundle=} {--disable-unsupported-otp} {--proxmox-servers=} {--provider-bundle=} {--provider-servers=} {--gateway-bundle=}';
 
     protected $description = 'Validate a scoped BILLmanager snapshot before importing into an explicitly allowed database';
 
@@ -43,7 +44,7 @@ class ImportFromBillmanager extends Command
         try {
             $snapshot = Snapshot::load($this->argument('snapshot'), $this->option('source'), $this->option('login-cutoff'));
             if ($this->option('apply')) {
-                if (!in_array($this->option('stage'), ['customers', 'tickets', 'attachments', 'credentials', 'financial', 'services', 'proxmox', 'provider-configuration', 'provider-accounts'], true)) {
+                if (!in_array($this->option('stage'), ['customers', 'tickets', 'attachments', 'credentials', 'financial', 'services', 'proxmox', 'provider-configuration', 'provider-accounts', 'gateway-configuration'], true)) {
                     $this->error('Full import is not yet available; use an explicitly supported stage');
 
                     return self::FAILURE;
@@ -79,7 +80,13 @@ class ImportFromBillmanager extends Command
                             'status' => 'running', 'created_at' => now(), 'updated_at' => now(),
                         ]);
                         $context = new ImportContext($id, $snapshot->sourceHost());
-                        if ($this->option('stage') === 'provider-configuration') {
+                        if ($this->option('stage') === 'gateway-configuration') {
+                            if (!$this->option('gateway-bundle')) {
+                                throw new \RuntimeException('An encrypted gateway bundle is required');
+                            }
+                            $gateways = (new GatewayConfigurer)->configure($snapshot, $context, $this->option('gateway-bundle'));
+                            $report = new ImportReport('gateways_configured_disabled', ['gateways' => count($gateways)]);
+                        } elseif ($this->option('stage') === 'provider-configuration') {
                             if (!$this->option('provider-bundle')) {
                                 throw new \RuntimeException('An encrypted provider bundle is required');
                             }
