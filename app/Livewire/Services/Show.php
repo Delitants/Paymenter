@@ -41,6 +41,15 @@ class Show extends Component
     public function mount()
     {
         $this->authorize('view', $this->service);
+        $this->loadActions();
+        $this->label = $this->service->label;
+    }
+
+    private function loadActions(): void
+    {
+        $this->buttons = [];
+        $this->views = [];
+        $this->fields = [];
         // Only fetch the actions if the service is active
         if ($this->service->status == Service::STATUS_ACTIVE) {
             $actions = [];
@@ -60,7 +69,6 @@ class Show extends Component
             }
             $this->currentView = $this->currentView ?? ($this->views[0]['name'] ?? null);
         }
-        $this->label = $this->service->label;
     }
 
     public function updatedShowBillingAgreement()
@@ -131,6 +139,11 @@ class Show extends Component
             return;
         }
         $result = ExtensionHelper::callService($this->service, $function);
+        if ($result === true) {
+            $this->service->refresh();
+            $this->loadActions();
+            $this->notify('Action completed', 'success');
+        }
         // If its a response, return it
         if (!is_string($result)) {
             return $result;
