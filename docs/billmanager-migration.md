@@ -211,3 +211,10 @@ settings. Pipe it directly to `receive-provider-settings.php PRIVATE_OUTPUT
 EXPECTED_SOURCE`; the receiver encrypts an exclusively created private file and
 verifies readback, without changing native settings. Apply configuration separately
 through the explicit provider stage after reviewing the source/module mapping.
+
+
+### Refreshed support snapshots and delivery holds
+
+Previously mapped ticket messages must still be present and match their original archived source rows, including content, author and deletion markers. Any edit, deletion or disappearance rejects the support stage transaction and requires explicit reconciliation. Do not deploy or release a held candidate based on a rejected refreshed snapshot; the earlier native message and its attachments remain from the prior accepted batch. No automatic deletion or visibility transition is performed.
+
+Held recipients and held notification subjects suppress email, in-app and push delivery, including normal login notifications, without blocking successful credential authentication. Cancellation, upgrade and subscription cancellation reject held services before persistence or provider calls. Shared account membership grants read access only; write actions require the native update permission.

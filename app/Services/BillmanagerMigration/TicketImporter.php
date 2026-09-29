@@ -4,6 +4,7 @@ namespace App\Services\BillmanagerMigration;
 
 use App\Models\Ticket;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
@@ -21,6 +22,19 @@ final class TicketImporter
         $date = static fn (string $value) => Carbon::parse($value, $timezone)->utc()->format('Y-m-d H:i:s');
 
         return DB::transaction(function () use ($snapshot, $context, $date) {
+            // A native message must never silently outlive a source deletion or edit.
+            // Preflight before writing any support records; reconciliation is an explicit step.
+            $incoming = array_column($snapshot->rows('ticket_messages'), null, 'id');
+            $mappings = DB::table('billmanager_mappings')->where('source_host', $context->sourceHost)
+                ->where('source_table', 'ticket_messages')->get();
+            foreach ($mappings as $mapping) {
+                $record = DB::table('billmanager_records')->where('import_id', $mapping->import_id)
+                    ->where('source_table', 'ticket_messages')->where('source_id', $mapping->source_id)->first();
+                $previous = $record ? json_decode(Crypt::decryptString($record->payload), true, 512, JSON_THROW_ON_ERROR) : null;
+                if (!$previous || !isset($incoming[$mapping->source_id]) || $previous != $incoming[$mapping->source_id]) {
+                    throw new RuntimeException('Mapped support message drift requires explicit reconciliation');
+                }
+            }
             $ticketAccounts = [];
             foreach ($snapshot->rows('tickets') as $row) {
                 $account = $context->mappedId('accounts', (string) $row['account_client']);

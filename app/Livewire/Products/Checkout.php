@@ -190,7 +190,6 @@ class Checkout extends Component
     }
 
     // On change of checkout config (e.g., IP addresses group), update the pricing
-    // Only trigger Livewire update for hostname/text fields - IP prices are calculated client-side
     public function updatedCheckoutConfig($value = null, $key = null)
     {
         $this->updatePricing();

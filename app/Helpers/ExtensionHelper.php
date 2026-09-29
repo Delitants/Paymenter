@@ -554,6 +554,7 @@ class ExtensionHelper
      */
     public static function cancelSubscription(Service $service)
     {
+        MigrationHold::assertAllowed($service, 'cancel subscription');
         foreach (Gateway::all() as $gateway) {
             if (self::hasFunction($gateway, 'cancelSubscription')) {
                 if (self::getExtension('gateway', $gateway->extension, $gateway->settings)->cancelSubscription($service)) {

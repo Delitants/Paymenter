@@ -83,7 +83,7 @@
             <div>
                 <h4 class="text-lg font-semibold">{{ __('services.actions') }}:</h4>
                 <div class="mt-2 flex flex-row gap-2 flex-wrap">
-                    @if($service->upgradable)
+                    @if(auth()->user()->can('update', $service) && !\App\Services\BillmanagerMigration\MigrationHold::isHeld($service) && $service->upgradable)
                     <a href="{{ route('services.upgrade', $service->id) }}">
                         <x-button.primary class="h-fit !w-fit">
                             <span>{{ __('services.upgrade') }}</span>
@@ -96,14 +96,14 @@
                         <span>{{ __('services.upgrade') }}</span>
                     </x-button.primary>
                     @endif
-                    @if($service->cancellable)
+                    @if(auth()->user()->can('update', $service) && !\App\Services\BillmanagerMigration\MigrationHold::isHeld($service) && $service->cancellable)
                     <x-button.danger class="h-fit !w-fit" wire:click="$set('showCancel', true)">
                         <span wire:loading.remove wire:target="$set('showCancel', true)">{{ __('services.cancel')
                             }}</span>
                         <x-loading target="$set('showCancel', true)" />
                     </x-button.danger>
                     @endif
-                    @if($showCancel)
+                    @if($showCancel && auth()->user()->can('update', $service) && !\App\Services\BillmanagerMigration\MigrationHold::isHeld($service))
                     <x-modal open="true"
                         title="{{ __('services.cancellation', ['service' => $service->product->name]) }}"
                         width="max-w-3xl">

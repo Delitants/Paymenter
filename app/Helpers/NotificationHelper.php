@@ -14,7 +14,9 @@ use App\Models\Service;
 use App\Models\ServiceCancellation;
 use App\Models\TicketMessage;
 use App\Models\User;
+use App\Services\BillmanagerMigration\MigrationHold;
 use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Mail as FacadesMail;
 use Illuminate\Support\Facades\URL;
@@ -22,6 +24,23 @@ use Illuminate\View\Compilers\BladeCompiler;
 
 class NotificationHelper
 {
+    private static function deliveryHeld(User $user, array $data): bool
+    {
+        if (MigrationHold::isHeld($user)) {
+            return true;
+        }
+        foreach ($data as $value) {
+            if ($value instanceof Model && MigrationHold::isHeld($value)) {
+                return true;
+            }
+            if (is_array($value) && self::deliveryHeld($user, $value)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /**
      * Send an email notification.
      */
@@ -31,6 +50,9 @@ class NotificationHelper
         User $user,
         array $attachments = []
     ): void {
+        if (self::deliveryHeld($user, $data)) {
+            return;
+        }
         $mail = new Mail($notificationTemplate, $data);
 
         $emailLog = EmailLog::create([
@@ -93,6 +115,9 @@ class NotificationHelper
         bool $show_in_app = true,
         bool $show_as_push = true
     ): void {
+        if (self::deliveryHeld($user, $data)) {
+            return;
+        }
         Notification::create([
             'user_id' => $user->id,
             'title' => BladeCompiler::render($notification->in_app_title, $data),
@@ -111,6 +136,9 @@ class NotificationHelper
         bool $show_in_app = true,
         bool $show_as_push = true
     ): void {
+        if (self::deliveryHeld($user, $data)) {
+            return;
+        }
         $notification = NotificationTemplate::where('key', $notificationTemplateKey)->first();
         if (!$notification || !$notification->enabled) {
             return;
@@ -134,6 +162,9 @@ class NotificationHelper
 
     public static function invoiceNotification(User $user, Invoice $invoice, $key = 'new_invoice_created'): void
     {
+        if (self::deliveryHeld($user, ['invoice' => $invoice])) {
+            return;
+        }
         $data = [
             'invoice' => $invoice,
             'items' => $invoice->items,

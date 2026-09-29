@@ -4,6 +4,8 @@ namespace Tests\Feature;
 
 use App\Livewire\Products\Checkout;
 use App\Models\Cart;
+use App\Models\CartItem;
+use App\Models\ConfigOption;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Once;
@@ -188,12 +190,40 @@ class CheckoutTest extends TestCase
         $this->assertSame(14.00, $component->total->price);
     }
 
-    public function test_checkout_view_has_client_side_price_summary_state(): void
+    public function test_checkout_summary_matches_paid_checkbox_cart_and_separates_setup_fee(): void
     {
-        $view = file_get_contents(base_path('themes/default/views/products/checkout.blade.php'));
+        $option = ConfigOption::create(['name' => 'Synthetic backup', 'type' => 'checkbox']);
+        $child = $option->children()->create(['name' => 'Enabled', 'type' => 'select']);
+        $this->assertNotSame(1, $child->id);
+        $option->products()->attach($this->product->product);
+        $plan = $child->plans()->create(['name' => 'Monthly', 'type' => 'recurring', 'billing_period' => 1, 'billing_unit' => 'month']);
+        $plan->prices()->create(['price' => 3, 'setup_fee' => 7, 'currency_code' => 'USD']);
+        $component = Livewire::test(Checkout::class, ['category' => $this->product->product->category, 'product' => $this->product->product->slug])
+            ->set('configOptions.' . $option->id, true);
+        $total = $component->get('total');
+        $this->assertSame(13.0, $total->price);
+        $this->assertSame(7.0, $total->setup_fee);
+        $dom = new \DOMDocument;
+        @$dom->loadHTML($component->html());
+        $xpath = new \DOMXPath($dom);
+        // Read the actual order-summary amounts, independently of component state.
+        $panel = $xpath->query('//*[contains(concat(" ", normalize-space(@class), " "), " checkout-summary-panel ")]')->item(0);
+        $this->assertNotNull($panel);
+        $this->assertStringContainsString('$20.00', $panel->textContent);
+        $this->assertStringContainsString('$13.00', $panel->textContent);
+        $component->call('checkout')->assertHasNoErrors();
+        $item = CartItem::firstOrFail();
+        $this->assertSame($total->price, $item->price->price);
+        $this->assertSame($total->setup_fee, $item->price->setup_fee);
+    }
 
-        $this->assertStringContainsString('x-data="checkoutPricing', $view);
-        $this->assertStringContainsString('x-text="formatPrice(totalCents)"', $view);
+    public function test_top_level_and_nested_provider_fields_are_rendered(): void
+    {
+        Livewire::test(GenericCheckoutFixture::class, ['category' => $this->product->product->category, 'product' => $this->product->product->slug])
+            ->assertSee('checkoutConfig.vm_type', false)->assertSee('checkoutConfig.os_template', false)
+            ->assertSee('Synthetic LXC')->assertSee('Synthetic template')
+            ->assertSee('checkoutConfig.region', false)->assertSee('checkoutConfig.description', false)
+            ->assertDontSee('You must select either a Cloud Image');
     }
 
     public function test_nested_checkout_fields_validate_their_allowed_values(): void
@@ -217,5 +247,20 @@ class CheckoutTest extends TestCase
         $validator = Validator::make(['plan_id' => $this->product->plan->id, 'checkoutConfig' => ['ipv4_count' => '2', 'ipv6_enabled' => true]], $component->rules());
         $this->assertFalse($validator->fails());
         $this->assertSame('IPv4 count', $component->attributes()['checkoutConfig.ipv4_count']);
+    }
+}
+
+class GenericCheckoutFixture extends Checkout
+{
+    public function getCheckoutConfig()
+    {
+        return [
+            ['name' => 'vm_type', 'type' => 'select', 'options' => ['qemu' => 'Synthetic QEMU', 'lxc' => 'Synthetic LXC']],
+            ['name' => 'os_template', 'type' => 'select', 'options' => ['template' => 'Synthetic template']],
+            ['name' => 'section', 'type' => 'section', 'fields' => [
+                ['name' => 'region', 'type' => 'text', 'required' => true],
+                ['name' => 'description', 'type' => 'text'],
+            ]],
+        ];
     }
 }

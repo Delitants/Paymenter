@@ -22,7 +22,7 @@ class TicketTest extends TestCase
 {
     use RefreshDatabase;
 
-    private function source(string $timezone = 'UTC'): array
+    private function source(string $timezone = 'UTC', ?string $drift = null): array
     {
         $tables = [
             'accounts' => [['id' => '10']],
@@ -42,6 +42,13 @@ class TicketTest extends TestCase
             'ticket_notes' => [['id' => '41', 'ticket' => '23', 'user' => '99', 'note' => 'Internal staff note', 'date_post' => '2021-02-03 14:01:00']],
             'ticket_history' => [['id' => '51', 'ticket' => '23', 'user' => '99', 'type' => '5', 'old_value' => '2', 'new_value' => '10', 'visible_by_client' => 'off']],
         ];
+        if ($drift === 'deleted') {
+            $tables['ticket_messages'][0]['date_delete'] = '2026-01-02 00:00:00';
+        } elseif ($drift === 'changed') {
+            $tables['ticket_messages'][0]['message'] = 'Changed source content';
+        } elseif ($drift === 'missing') {
+            array_shift($tables['ticket_messages']);
+        }
         $path = tempnam(sys_get_temp_dir(), 'ticket-snapshot-');
         file_put_contents($path, json_encode(['schema_version' => 1, 'source_host' => '192.0.2.10',
             'login_cutoff' => '2024-01-01 00:00:00', 'captured_at_utc' => '2026-01-01T00:00:00Z', 'source_timezone' => $timezone, 'tables' => $tables]));
@@ -57,6 +64,24 @@ class TicketTest extends TestCase
         (new CustomerImporter)->import($snapshot, $context);
 
         return [$snapshot, $context];
+    }
+
+    public function test_refreshed_snapshot_rejects_changed_deleted_or_missing_mapped_messages(): void
+    {
+        [$snapshot, $context] = $this->source();
+        (new TicketImporter)->import($snapshot, $context);
+        foreach (['changed', 'deleted', 'missing'] as $drift) {
+            [$refresh, $next] = $this->source('UTC', $drift);
+            $blocked = false;
+            try {
+                (new TicketImporter)->import($refresh, $next);
+            } catch (\RuntimeException $e) {
+                $blocked = str_contains($e->getMessage(), 'reconciliation');
+            }
+            $this->assertTrue($blocked, $drift);
+            $this->assertSame(0, DB::table('billmanager_records')->where('import_id', $next->importId)->where('source_table', 'ticket_messages')->count());
+            $this->assertSame(2, TicketMessage::count());
+        }
     }
 
     public function test_native_tickets_preserve_states_dates_long_text_and_safe_author_attribution(): void
