@@ -18,6 +18,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class EndToEndTest extends TestCase
@@ -105,14 +106,24 @@ class EndToEndTest extends TestCase
         return $counts;
     }
 
-    public function test_staged_import_rolls_back_a_failed_stage_then_replays_one_snapshot_without_side_effects(): void
+    public static function stageOrders(): array
+    {
+        return [
+            'tickets before services' => [['tickets', 'services']],
+            'services before tickets' => [['services', 'tickets']],
+        ];
+    }
+
+    #[DataProvider('stageOrders')]
+    public function test_staged_import_rolls_back_a_failed_stage_then_replays_one_snapshot_without_side_effects(array $order): void
     {
         $snapshot = $this->fixture();
         $unrelated = User::factory()->create(['email' => 'existing@example.test']);
         $this->stage('customers');
         $this->stage('credentials');
-        $this->stage('services');
-        $this->stage('tickets');
+        foreach ($order as $stage) {
+            $this->stage($stage);
+        }
         $beforeFailure = $this->counts();
         $inject = true;
         $inserts = 0;
@@ -150,6 +161,7 @@ class EndToEndTest extends TestCase
         $this->assertSame('5.00', Service::sole()->price);
         $ticket = Ticket::sole();
         $this->assertSame($owner->id, $ticket->user_id);
+        $this->assertSame(Service::sole()->id, $ticket->service_id);
         $this->assertSame('closed', $ticket->status);
         $this->assertSame(str_repeat('Привіт. ', 9000), $ticket->messages()->sole()->message);
         $this->assertSame('2021-02-03 14:00:00', $ticket->messages()->sole()->created_at->format('Y-m-d H:i:s'));
