@@ -3,7 +3,6 @@
     $taxName = is_object($taxSettings) ? $taxSettings->name : 'Tax';
     $taxRateDisplay = is_object($taxSettings) ? $taxSettings->rate : 0;
     $checkoutPricingState = [
-        'checkoutConfig' => $this->checkoutConfig,
         'hasBootMedia' => collect($this->getCheckoutConfig())->contains(fn ($field) => in_array($field['name'] ?? '', ['cloud_image', 'iso_image'], true)),
     ];
 @endphp
@@ -11,9 +10,17 @@
 @script
 <script>
     // Only presentation dependencies are local; all displayed prices come from Price.
-    Alpine.data('checkoutPricing', (state) => ({
-        checkoutConfig: state.checkoutConfig || {},
-        hasBootMedia: state.hasBootMedia,
+    Alpine.data('checkoutPricing', (checkoutConfig, hasBootMedia) => ({
+        checkoutConfig,
+        hasBootMedia,
+        init() {
+            this.$watch('checkoutConfig.vm_type', (value, previous) => {
+                if (value === previous) return;
+                for (const name of ['cloud_image', 'iso_image', 'os_template']) {
+                    if (name in this.checkoutConfig) this.checkoutConfig[name] = '';
+                }
+            });
+        },
         get cloudImage() { return this.checkoutConfig.cloud_image || ''; },
         get isoImage() { return this.checkoutConfig.iso_image || ''; },
         get cloudImageDisabled() { return this.checkoutConfig.vm_type === 'lxc' || this.isoImage !== ''; },
@@ -31,7 +38,7 @@
 @endscript
 
 	<div class="container mt-14 grid grid-cols-1 md:grid-cols-4 gap-8"
-    x-data="checkoutPricing(@js($checkoutPricingState))"
+    x-data="checkoutPricing($wire.entangle('checkoutConfig'), @js($checkoutPricingState['hasBootMedia']))"
     @checkout-field-change="syncFieldChange($event.detail)">
 
 @once

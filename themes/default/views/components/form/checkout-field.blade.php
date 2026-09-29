@@ -9,7 +9,7 @@
         @endforeach
     </fieldset>
 @else
-    <x-form.configoption :config="$field" :name="'checkoutConfig.' . $field->name">
+    <x-form.configoption :config="$field" :showPriceTag="false" :name="'checkoutConfig.' . $field->name">
         @if($field->type === 'select')
             @foreach($field->options ?? [] as $value => $label)
                 <option value="{{ $value }}">{{ $label }}</option>

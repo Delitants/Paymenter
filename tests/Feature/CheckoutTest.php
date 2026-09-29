@@ -206,6 +206,9 @@ class CheckoutTest extends TestCase
         $dom = new \DOMDocument;
         @$dom->loadHTML($component->html());
         $xpath = new \DOMXPath($dom);
+        $root = $xpath->query('//*[@*[name()="wire:id"]]')->item(0);
+        $this->assertSame('div', $root->tagName);
+        $this->assertSame(1, $xpath->query('.//input[@type="checkbox"]', $root)->length);
         // Read the actual order-summary amounts, independently of component state.
         $panel = $xpath->query('//*[contains(concat(" ", normalize-space(@class), " "), " checkout-summary-panel ")]')->item(0);
         $this->assertNotNull($panel);
@@ -222,6 +225,7 @@ class CheckoutTest extends TestCase
         Livewire::test(GenericCheckoutFixture::class, ['category' => $this->product->product->category, 'product' => $this->product->product->slug])
             ->assertSee('checkoutConfig.vm_type', false)->assertSee('checkoutConfig.os_template', false)
             ->assertSee('Synthetic LXC')->assertSee('Synthetic template')
+            ->assertSee('checkoutConfig.ipv6_enabled', false)->assertSee('Synthetic IPv6')
             ->assertSee('checkoutConfig.region', false)->assertSee('checkoutConfig.description', false)
             ->assertDontSee('You must select either a Cloud Image');
     }
@@ -258,6 +262,7 @@ class GenericCheckoutFixture extends Checkout
             ['name' => 'vm_type', 'type' => 'select', 'options' => ['qemu' => 'Synthetic QEMU', 'lxc' => 'Synthetic LXC']],
             ['name' => 'os_template', 'type' => 'select', 'options' => ['template' => 'Synthetic template']],
             ['name' => 'section', 'type' => 'section', 'fields' => [
+                ['name' => 'ipv6_enabled', 'label' => 'Synthetic IPv6', 'type' => 'checkbox', 'default' => false],
                 ['name' => 'region', 'type' => 'text', 'required' => true],
                 ['name' => 'description', 'type' => 'text'],
             ]],
