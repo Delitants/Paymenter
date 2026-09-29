@@ -52,6 +52,22 @@ Run the migration tests against the isolated test database:
 vendor/bin/phpunit tests/Feature/BillmanagerMigration tests/Unit
 ```
 
+Also run native login, logout and checkout regressions. `EndToEndTest` runs the
+customer, credential, service, ticket and financial CLI stages from one synthetic
+snapshot. It injects a failure after financial writes, verifies that stage's
+transaction rolls back without losing earlier completed stages, then verifies
+stable replay, original amounts, shared identities, OTP preservation and no mail,
+jobs or provider requests. This is staged recovery, not an all-stage transaction
+or a substitute for live provider acceptance.
+
+Browser acceptance must use synthetic accounts in a separate application,
+database and non-delivering environment. Verify legacy username/password login
+with and without OTP, full archived messages, shared-account history, private
+attachment downloads, unrelated-account denial and permission-scoped staff
+archives. Logout uses a CSRF-protected POST route so it remains available even
+when the current resource's authorization middleware denies access. Real customer
+credentials and mail settings must remain in private destination storage.
+
 To rehearse only customer identities, explicitly use `--stage=customers --apply`.
 This does not transfer credentials or enable billing. Repeating the same snapshot
 preserves native identities. Existing normalized-email collisions require an

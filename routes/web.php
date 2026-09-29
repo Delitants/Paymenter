@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\BillmanagerAttachmentController;
+use App\Http\Controllers\LogoutController;
 use App\Http\Controllers\SocialLoginController;
 use App\Http\Controllers\TicketAttachmentController;
 use App\Http\Middleware\MustVerfiyEmail;
@@ -53,6 +54,8 @@ Route::group(['middleware' => ['web', 'auth', MustVerfiyEmail::class]], function
 });
 
 Route::group(['middleware' => ['web', 'auth']], function () {
+    Route::post('/logout', LogoutController::class)->name('logout');
+
     Route::get('/account', Client\Account::class)->name('account');
     Route::get('/account/security', Client\Security::class)->name('account.security');
     Route::get('/account/credits', Client\Credits::class)->name('account.credits');
