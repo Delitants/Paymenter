@@ -9,6 +9,7 @@ use App\Models\GatewayPaymentAttempt;
 use App\Models\Invoice;
 use App\Services\BillmanagerMigration\MigrationHeldException;
 use App\Services\Gateways\CollectionDisabledException;
+use App\Services\Gateways\CustomerBindings;
 use App\Services\Gateways\PaymentAttempts;
 use Brick\Math\BigDecimal;
 use Illuminate\Http\Request;
@@ -62,7 +63,7 @@ class Wave extends Gateway
                 throw new RuntimeException;
             }
 
-return $body['data'];
+            return $body['data'];
         } catch (\Throwable) {
             throw new RuntimeException('Wave request could not be verified; reconcile before retrying');
         }
@@ -90,41 +91,18 @@ return $body['data'];
         $a = (new PaymentAttempts)->begin($this->gatewayRecord, $invoice, $this->merchant(), (string) $this->config('currency'));
         $payload = $a->provider_payload;
         if (!$payload || !isset($payload['view_url'])) {
+            if ($a->state !== 'open' || $a->provider_payload !== null) {
+                throw new RuntimeException('Checkout initialization requires reconciliation');
+            }
+            $customerId = (new CustomerBindings)->resolve('Wave', hash('sha256', (string) $this->config('business_id')),
+                $a->invoice->user, fn () => $this->findOrCreateCustomer($a));
             if (!GatewayPaymentAttempt::whereKey($a->id)->where('state', 'open')->whereNull('provider_payload')->update(['state' => 'initializing'])) {
                 throw new RuntimeException('Checkout initialization requires reconciliation');
             }
-            $email = $a->invoice->user->email;
-            $r = $this->api('query WaveCustomers($business: ID!, $email: String!) { business(id: $business) { id customers(email: $email, page: 1, pageSize: 2) { pageInfo { totalCount } edges { node { id email isArchived } } } } }', ['business' => $this->config('business_id'), 'email' => $email]);
-            if (($r['business']['id'] ?? null) !== $this->config('business_id')) {
-                throw new RuntimeException('Wave customer business does not match');
-            }
-            $customers = $r['business']['customers'] ?? [];
-            $count = $customers['pageInfo']['totalCount'] ?? null;
-            $edges = $customers['edges'] ?? null;
-            if (!is_int($count) || !is_array($edges) || $count > 1 || $count < 0 || count($edges) !== $count) {
-                throw new RuntimeException('Wave customer identity requires reconciliation');
-            }
-            if ($count === 1) {
-                $customer = $edges[0]['node'];
-                if (($customer['email'] ?? null) !== $email || ($customer['isArchived'] ?? true)) {
-                    throw new RuntimeException('Wave customer identity does not match');
-                }
-            } else {
-                $r = $this->api('mutation WaveCreateCustomer($input: CustomerCreateInput!) { customerCreate(input: $input) { didSucceed customer { id email } } }', ['input' => ['businessId' => $this->config('business_id'), 'name' => $a->invoice->user_name, 'email' => $email, 'currency' => $a->currency_code]]);
-                if (($r['customerCreate']['didSucceed'] ?? null) !== true) {
-                    throw new RuntimeException('Wave customer creation was not confirmed');
-                }$customer = $r['customerCreate']['customer'] ?? [];
-                if (($customer['email'] ?? null) !== $email) {
-                    throw new RuntimeException('Wave customer identity does not match');
-                }
-            }
-            if (!is_string($customer['id'] ?? null) || $customer['id'] === '') {
-                throw new RuntimeException('Wave customer identity is missing');
-            }
-            $payload = ['customer_id' => $customer['id']];
+            $payload = ['customer_id' => $customerId];
             $a->update(['provider_payload' => $payload]);
             $r = $this->api('mutation WaveCreateInvoice($input: InvoiceCreateInput!) { invoiceCreate(input: $input) { didSucceed invoice { ' . self::INVOICE_FIELDS . ' } } }', ['input' => [
-                'businessId' => $this->config('business_id'), 'customerId' => $customer['id'], 'status' => 'DRAFT', 'currency' => $a->currency_code, 'invoiceNumber' => 'PAY-' . $a->reference,
+                'businessId' => $this->config('business_id'), 'customerId' => $customerId, 'status' => 'DRAFT', 'currency' => $a->currency_code, 'invoiceNumber' => 'PAY-' . $a->reference,
                 'items' => [['productId' => $this->config('product_id'), 'description' => 'Invoice ' . ($invoice->number ?: $invoice->id), 'quantity' => '1', 'unitPrice' => $a->amount, 'taxes' => []]],
             ]]);
             if (($r['invoiceCreate']['didSucceed'] ?? null) !== true) {
@@ -148,6 +126,40 @@ return $body['data'];
         View::addNamespace('gateways.wave', __DIR__ . '/resources/views');
 
         return view('gateways.wave::pay', ['viewUrl' => $payload['view_url'], 'attempt' => $a]);
+    }
+
+    private function findOrCreateCustomer(GatewayPaymentAttempt $a): string
+    {
+        $email = $a->invoice->user->email;
+        $r = $this->api('query WaveCustomers($business: ID!, $email: String!) { business(id: $business) { id customers(email: $email, page: 1, pageSize: 2) { pageInfo { totalCount } edges { node { id email isArchived } } } } }', ['business' => $this->config('business_id'), 'email' => $email]);
+        if (($r['business']['id'] ?? null) !== $this->config('business_id')) {
+            throw new RuntimeException('Wave customer business does not match');
+        }
+        $customers = $r['business']['customers'] ?? [];
+        $count = $customers['pageInfo']['totalCount'] ?? null;
+        $edges = $customers['edges'] ?? null;
+        if (!is_int($count) || !is_array($edges) || $count > 1 || $count < 0 || count($edges) !== $count) {
+            throw new RuntimeException('Wave customer identity requires reconciliation');
+        }
+        if ($count === 1) {
+            $customer = $edges[0]['node'];
+            if (($customer['email'] ?? null) !== $email || ($customer['isArchived'] ?? true)) {
+                throw new RuntimeException('Wave customer identity does not match');
+            }
+        } else {
+            $r = $this->api('mutation WaveCreateCustomer($input: CustomerCreateInput!) { customerCreate(input: $input) { didSucceed customer { id email } } }', ['input' => ['businessId' => $this->config('business_id'), 'name' => $a->invoice->user_name, 'email' => $email, 'currency' => $a->currency_code]]);
+            if (($r['customerCreate']['didSucceed'] ?? null) !== true) {
+                throw new RuntimeException('Wave customer creation was not confirmed');
+            }$customer = $r['customerCreate']['customer'] ?? [];
+            if (($customer['email'] ?? null) !== $email) {
+                throw new RuntimeException('Wave customer identity does not match');
+            }
+        }
+        if (!is_string($customer['id'] ?? null) || $customer['id'] === '') {
+            throw new RuntimeException('Wave customer identity is missing');
+        }
+
+        return $customer['id'];
     }
 
     private function checkUrl(string $url): void

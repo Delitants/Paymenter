@@ -8,7 +8,6 @@ use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\User;
 use App\Services\BillmanagerMigration\MigrationHeldException;
-use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Factory;
 use Illuminate\Support\Facades\Bus;
@@ -16,11 +15,12 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Paymenter\Extensions\Gateways\Wave\Wave;
+use Tests\Concerns\UsesCommittedDatabase;
 use Tests\TestCase;
 
 class WaveTest extends TestCase
 {
-    use RefreshDatabase;
+    use UsesCommittedDatabase;
 
     private function fixture(): array
     {
@@ -158,14 +158,72 @@ class WaveTest extends TestCase
             throw new ConnectionException('synthetic-secret');
         });
         for ($n = 0; $n < 2; $n++) {
+            $rejected = false;
             try {
                 $e->pay($i, '12.34');
-                $this->fail('Unknown checkout accepted');
             } catch (\RuntimeException $ex) {
-                $this->assertStringNotContainsString('synthetic-secret',$ex->getMessage());
+                $rejected = true;
+                $this->assertStringNotContainsString('synthetic-secret', $ex->getMessage());
             }
+            $this->assertTrue($rejected, 'Unknown checkout was accepted');
         }
-        $this->assertSame(1,$calls);
-        $this->assertSame('initializing',GatewayPaymentAttempt::sole()->state);
+        $this->assertSame(1, $calls);
+        $this->assertSame('open', GatewayPaymentAttempt::sole()->state);
+        $this->assertSame('initializing', DB::table('gateway_customer_bindings')->sole()->state);
+    }
+
+    public function test_overlapping_invoices_create_one_customer_and_each_invoice_can_continue(): void
+    {
+        [$first, , $extension] = $this->fixture();
+        $second = Invoice::factory()->create(['user_id' => $first->user_id, 'status' => 'pending']);
+        InvoiceItem::factory()->create(['invoice_id' => $second->id, 'price' => '12.34', 'quantity' => 1]);
+        $customerCreates = 0;
+        $lookups = 0;
+        $overlapBlocked = false;
+        $remotes = [];
+        Http::fake(function ($request) use ($extension, $second, &$customerCreates, &$lookups, &$overlapBlocked, &$remotes) {
+            $query = $request['query'];
+            if (str_contains($query, 'WaveCustomers')) {
+                $lookups++;
+
+                return Http::response(['data' => ['business' => ['id' => 'synthetic-business', 'customers' => ['pageInfo' => ['totalCount' => 0], 'edges' => []]]]]);
+            }
+            if (str_contains($query, 'WaveCreateCustomer')) {
+                $customerCreates++;
+                if ($customerCreates === 1) {
+                    try {
+                        $extension->pay($second->fresh(), '12.34');
+                    } catch (\RuntimeException $e) {
+                        $overlapBlocked = str_contains($e->getMessage(), 'reconciliation');
+                    }
+                }
+
+                return Http::response(['data' => ['customerCreate' => ['didSucceed' => true, 'customer' => ['id' => 'synthetic-customer', 'email' => 'wave-fixture@example.test']]]]);
+            }
+            $input = $request['variables']['input'];
+            if (str_contains($query, 'WaveCreateInvoice')) {
+                $id = 'synthetic-' . $input['invoiceNumber'];
+                $remotes[$id] = ['id' => $id, 'internalId' => $id, 'business' => ['id' => 'synthetic-business'],
+                    'customer' => ['id' => $input['customerId']], 'invoiceNumber' => $input['invoiceNumber'], 'status' => 'DRAFT',
+                    'currency' => ['code' => 'USD'], 'total' => ['value' => '12.34'], 'amountPaid' => ['value' => '0.00'],
+                    'amountDue' => ['value' => '12.34'], 'viewUrl' => 'https://next.waveapps.com/a/invoices/' . $id];
+
+                return Http::response(['data' => ['invoiceCreate' => ['didSucceed' => true, 'invoice' => $remotes[$id]]]]);
+            }
+            if (str_contains($query, 'WaveApproveInvoice')) {
+                return Http::response(['data' => ['invoiceApprove' => ['didSucceed' => true, 'invoice' => array_replace($remotes[$input['invoiceId']], ['status' => 'SAVED'])]]]);
+            }
+            throw new \RuntimeException('Unexpected synthetic request');
+        });
+        $extension->pay($first, '12.34');
+        $this->assertTrue($overlapBlocked);
+        $this->assertSame('open', GatewayPaymentAttempt::where('invoice_id', $second->id)->sole()->state);
+        $extension->pay($second->fresh(), '12.34');
+        $this->assertSame(1, $customerCreates);
+        $this->assertSame(1, $lookups);
+        $this->assertCount(2, $remotes);
+        $this->assertSame(1, DB::table('gateway_customer_bindings')->count());
+        $this->assertSame(['synthetic-customer', 'synthetic-customer'], GatewayPaymentAttempt::orderBy('id')->get()->map(fn ($a) => $a->provider_payload['customer_id'])->all());
+        $this->assertSame(0, DB::table('invoice_transactions')->count());
     }
 }
