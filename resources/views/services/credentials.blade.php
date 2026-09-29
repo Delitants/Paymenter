@@ -7,7 +7,7 @@
             <p class="mt-4">{{ __('No VM credentials have been saved for this service.') }}</p>
         @else
             <dl class="grid gap-4 mt-4">
-                @foreach(['assigned_ipv4' => 'IPv4 address', 'assigned_ipv6' => 'IPv6 address', 'proxmox_vm_id' => 'VM ID', 'proxmox_node' => 'Proxmox node'] as $key => $label)
+                @foreach(['cloud_init_username' => 'SSH username', 'assigned_ipv4_list' => 'IPv4 addresses', 'assigned_ipv4' => 'Primary IPv4 address', 'assigned_ipv4_private' => 'Private IPv4 address', 'assigned_ipv6' => 'IPv6 address', 'proxmox_vm_id' => 'VM ID', 'proxmox_node' => 'Proxmox node'] as $key => $label)
                     @if(isset($credentials[$key]))
                     <div>
                         <dt class="font-semibold">{{ __($label) }}</dt>
