@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Classes\Price;
+use App\Helpers\ExtensionHelper;
 use App\Observers\CartItemObserver;
 use Illuminate\Database\Eloquent\Attributes\ObservedBy;
 use Illuminate\Database\Eloquent\Casts\Attribute;
@@ -75,6 +76,37 @@ class CartItem extends Model
                     $total += $option->children->where('id', $selected?->value)->first()?->price(billing_period: $this->plan->billing_period, billing_unit: $this->plan->billing_unit)->price;
                     $setup_fee += $option->children->where('id', $selected?->value)->first()?->price(billing_period: $this->plan->billing_period, billing_unit: $this->plan->billing_unit)->setup_fee;
                 });
+
+                // Add checkout config prices (e.g., IP addresses section)
+                if (is_array($this->checkout_config)) {
+                    $checkoutConfig = $this->checkout_config;
+                } else {
+                    $checkoutConfig = json_decode($this->checkout_config, true);
+                }
+                if (is_array($checkoutConfig)) {
+                    // Get checkout config from product extension
+                    $extensionCheckoutConfig = ExtensionHelper::getCheckoutConfig($this->product, $checkoutConfig);
+                    foreach ($extensionCheckoutConfig as $config) {
+                        // Handle section type with nested fields
+                        if (isset($config['type']) && $config['type'] === 'section' && isset($config['fields'])) {
+                            foreach ($config['fields'] as $field) {
+                                if (isset($field['prices']) && isset($checkoutConfig[$field['name']])) {
+                                    $selectedValue = $checkoutConfig[$field['name']];
+                                    if (isset($field['prices'][$selectedValue])) {
+                                        $total += $field['prices'][$selectedValue] / 100; // Convert from cents
+                                    }
+                                }
+                            }
+                        }
+                        // Handle simple priced fields
+                        elseif (isset($config['prices']) && isset($checkoutConfig[$config['name']])) {
+                            $selectedValue = $checkoutConfig[$config['name']];
+                            if (isset($config['prices'][$selectedValue])) {
+                                $total += $config['prices'][$selectedValue] / 100;
+                            }
+                        }
+                    }
+                }
 
                 $price = new Price([
                     'price' => $total,

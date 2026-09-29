@@ -75,7 +75,18 @@ class Checkout extends Component
                 return [$option->id => $this->configOptions[$option->id] ?? $option->children->first()->id];
             })->toArray();
             foreach ($this->getCheckoutConfig() as $config) {
-                if (in_array($config['type'], ['select', 'radio'])) {
+                // Handle section type with nested fields
+                if (isset($config['type']) && $config['type'] === 'section' && isset($config['fields'])) {
+                    foreach ($config['fields'] as $field) {
+                        if (in_array($field['type'], ['select', 'radio'])) {
+                            $this->checkoutConfig[$field['name']] = $this->checkoutConfig[$field['name']] ?? $field['default'] ?? array_key_first($field['options']);
+                        } elseif ($field['type'] === 'checkbox') {
+                            $this->checkoutConfig[$field['name']] = $this->checkoutConfig[$field['name']] ?? $field['default'] ?? false;
+                        } else {
+                            $this->checkoutConfig[$field['name']] = $this->checkoutConfig[$field['name']] ?? $field['default'] ?? null;
+                        }
+                    }
+                } elseif (in_array($config['type'], ['select', 'radio'])) {
                     $this->checkoutConfig[$config['name']] = $this->checkoutConfig[$config['name']] ?? $config['default'] ?? array_key_first($config['options']);
                 } else {
                     $this->checkoutConfig[$config['name']] = $this->checkoutConfig[$config['name']] ?? $config['default'] ?? null;
@@ -94,33 +105,72 @@ class Checkout extends Component
 
     public function updatePricing()
     {
-        $total = $this->plan->price()->price;
-        $setup_fee = $this->plan->price()->setup_fee;
+        // Cache plan price to avoid duplicate calculations
+        $planPrice = $this->plan->price();
+        $total = $planPrice->price;
+        $setup_fee = $planPrice->setup_fee;
+        $currency = $planPrice->currency;
 
-        $this->product->configOptions->each(function ($option) use (&$total, &$setup_fee) {
+        // Pre-load all config option children with their plans/prices
+        $configOptionPrices = [];
+        foreach ($this->product->configOptions as $option) {
+            foreach ($option->children as $child) {
+                $childPrice = $child->price(billing_period: $this->plan->billing_period, billing_unit: $this->plan->billing_unit);
+                $configOptionPrices[$child->id] = [
+                    'price' => $childPrice->price,
+                    'setup_fee' => $childPrice->setup_fee,
+                ];
+            }
+        }
+
+        $this->product->configOptions->each(function ($option) use (&$total, &$setup_fee, $configOptionPrices) {
             // Check if checkbox is set, if so, add price if checked
             if ($option->type === 'checkbox' && (isset($this->configOptions[$option->id]) && $this->configOptions[$option->id])) {
-                $total += $option->children->first()?->price(billing_period: $this->plan->billing_period, billing_unit: $this->plan->billing_unit)->price;
-                $setup_fee += $option->children->first()?->price(billing_period: $this->plan->billing_period, billing_unit: $this->plan->billing_unit)->setup_fee;
+                $childId = $option->children->first()->id;
+                $total += $configOptionPrices[$childId]['price'] ?? 0;
+                $setup_fee += $configOptionPrices[$childId]['setup_fee'] ?? 0;
 
                 return;
             }
             // Skip text, number and checkbox types as they have no price
             if (in_array($option->type, ['text', 'number', 'checkbox'])) {
-                $total += 0;
-                $setup_fee += 0;
-
                 return;
             }
 
-            // Add price of selected option
-            $total += $option->children->where('id', $this->configOptions[$option->id])->first()?->price(billing_period: $this->plan->billing_period, billing_unit: $this->plan->billing_unit)->price;
-            $setup_fee += $option->children->where('id', $this->configOptions[$option->id])->first()?->price(billing_period: $this->plan->billing_period, billing_unit: $this->plan->billing_unit)->setup_fee;
+            // Add price of selected option from pre-loaded prices
+            $selectedId = $this->configOptions[$option->id] ?? null;
+            if ($selectedId && isset($configOptionPrices[$selectedId])) {
+                $total += $configOptionPrices[$selectedId]['price'];
+                $setup_fee += $configOptionPrices[$selectedId]['setup_fee'];
+            }
         });
+
+        // Add checkout config prices (e.g., IP addresses section with nested fields)
+        $checkoutConfig = $this->getCheckoutConfig();
+        foreach ($checkoutConfig as $config) {
+            // Handle section type with nested fields
+            if (isset($config['type']) && $config['type'] === 'section' && isset($config['fields'])) {
+                foreach ($config['fields'] as $field) {
+                    if (isset($field['prices']) && isset($this->checkoutConfig[$field['name']])) {
+                        $selectedValue = $this->checkoutConfig[$field['name']];
+                        if (isset($field['prices'][$selectedValue])) {
+                            $total += $field['prices'][$selectedValue] / 100;
+                        }
+                    }
+                }
+            }
+            // Handle simple priced fields (backward compatibility)
+            elseif (isset($config['prices']) && isset($this->checkoutConfig[$config['name']])) {
+                $selectedValue = $this->checkoutConfig[$config['name']];
+                if (isset($config['prices'][$selectedValue])) {
+                    $total += $config['prices'][$selectedValue] / 100;
+                }
+            }
+        }
 
         $this->total = new Price([
             'price' => $total,
-            'currency' => $this->plan->price()->currency,
+            'currency' => $currency,
             'setup_fee' => $setup_fee,
         ], apply_exclusive_tax: true);
     }
@@ -136,11 +186,46 @@ class Checkout extends Component
     public function updatedConfigOptions()
     {
         $this->updatePricing();
+        $this->dispatch('price-updated');
+    }
+
+    // On change of checkout config (e.g., IP addresses group), update the pricing
+    // Only trigger Livewire update for hostname/text fields - IP prices are calculated client-side
+    public function updatedCheckoutConfig($value = null, $key = null)
+    {
+        $this->updatePricing();
+        $this->dispatch('price-updated');
+    }
+
+    public function updated($property, $value = null)
+    {
+        if (str_starts_with($property, 'checkoutConfig.')) {
+            $this->updatePricing();
+            $this->dispatch('price-updated');
+        }
     }
 
     public function getCheckoutConfig()
     {
         return once(fn () => ExtensionHelper::getCheckoutConfig($this->product, $this->checkoutConfig));
+    }
+
+    protected function checkoutFields(): array
+    {
+        $flatten = function (array $fields) use (&$flatten): array {
+            $result = [];
+            foreach ($fields as $field) {
+                if (($field['type'] ?? null) === 'section') {
+                    $result = array_merge($result, $flatten($field['fields'] ?? []));
+                } else {
+                    $result[] = $field;
+                }
+            }
+
+            return $result;
+        };
+
+        return $flatten($this->getCheckoutConfig());
     }
 
     public function rules()
@@ -165,7 +250,7 @@ class Checkout extends Component
                 ];
             }
         }
-        foreach ($this->getCheckoutConfig() as $key => $config) {
+        foreach ($this->checkoutFields() as $config) {
             $validationRules = [];
             if ($config['required'] ?? false) {
                 $validationRules[] = 'required';
@@ -208,7 +293,7 @@ class Checkout extends Component
         foreach ($this->product->configOptions as $option) {
             $messages["configOptions.{$option->id}"] = $option->name;
         }
-        foreach ($this->getCheckoutConfig() as $key => $config) {
+        foreach ($this->checkoutFields() as $config) {
             $messages["checkoutConfig.{$config['name']}"] = $config['label'] ?? $config['name'];
         }
 
@@ -271,7 +356,14 @@ class Checkout extends Component
         // Ensure checkout config has only the allowed keys and values
         $checkoutConfig = [];
         foreach ($this->getCheckoutConfig() as $config) {
-            $checkoutConfig[$config['name']] = $this->checkoutConfig[$config['name']] ?? null;
+            // Handle section type with nested fields
+            if (isset($config['type']) && $config['type'] === 'section' && isset($config['fields'])) {
+                foreach ($config['fields'] as $field) {
+                    $checkoutConfig[$field['name']] = $this->checkoutConfig[$field['name']] ?? null;
+                }
+            } else {
+                $checkoutConfig[$config['name']] = $this->checkoutConfig[$config['name']] ?? null;
+            }
         }
 
         Cart::add($this->product, $this->plan, $configOptions, $checkoutConfig, key: $this->cartProductKey);
@@ -283,6 +375,8 @@ class Checkout extends Component
 
     public function render()
     {
+        $this->updatePricing();
+
         return view('products.checkout')->layoutData([
             'title' => $this->product->name,
             'image' => $this->product->image ? Storage::url($this->product->image) : null,
