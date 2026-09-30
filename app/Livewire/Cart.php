@@ -124,6 +124,16 @@ class Cart extends Component
             return $this->notify('This coupon can no longer be used', 'error');
         }
 
+        // Validate opt-in provider checkout before creating an invoice or holding DB locks.
+        foreach (ClassesCart::get()->items()->with('product.server.settings', 'plan.prices')->get() as $item) {
+            if ($item->product->server && ExtensionHelper::hasFunction($item->product->server, 'validateCartItem')) {
+                $item->checkout_config = ExtensionHelper::call($item->product->server, 'validateCartItem', [$item]);
+                $item->save();
+            }
+        }
+        ClassesCart::get()->unsetRelation('items');
+        $this->updateTotal();
+
         // Start database transaction
         DB::beginTransaction();
         try {

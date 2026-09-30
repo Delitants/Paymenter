@@ -33,7 +33,6 @@ class Checkout extends Component
     #[Url(keep: true, as: 'options')]
     public $configOptions = [];
 
-    #[Url(keep: true, as: 'config')]
     public $checkoutConfig = [];
 
     #[Url(as: 'edit'), Locked]
@@ -42,6 +41,12 @@ class Checkout extends Component
     public function mount($product)
     {
         $this->product = $this->category->products()->where('slug', $product)->firstOrFail();
+        // Paid-lifecycle forms contain private registrant data; never bind those values to URLs.
+        if (!$this->product->server || !ExtensionHelper::hasFunction($this->product->server, 'handlePaidInvoice')) {
+            $url = new Url(keep: true, as: 'config');
+            $this->setPropertyAttribute('checkoutConfig', $url);
+            $url->mount();
+        }
         if ($this->product->stock === 0) {
             return $this->redirect(route('products.show', ['category' => $this->category, 'product' => $this->product]), true);
         }
@@ -304,6 +309,12 @@ class Checkout extends Component
         // Do the checkout
         // First we validate the plans
         $this->validate(attributes: $this->attributes());
+
+        $product = $this->product->fresh();
+        if ($product->server && ExtensionHelper::hasFunction($product->server, 'validateCheckout')) {
+            $this->plan = $product->plans()->findOrFail($this->plan_id);
+            $this->checkoutConfig = ExtensionHelper::call($product->server, 'validateCheckout', [$product, $this->plan, $this->checkoutConfig]);
+        }
 
         // Has this product quantity = no?
         if ($this->product->allow_quantity == 'disabled') {

@@ -15,6 +15,7 @@ use App\Models\ServiceUpgrade;
 use App\Models\Setting;
 use App\Models\Ticket;
 use App\Services\BillmanagerMigration\MigrationHold;
+use App\Services\Service\PaidServiceLifecycle;
 use App\Services\Service\RenewServiceService;
 use Exception;
 use Illuminate\Console\Command;
@@ -52,12 +53,25 @@ class CronJob extends Command
             // Send invoices if due date is x days away
             $this->runCronJob('invoices_created', function ($number = 0) {
                 Service::where('status', 'active')->where('expires_at', '<', now()->addDays((int) config('settings.cronjob_invoice', 7)))->get()->each(function ($service) use (&$number) {
-                    if (MigrationHold::isHeld($service)) {
+                    $service = Service::whereKey($service->id)->lockForUpdate()->firstOrFail();
+                    if (MigrationHold::isHeld($service) || PaidServiceLifecycle::pending($service) ||
+                        $service->status !== Service::STATUS_ACTIVE || $service->expires_at >= now()->addDays((int) config('settings.cronjob_invoice', 7))) {
                         return;
                     }
                     // Does the service have already a pending invoice?
                     if ($service->invoices()->where('status', 'pending')->exists() || $service->cancellation()->exists()) {
                         return;
+                    }
+
+                    // Opt-in local pricing preparation; never perform provider writes here.
+                    if ($service->product->server && ExtensionHelper::hasFunction($service->product->server, 'prepareRenewalInvoice')) {
+                        try {
+                            ExtensionHelper::call($service->product->server, 'prepareRenewalInvoice', [$service]);
+                        } catch (Exception $e) {
+                            report($e);
+
+                            return;
+                        }
                     }
 
                     // Calculate if we should edit the price because of the coupon
@@ -181,7 +195,9 @@ class CronJob extends Command
             $this->runCronJob('services_suspended', function ($number = 0) {
                 // Suspend orders if due date is overdue for x days
                 Service::where('status', 'active')->where('expires_at', '<', now()->subDays((int) config('settings.cronjob_order_suspend', 2)))->get()->each(function ($service) use (&$number) {
-                    if (MigrationHold::isHeld($service)) {
+                    $service = Service::whereKey($service->id)->lockForUpdate()->firstOrFail();
+                    if (MigrationHold::isHeld($service) || PaidServiceLifecycle::pending($service) ||
+                        $service->status !== Service::STATUS_ACTIVE || $service->expires_at >= now()->subDays((int) config('settings.cronjob_order_suspend', 2))) {
                         return;
                     }
                     SuspendJob::dispatch($service);
@@ -196,7 +212,9 @@ class CronJob extends Command
             $this->runCronJob('services_terminated', function ($number = 0) {
                 // Terminate orders if due date is overdue for x days
                 Service::where('status', 'suspended')->where('expires_at', '<', now()->subDays((int) config('settings.cronjob_order_terminate', 14)))->each(function ($service) use (&$number) {
-                    if (MigrationHold::isHeld($service)) {
+                    $service = Service::whereKey($service->id)->lockForUpdate()->firstOrFail();
+                    if (MigrationHold::isHeld($service) || PaidServiceLifecycle::pending($service) ||
+                        $service->status !== Service::STATUS_SUSPENDED || $service->expires_at >= now()->subDays((int) config('settings.cronjob_order_terminate', 14))) {
                         return;
                     }
                     TerminateJob::dispatch($service);
