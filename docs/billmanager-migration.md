@@ -204,6 +204,30 @@ native status actions. Its unverified legacy lifecycle calls are unavailable.
 Configuration, read-only connectivity, resource attachment, sandbox lifecycle
 acceptance and public customer views are separate readiness gates.
 
+`--stage=registrar-accounts --apply --provider-servers=/private/registrars.json`
+binds existing ResellerClub domains using the same `source_host` and
+`servers_by_module` mapping schema. Use a mapping containing only the reviewed
+registrar modules. It requires the exact imported snapshot, mapped native owner,
+preserved source service metadata and billing fields, active holds, hidden products
+and disabled servers. The domain comes from the unique source `domain` parameter;
+descriptive service labels are not registrar identities.
+
+Each binding needs a current authenticated GET response with matching domain,
+positive order/customer IDs, matching active/suspended state and at least one
+matching nonempty source nameserver set or expiry date. Domain/order/customer
+properties and encrypted provenance are immutable on replay. Duplicate bindings,
+changed ownership or configuration, and local mapping conflicts reject the batch.
+Expiry and nameserver differences are reported without changing billing dates or
+DNS. Unverified records remain held with explicit review reasons; a batch with no
+verified identities fails. Successful mixed batches report
+`registrar_accounts_review_required`, so success is not an all-domains acceptance.
+
+Use the same registrar stage with `--dry-run` to check current provider evidence
+against an existing import without binding or provenance writes. The `attached`
+count then means eligible verified identities. Generic dry-run behavior for other
+stages remains snapshot validation only. This stage never places registrar orders,
+renews domains, transfers domains, updates contacts or changes nameservers.
+
 `export-provider-settings.py` takes the source identity, native `mgrctl` path,
 manager name and repeated explicit module IDs as runtime arguments. It performs
 only `processing.edit` reads without a submission flag and emits allowlisted

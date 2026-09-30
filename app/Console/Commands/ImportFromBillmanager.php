@@ -12,6 +12,7 @@ use App\Services\BillmanagerMigration\ImportReport;
 use App\Services\BillmanagerMigration\ProviderAttacher;
 use App\Services\BillmanagerMigration\ProviderConfigurer;
 use App\Services\BillmanagerMigration\ProxmoxAttacher;
+use App\Services\BillmanagerMigration\RegistrarAttacher;
 use App\Services\BillmanagerMigration\ServiceImporter;
 use App\Services\BillmanagerMigration\Snapshot;
 use App\Services\BillmanagerMigration\TicketImporter;
@@ -44,7 +45,7 @@ class ImportFromBillmanager extends Command
         try {
             $snapshot = Snapshot::load($this->argument('snapshot'), $this->option('source'), $this->option('login-cutoff'));
             if ($this->option('apply')) {
-                if (!in_array($this->option('stage'), ['customers', 'tickets', 'attachments', 'credentials', 'financial', 'services', 'proxmox', 'provider-configuration', 'provider-accounts', 'gateway-configuration'], true)) {
+                if (!in_array($this->option('stage'), ['customers', 'tickets', 'attachments', 'credentials', 'financial', 'services', 'proxmox', 'provider-configuration', 'provider-accounts', 'registrar-accounts', 'gateway-configuration'], true)) {
                     $this->error('Full import is not yet available; use an explicitly supported stage');
 
                     return self::FAILURE;
@@ -92,6 +93,8 @@ class ImportFromBillmanager extends Command
                             }
                             $servers = (new ProviderConfigurer)->configure($context, $this->option('provider-bundle'));
                             $report = new ImportReport('providers_configured_disabled', ['servers' => count($servers)]);
+                        } elseif ($this->option('stage') === 'registrar-accounts') {
+                            $report = $this->attachRegistrar($snapshot, $context);
                         } elseif ($this->option('stage') === 'provider-accounts') {
                             if (!$this->option('provider-servers')) {
                                 throw new \RuntimeException('An explicit provider server mapping is required');
@@ -131,6 +134,12 @@ class ImportFromBillmanager extends Command
                         return $report;
                     });
                 }
+            } elseif ($this->option('stage') === 'registrar-accounts' && $this->option('dry-run')) {
+                $row = DB::table('billmanager_imports')->where(['snapshot_sha256' => $snapshot->checksum(), 'source_host' => $snapshot->sourceHost()])->first();
+                if (!$row) {
+                    throw new \RuntimeException('Registrar verification requires an existing snapshot import');
+                }
+                $report = $this->attachRegistrar($snapshot, new ImportContext($row->id, $snapshot->sourceHost()), true);
             } else {
                 $report = new ImportReport('validated', $snapshot->counts());
             }
@@ -153,5 +162,18 @@ class ImportFromBillmanager extends Command
 
             return self::FAILURE;
         }
+    }
+
+    private function attachRegistrar(Snapshot $snapshot, ImportContext $context, bool $dryRun = false): ImportReport
+    {
+        if (!$this->option('provider-servers')) {
+            throw new \RuntimeException('An explicit registrar server mapping is required');
+        }
+        $mapping = json_decode(file_get_contents($this->option('provider-servers')), true, flags: JSON_THROW_ON_ERROR);
+        if (($mapping['source_host'] ?? null) !== $snapshot->sourceHost() || !is_array($mapping['servers_by_module'] ?? null)) {
+            throw new \RuntimeException('Invalid registrar server mapping source');
+        }
+
+        return (new RegistrarAttacher)->attach($snapshot, $context, $mapping['servers_by_module'], $dryRun);
     }
 }
