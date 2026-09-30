@@ -17,7 +17,7 @@ class ResellerClubSyncPrices extends Command
     protected $signature = 'resellerclub:sync-prices
         {--server= : Explicit ResellerClub server ID}
         {--category= : Category for new draft domain products}
-        {--source= : customer selling prices or cost prices}
+        {--source= : customer selling prices, cost prices or managed markup}
         {--tlds= : Optional comma-separated TLD selection}
         {--all : Override saved filtering and sync every active TLD}
         {--markup= : Percentage markup, applied once}
@@ -85,7 +85,8 @@ class ResellerClubSyncPrices extends Command
                     self::saveSetting('last_schedule_scope', $runScope);
                     self::saveSetting('last_scheduled_sync', now()->toIso8601String());
                 }
-                self::saveSetting('last_status', 'success');
+                self::saveSetting('last_status', $summary['review_tlds'] ? 'review_required' : 'success');
+                self::saveSetting('last_review_count', $summary['review_tlds']);
                 self::saveSetting('last_count', $summary['tlds']);
                 self::saveSetting('last_error', '');
                 Log::info('ResellerClub catalog synchronized', $summary + ['server_id' => $server->id]);

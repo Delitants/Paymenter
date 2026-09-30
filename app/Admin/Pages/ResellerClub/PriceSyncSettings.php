@@ -57,8 +57,9 @@ class PriceSyncSettings extends Page implements HasForms
                         ->options(fn () => Category::pluck('name', 'id'))->required()
                         ->helperText('New TLDs are created as hidden, out-of-stock draft products.'),
                     Select::make('price_source')->label('Price Source')
-                        ->options(['customer' => 'ResellerClub customer selling prices', 'cost' => 'Reseller cost prices'])
-                        ->default('customer')->required(),
+                        ->options(['customer' => 'ResellerClub customer selling prices', 'cost' => 'Reseller cost prices', 'managed' => 'ResellerClub markup + automatic increases'])
+                        ->default('customer')->required()->live()
+                        ->helperText('Managed mode captures markup from ResellerClub. Cost increases raise catalog prices; cost decreases keep prices steady. A changed ResellerClub retail price starts a new policy and can lower prices.'),
                     Checkbox::make('sync_enabled')
                         ->label('Enable Automatic Sync')->live()
                         ->helperText('Discover TLDs and refresh prices using the Paymenter scheduler'),
@@ -94,6 +95,7 @@ class PriceSyncSettings extends Page implements HasForms
                         ->minValue(0)
                         ->maxValue(1000)
                         ->suffix('%')
+                        ->visible(fn (callable $get) => $get('price_source') !== 'managed')
                         ->helperText('Markup to apply on top of ResellerClub prices (e.g., 20 for 20% markup)'),
 
                     Checkbox::make('sync_all_tlds')
@@ -160,6 +162,9 @@ class PriceSyncSettings extends Page implements HasForms
     {
         Gate::authorize('has-permission', 'admin.settings.update');
         $data = $this->form->getState();
+        if ($data['price_source'] === 'managed') {
+            $data['markup_percentage'] = '0';
+        }
         foreach ($data as $key => $value) {
             if (in_array($key, array_keys($this->getSettings()), true)) {
                 ResellerClubSyncPrices::saveSetting($key, is_bool($value) ? (int) $value : ($value ?? ''));
@@ -175,7 +180,7 @@ class PriceSyncSettings extends Page implements HasForms
         $data = $this->form->getState();
         $parameters = [
             '--server' => $data['server_id'], '--category' => $data['category_id'],
-            '--source' => $data['price_source'], '--markup' => $data['markup_percentage'],
+            '--source' => $data['price_source'], '--markup' => $data['price_source'] === 'managed' ? '0' : $data['markup_percentage'],
         ];
         if (!$data['sync_all_tlds']) {
             $parameters['--tlds'] = $data['tld_list'] ?? '';
