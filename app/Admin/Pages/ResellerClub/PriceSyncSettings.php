@@ -2,30 +2,34 @@
 
 namespace App\Admin\Pages\ResellerClub;
 
+use App\Console\Commands\ResellerClubSyncPrices;
+use App\Models\Category;
 use App\Models\Server;
-use App\Models\Setting;
 use Filament\Actions\Action;
 use Filament\Forms\Components\Checkbox;
 use Filament\Forms\Components\Select;
-use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Textarea;
-use Filament\Schemas\Components\Actions;
-use Filament\Schemas\Components\Form;
-use Filament\Schemas\Schema;
+use Filament\Forms\Components\TextInput;
 use Filament\Forms\Concerns\InteractsWithForms;
 use Filament\Forms\Contracts\HasForms;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
+use Filament\Schemas\Components\Actions;
+use Filament\Schemas\Components\Form;
+use Filament\Schemas\Schema;
 use Illuminate\Support\Facades\Artisan;
-use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Gate;
 
 class PriceSyncSettings extends Page implements HasForms
 {
     use InteractsWithForms;
 
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-currency-dollar';
+
     protected static ?string $title = 'ResellerClub';
+
     protected static ?string $navigationLabel = 'ResellerClub';
+
     protected static string|\UnitEnum|null $navigationGroup = 'Domain Names';
 
     protected string $view = 'admin.pages.resellerclub.price-sync-settings';
@@ -47,18 +51,26 @@ class PriceSyncSettings extends Page implements HasForms
         return $schema
             ->components([
                 Form::make([
+                    Select::make('server_id')->label('ResellerClub Server')
+                        ->options(fn () => Server::where('extension', 'ResellerClub')->pluck('name', 'id'))->required(),
+                    Select::make('category_id')->label('Domain Category')
+                        ->options(fn () => Category::pluck('name', 'id'))->required()
+                        ->helperText('New TLDs are created as hidden, out-of-stock draft products.'),
+                    Select::make('price_source')->label('Price Source')
+                        ->options(['customer' => 'ResellerClub customer selling prices', 'cost' => 'Reseller cost prices'])
+                        ->default('customer')->required(),
                     Checkbox::make('sync_enabled')
-                        ->label('Enable Automatic Sync')
-                        ->helperText('Automatically sync prices from ResellerClub weekly'),
+                        ->label('Enable Automatic Sync')->live()
+                        ->helperText('Discover TLDs and refresh prices using the Paymenter scheduler'),
 
                     Select::make('sync_frequency')
-                        ->label('Sync Frequency')
+                        ->label('Sync Frequency')->live()
                         ->options([
                             'daily' => 'Daily',
-                            'weekly' => 'Weekly (Recommended)',
+                            'weekly' => 'Weekly',
                             'monthly' => 'Monthly',
                         ])
-                        ->default('weekly')
+                        ->default('daily')
                         ->visible(fn (callable $get) => $get('sync_enabled')),
 
                     Select::make('sync_day')
@@ -78,7 +90,7 @@ class PriceSyncSettings extends Page implements HasForms
                     TextInput::make('markup_percentage')
                         ->label('Markup Percentage')
                         ->type('number')
-                        ->default(0)
+                        ->default(0)->required()->numeric()->step(0.01)
                         ->minValue(0)
                         ->maxValue(1000)
                         ->suffix('%')
@@ -87,17 +99,7 @@ class PriceSyncSettings extends Page implements HasForms
                     Checkbox::make('sync_all_tlds')
                         ->label('Sync All TLDs')
                         ->default(true)
-                        ->helperText('If disabled, only selected TLDs will be synced'),
-
-                    Checkbox::make('skip_in_use')
-                        ->label('Skip Products In Use')
-                        ->default(true)
-                        ->helperText('Do not modify products that have active services (prices will still update)'),
-
-                    Checkbox::make('send_notifications')
-                        ->label('Send Notifications')
-                        ->default(true)
-                        ->helperText('Notify admins when prices are updated'),
+                        ->helperText('Includes TLDs with no existing customer domains')->live(),
 
                     Textarea::make('tld_list')
                         ->label('TLDs to Sync')
@@ -118,7 +120,7 @@ class PriceSyncSettings extends Page implements HasForms
                                 ->color('success')
                                 ->requiresConfirmation()
                                 ->modalHeading('Confirm Price Sync')
-                                ->modalDescription('This will update prices from ResellerClub. Products in use will only have prices updated.')
+                                ->modalDescription('This refreshes catalog prices for new orders. Existing customer service amounts are preserved. New products remain drafts.')
                                 ->modalSubmitActionLabel('Yes, sync now')
                                 ->action(fn () => $this->runSync(false)),
 
@@ -134,94 +136,58 @@ class PriceSyncSettings extends Page implements HasForms
 
     public static function canAccess(): bool
     {
-        return Server::where('extension', 'ResellerClub')->exists();
+        return auth()->user()?->hasPermission('admin.settings.view') && Server::where('extension', 'ResellerClub')->exists();
     }
-
 
     private function getSettings(): array
     {
+        $saved = ResellerClubSyncPrices::settings();
+
         return [
-            'sync_enabled' => Setting::where('key', 'resellerclub.sync_enabled')->first()?->value === '1',
-            'sync_frequency' => Setting::where('key', 'resellerclub.sync_frequency')->first()?->value ?? 'weekly',
-            'sync_day' => Setting::where('key', 'resellerclub.sync_day')->first()?->value ?? 'monday',
-            'markup_percentage' => Setting::where('key', 'resellerclub.markup_percentage')->first()?->value ?? '0',
-            'sync_all_tlds' => Setting::where('key', 'resellerclub.sync_all_tlds')->first()?->value !== '0',
-            'skip_in_use' => Setting::where('key', 'resellerclub.skip_in_use')->first()?->value !== '0',
-            'send_notifications' => Setting::where('key', 'resellerclub.send_notifications')->first()?->value !== '0',
-            'tld_list' => Setting::where('key', 'resellerclub.tld_list')->first()?->value ?? '',
+            'server_id' => $saved['server_id'] ?? null,
+            'category_id' => $saved['category_id'] ?? null,
+            'price_source' => $saved['price_source'] ?? 'customer',
+            'sync_enabled' => ($saved['sync_enabled'] ?? '0') === '1',
+            'sync_frequency' => $saved['sync_frequency'] ?? 'daily',
+            'sync_day' => $saved['sync_day'] ?? 'monday',
+            'markup_percentage' => $saved['markup_percentage'] ?? '0',
+            'sync_all_tlds' => ($saved['sync_all_tlds'] ?? '1') === '1',
+            'tld_list' => $saved['tld_list'] ?? '',
         ];
     }
 
     public function save(): void
     {
+        Gate::authorize('has-permission', 'admin.settings.update');
         $data = $this->form->getState();
-
-        $settings = [
-            'resellerclub.sync_enabled' => $data['sync_enabled'] ? '1' : '0',
-            'resellerclub.sync_frequency' => $data['sync_frequency'] ?? 'weekly',
-            'resellerclub.sync_day' => $data['sync_day'] ?? 'monday',
-            'resellerclub.markup_percentage' => $data['markup_percentage'] ?? '0',
-            'resellerclub.sync_all_tlds' => $data['sync_all_tlds'] ? '1' : '0',
-            'resellerclub.skip_in_use' => $data['skip_in_use'] ? '1' : '0',
-            'resellerclub.send_notifications' => $data['send_notifications'] ? '1' : '0',
-            'resellerclub.tld_list' => $data['tld_list'] ?? '',
-        ];
-
-        foreach ($settings as $key => $value) {
-            Setting::updateOrCreate(['key' => $key], ['value' => $value]);
+        foreach ($data as $key => $value) {
+            if (in_array($key, array_keys($this->getSettings()), true)) {
+                ResellerClubSyncPrices::saveSetting($key, is_bool($value) ? (int) $value : ($value ?? ''));
+            }
         }
-
-        Notification::make()
-            ->success()
-            ->title('Settings Saved')
-            ->body('Price sync settings have been updated successfully.')
-            ->send();
+        Notification::make()->success()->title('Catalog settings saved')->send();
     }
 
     public function runSync(bool $dryRun): void
     {
-        $settings = $this->getSettings();
-        $tlds = $settings['sync_all_tlds'] ? null : $settings['tld_list'];
-        $markup = $settings['markup_percentage'] ?? 0;
-
-        $command = 'resellerclub:sync-prices';
-        $parameters = [];
-
-        if ($tlds) {
-            $parameters['--tlds'] = $tlds;
+        Gate::authorize('has-permission', 'admin.settings.update');
+        // Use the displayed form, including unsaved choices, for an explicit manual run.
+        $data = $this->form->getState();
+        $parameters = [
+            '--server' => $data['server_id'], '--category' => $data['category_id'],
+            '--source' => $data['price_source'], '--markup' => $data['markup_percentage'],
+        ];
+        if (!$data['sync_all_tlds']) {
+            $parameters['--tlds'] = $data['tld_list'] ?? '';
+        } else {
+            $parameters['--all'] = true;
         }
-
-        $parameters['--markup'] = $markup;
-
         if ($dryRun) {
             $parameters['--dry-run'] = true;
         }
-
-        try {
-            $exitCode = Artisan::call($command, $parameters);
-            $output = Artisan::output();
-
-            Log::info('ResellerClub sync output', ['output' => $output]);
-
-            if ($exitCode === 0) {
-                Notification::make()
-                    ->success()
-                    ->title($dryRun ? 'Dry Run Completed' : 'Sync Completed')
-                    ->body('Check logs for details.')
-                    ->send();
-            } else {
-                Notification::make()
-                    ->danger()
-                    ->title('Sync Failed')
-                    ->body($output)
-                    ->send();
-            }
-        } catch (\Exception $e) {
-            Notification::make()
-                ->danger()
-                ->title('Sync Failed')
-                ->body($e->getMessage())
-                ->send();
-        }
+        $code = Artisan::call('resellerclub:sync-prices', $parameters);
+        Notification::make()->status($code === 0 ? 'success' : 'danger')
+            ->title($code === 0 ? ($dryRun ? 'Catalog preview complete' : 'Catalog synchronized') : 'Catalog sync failed')
+            ->body(Artisan::output())->send();
     }
 }
