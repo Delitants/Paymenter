@@ -21,4 +21,49 @@ class ResellerClubCatalogShapeTest extends TestCase
         $this->expectException(\RuntimeException::class);
         Catalog::normalize(['bad' => ['tldlist' => 'test']], ['bad' => ['addnewdomain' => [1 => '10.00']]], 'USD', 'customer');
     }
+
+    public function test_personal_name_profile_does_not_block_ordinary_name_or_compound_zones(): void
+    {
+        $catalog = Catalog::normalize([
+            'thirdleveldotname' => ['tldlist' => ['*.name']],
+            'dotname' => ['tldlist' => ['name']],
+            'thirdleveldotuk' => ['tldlist' => ['co.uk']],
+        ], [
+            'thirdleveldotname' => ['addnewdomain' => [1 => '8.00']],
+            'dotname' => ['addnewdomain' => [1 => '10.00', 2 => '9.00']],
+            'thirdleveldotuk' => ['addnewdomain' => [1 => '12.00']],
+        ], 'USD', 'customer');
+
+        $this->assertSame(['.co.uk', '.name'], array_keys($catalog['tlds']));
+        $this->assertSame('dotname', $catalog['tlds']['.name']['product_key']);
+        $this->assertSame([1 => '10.00', 2 => '9.00'], $catalog['tlds']['.name']['register']);
+        $this->assertSame('thirdleveldotuk', $catalog['tlds']['.co.uk']['product_key']);
+    }
+
+    public function test_unknown_wildcard_profile_still_fails_closed(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('invalid TLD');
+        Catalog::normalize([
+            'otherprofile' => ['tldlist' => ['*.name']],
+        ], ['otherprofile' => ['addnewdomain' => [1 => '10.00']]], 'USD', 'customer');
+    }
+
+    public function test_mixed_personal_name_profile_still_fails_closed(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('invalid TLD');
+        Catalog::normalize([
+            'thirdleveldotname' => ['tldlist' => ['*.name', 'name']],
+        ], ['thirdleveldotname' => ['addnewdomain' => [1 => '10.00']]], 'USD', 'customer');
+    }
+
+    public function test_personal_name_profile_alone_cannot_replace_the_catalog(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('empty domain catalog; previous prices retained');
+        Catalog::normalize([
+            'thirdleveldotname' => ['tldlist' => ['*.name']],
+        ], ['thirdleveldotname' => ['addnewdomain' => [1 => '8.00']]], 'USD', 'customer');
+    }
 }

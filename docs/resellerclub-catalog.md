@@ -22,6 +22,10 @@ Optional WHOIS protection defaults off. Catalog sync caches provider eligibility
 
 Registration and paid renewal purchase the selected privacy term through the existing durable provider claims. A domain does not finish provisioning until the exact domain/order/customer, nameservers, domain expiry and selected privacy status/expiry are confirmed. An unknown result is reconciled by reads, without another purchase request. Synced privacy increases apply when a new native renewal invoice is generated; issued invoices and imported/custom service prices are not rewritten.
 
+New registrar customers receive an independently generated random 16-character password within the [provider's password policy](https://manage.resellerclub.com/kb/servlet/KBServlet/faq489.html). It includes every required character class and only allowed symbols. Paymenter customer passwords are not changed by registrar signup.
+
+For the provider's demo registry, use `ns1.onlyfordemo.net` and `ns2.onlyfordemo.net` as documented in its [demo integration guide](https://manage.resellerclub.com/kb/servlet/KBServlet/faq589.html). Other nameservers may resolve publicly but are rejected by the demo registry. Configure appropriate registry-registered nameservers separately for production.
+
 Zone cards display distinct registration and renewal prices for the shortest supported term. Product details display a table for all supported quoted terms. Checkout shows registration, optional privacy, tax, total today and the current renewal total. These views use cached catalog data and native currency formatting.
 
 Companion extensions can provide optional `getProductPricing(Product $product): ?array` display metadata and accept an optional fourth `Plan` argument in `getCheckoutConfig`. These render hooks must use cached data and never issue provider requests. Premium DNS, email, SSL, website security, backups and other separately provisioned products are not sold by this domain lifecycle.
