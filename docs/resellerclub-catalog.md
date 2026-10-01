@@ -12,6 +12,8 @@ Enable Automatic Sync only when the selected pricing policy is ready. Daily is t
 
 The sync discovers the provider's active TLD catalog, including extensions with no existing customer services. It uses explicit provider currency and term-specific registration, renewal and transfer prices. Per-year prices are multiplied by term and markup before rounding. Unsupported currencies or malformed/incomplete responses leave previous catalog prices intact. Withdrawn TLDs are hidden and out of stock; services are retained.
 
+The provider's `thirdleveldotname` profile with exactly `*.name` is excluded because personal third-level .NAME registrations require a separate order contract. Ordinary `.name` and compound zones remain in the catalog. Unknown or mixed wildcard identities still fail validation, and a feed containing no supported catalog zones cannot replace previous prices.
+
 New products are hidden and out of stock. Registration plans use whole-year native billing terms. Distinct renewal/transfer totals are preserved in the product's `resellerclub_catalog` setting; they are not separate new-registration plans. The opt-in paid lifecycle and a separate demo reseller account must pass acceptance before publishing products for purchase; transfer, premium and registry-specific flows remain unavailable.
 
 The native grouped checkout fixes the extension to the selected catalog product and validates that identity on the server. Clients can change the name and registration term, and supply two required and two optional distinct nameserver hostnames. Defaults come from server settings. Existing domain nameservers are never changed by checkout or catalog sync.
