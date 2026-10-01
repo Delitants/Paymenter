@@ -16,6 +16,39 @@
                         @foreach ($item->config_options as $option)
                         {{ $option['option_name'] }}: {{ $option['value_name'] }}<br>
                         @endforeach
+                        @if(isset($item->checkout_config))
+                            @php
+                                $checkoutConfig = is_array($item->checkout_config) ? $item->checkout_config : json_decode($item->checkout_config, true);
+                                $extensionConfig = \App\Helpers\ExtensionHelper::getCheckoutConfig($item->product, $checkoutConfig, $item->plan);
+                            @endphp
+                            @foreach($extensionConfig as $config)
+                                @if(isset($config['type']) && $config['type'] === 'section' && isset($config['fields']))
+                                    @foreach($config['fields'] as $field)
+                                        @if(isset($checkoutConfig[$field['name']]))
+                                            @if($field['type'] === 'radio' && isset($field['options'][$checkoutConfig[$field['name']]]))
+                                                {{ $field['label'] ?? $field['name'] }}: {{ $field['options'][$checkoutConfig[$field['name']]] }}
+                                                @if(isset($field['prices'][$checkoutConfig[$field['name']]]))
+                                                    @php
+                                                        $price = $field['prices'][$checkoutConfig[$field['name']]];
+                                                        $priceDisplay = $price === 0 ? 'Free' : '$' . ($price / 100) . '/month';
+                                                    @endphp
+                                                    - {{ $priceDisplay }}
+                                                @endif
+                                                <br>
+                                            @elseif($field['type'] === 'checkbox')
+                                                {{ $field['label'] ?? $field['name'] }}: {{ $checkoutConfig[$field['name']] ? (empty($field['prices'][$checkoutConfig[$field['name']]]) ? __('Enabled (Included)') : __('Enabled')) : __('Disabled') }}<br>
+                                            @elseif($field['type'] === 'text')
+                                                {{ $field['label'] ?? $field['name'] }}: {{ $checkoutConfig[$field['name']] }}<br>
+                                            @endif
+                                        @endif
+                                    @endforeach
+                                @elseif(isset($checkoutConfig[$config['name']]))
+                                    @if($config['type'] === 'text')
+                                        {{ $config['label'] ?? $config['name'] }}: {{ $checkoutConfig[$config['name']] }}<br>
+                                    @endif
+                                @endif
+                            @endforeach
+                        @endif
                     </p>
                 </div>
                 <div class="flex flex-col justify-between items-end gap-4">

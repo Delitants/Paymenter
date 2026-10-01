@@ -66,9 +66,7 @@
                         {!! $product->description !!}
                     </article>
                     @endif
-                    <h3 class="text-lg font-semibold mb-2">
-                        {{ $product->price()->formatted->price }}
-                    </h3>
+                    <x-products.zone-pricing :product="$product" />
                     <div class="mt-auto pt-2 flex items-center gap-2">
                         @if($product->stock !== 0 && $product->price()->available && theme('direct_checkout', false))
                         <a href="{{ route('products.checkout', ['category' => $product->category, 'product' => $product->slug]) }}"

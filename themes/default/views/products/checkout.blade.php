@@ -2,6 +2,11 @@
     $taxSettings = \App\Classes\Settings::tax();
     $taxName = is_object($taxSettings) ? $taxSettings->name : 'Tax';
     $taxRateDisplay = is_object($taxSettings) ? $taxSettings->rate : 0;
+    $checkoutFields = $this->getCheckoutConfig();
+    $checkoutPresentation = collect($checkoutFields)->first(fn ($field) => isset($field['summary'])) ?? [];
+    $checkoutSummary = $checkoutPresentation['summary'] ?? null;
+    $planInSection = collect($checkoutFields)->contains(fn ($field) => $field['include_plan'] ?? false);
+    $checkoutSectionNumber = 0;
     $checkoutPricingState = [
         'hasBootMedia' => collect($this->getCheckoutConfig())->contains(fn ($field) => in_array($field['name'] ?? '', ['cloud_image', 'iso_image'], true)),
     ];
@@ -37,33 +42,32 @@
 </script>
 @endscript
 
-	<div class="container mt-14 grid grid-cols-1 md:grid-cols-4 gap-8"
+	<div class="checkout-page"
     x-data="checkoutPricing($wire.entangle('checkoutConfig'), @js($checkoutPricingState['hasBootMedia']))"
     @checkout-field-change="syncFieldChange($event.detail)">
 
 @once
     <style>
-        @media (min-width: 768px) {
-            .checkout-summary-panel {
-                position: fixed;
-                top: 5rem;
-                right: max(2rem, calc((100vw - 1280px) / 2 + 2rem));
-                width: min(18rem, calc((100vw - 5.5rem) / 4));
-                z-index: 20;
-            }
-
-            .checkout-form-stack {
-                padding-right: 2.5rem;
-                row-gap: 1rem;
-            }
-        }
-
-        @media (max-width: 767px) {
-            .checkout-summary-panel {
-                position: static;
-                width: 100%;
-            }
-        }
+        .checkout-page { max-width: 1120px; margin: 2rem auto 4rem; padding: 0 1.5rem; display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 2rem; align-items: start; }
+        .checkout-summary-column { grid-column: 2; grid-row: 1; position: sticky; top: 6rem; }
+        .checkout-summary-panel { padding: 1.5rem; border: 1px solid hsl(var(--color-neutral)); border-radius: .75rem; background: hsl(var(--color-background)); }
+        .checkout-form-stack { grid-column: 1; grid-row: 1; min-width: 0; display: flex; flex-direction: column; gap: 1.5rem; }
+        .checkout-section { min-width: 0; padding: 1.5rem; border: 1px solid hsl(var(--color-neutral)); border-radius: .75rem; background: hsl(var(--color-background)); }
+        .checkout-section-title { float: left; width: 100%; display: flex; align-items: center; gap: .75rem; margin-bottom: 1rem; font-size: 1.125rem; font-weight: 700; }
+        .checkout-step { display: inline-flex; align-items: center; justify-content: center; width: 1.5rem; height: 1.5rem; border-radius: 50%; background: hsl(var(--color-primary)); color: white; font-size: .875rem; }
+        .checkout-section > p { clear: both; margin-bottom: 1rem; color: hsl(var(--color-muted)); line-height: 1.5; }
+        .checkout-section-fields { clear: both; display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; }
+        .checkout-fields-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .checkout-field-wide { grid-column: 1 / -1; }
+        .checkout-page label { font-weight: 600; color: hsl(var(--color-base)); }
+        .checkout-page input:not([type=checkbox]), .checkout-page select, .checkout-static-field { min-height: 44px; border-width: 1px; background: hsl(var(--color-background)); padding: .625rem .75rem; }
+        .checkout-static-field { border: 1px solid hsl(var(--color-neutral)); border-radius: .375rem; font-size: .875rem; }
+        .checkout-domain-input { display: flex; min-width: 0; border: 1px solid hsl(var(--color-neutral)); border-radius: .375rem; overflow: hidden; }
+        .checkout-domain-input input { flex: 1; min-width: 0; width: 100%; border: 0; outline-offset: -2px; }
+        .checkout-domain-input span { display: flex; align-items: center; padding: .625rem .875rem; border-left: 1px solid hsl(var(--color-neutral)); background: hsl(var(--color-background-secondary)); font-size: .875rem; font-weight: 700; }
+        .checkout-page input:focus-visible, .checkout-page select:focus-visible, .checkout-page button:focus-visible, .checkout-page a:focus-visible { outline: 2px solid hsl(var(--color-primary)); outline-offset: 2px; }
+        @media (max-width: 1023px) { .checkout-page { grid-template-columns: minmax(0, 1fr); max-width: 760px; } .checkout-summary-column { grid-column: 1; grid-row: 2; position: static; } }
+        @media (max-width: 639px) { .checkout-page { margin-top: 1.5rem; padding: 0 1rem; gap: 1.5rem; } .checkout-fields-two { grid-template-columns: minmax(0, 1fr); } .checkout-section, .checkout-summary-panel { padding: 1.25rem; } }
 
         .checkout-field-description {
             margin-top: 0.5rem;
@@ -78,11 +82,21 @@
 @endonce
 
     {{-- Order Summary - Right side on desktop (first in DOM) --}}
-    <div class="checkout-summary-column order-last md:order-none md:col-start-4 md:row-start-1">
-    <div class="checkout-summary-panel bg-background-secondary p-4 rounded-md h-fit">
+    <div class="checkout-summary-column">
+    <div class="checkout-summary-panel h-fit">
         <h2 class="text-2xl font-semibold mb-3">
             {{ __('product.order_summary') }}
         </h2>
+        @if($checkoutSummary)
+            <p class="mb-1 break-all font-semibold">{{ $checkoutSummary['domain'] ?: __('Your domain') }}</p>
+            <p class="mb-5 text-sm text-muted">{{ trans_choice(':count year registration|:count years registration', $checkoutSummary['years']) }}</p>
+            <dl class="mb-5 space-y-2 text-sm">
+                <div class="flex justify-between gap-3"><dt>{{ __('Registration') }}</dt><dd>{{ $total->format($checkoutSummary['registration']) }}</dd></div>
+                @if((float) $checkoutSummary['privacy'] > 0)
+                    <div class="flex justify-between gap-3"><dt>{{ __('WHOIS protection') }}</dt><dd data-privacy-price>{{ $total->format($checkoutSummary['privacy']) }}</dd></div>
+                @endif
+            </dl>
+        @endif
         @if ($total->total_tax > 0)
             <div class="font-semibold flex justify-between gap-3">
                 <h4>{{ __('invoices.subtotal') }}:</h4> {{ $total->format($total->subtotal) }}
@@ -95,6 +109,11 @@
             <h4>{{ __('product.total_today') }}:</h4>
             <span data-checkout-total>{{ $total->formatted->total }}</span>
         </div>
+        @if($checkoutSummary && $checkoutSummary['renewal'])
+            @php $renewalPrice = new \App\Classes\Price(['price' => $checkoutSummary['renewal'], 'currency' => $total->currency], apply_exclusive_tax: true); @endphp
+            <div class="mt-5 border-t border-neutral pt-4 text-sm flex justify-between gap-3"><span>{{ __('Current renewal price') }}</span><span data-domain-renewal>{{ $renewalPrice->formatted->price }}</span></div>
+            <p class="mt-2 text-xs leading-relaxed text-muted">{{ __('For the same term and selected extras. Renewal prices may change before the next invoice is issued.') }}</p>
+        @endif
         @if ($total->setup_fee > 0 && $plan->type == 'recurring')
             <div class="mt-2 text-sm font-semibold flex justify-between gap-3">
                 <h4>{{ __('product.then_after_x', ['time' => $plan->billing_period . ' ' . trans_choice(__('services.billing_cycles.' . $plan->billing_unit), $plan->billing_period)]) }}:
@@ -106,7 +125,7 @@
                 <x-button.primary wire:click="checkout" wire:loading.attr="disabled">
                     <x-loading target="checkout" />
                     <div wire:loading.remove wire:target="checkout">
-                        {{ __('product.checkout') }}
+                        {{ $checkoutSummary ? __('Continue to cart') : __('product.checkout') }}
                     </div>
                 </x-button.primary>
             </div>
@@ -115,8 +134,8 @@
     </div>
 
     {{-- Main form content - Left side on desktop --}}
-    <div class="checkout-form-stack md:col-span-3 flex flex-col gap-4">
-        <h1 class="text-3xl font-bold">{{ $product->name }}</h1>
+    <div class="checkout-form-stack">
+        <h1 class="text-3xl font-bold">{{ __($checkoutPresentation['checkout_title'] ?? $product->name) }}</h1>
         @if ($product->image || filled(strip_tags($product->description ?? '')))
             <div class="flex flex-row w-full gap-4">
                 @if ($product->image)
@@ -131,7 +150,7 @@
                 @endif
             </div>
         @endif
-        @if ($product->availablePlans()->count() > 1)
+        @if (!$planInSection && $product->availablePlans()->count() > 1)
             <x-form.select wire:model.live="plan_id" class="text-white bg-primary-800 px-2.5 py-2.5 rounded-md w-full"
                 name="plan_id" label="Select a plan"
                 @change="window.dispatchEvent(new CustomEvent('checkout-price-update'))">
@@ -205,7 +224,8 @@
         {{-- Render every ordinary provider field, including nested sections. --}}
         @foreach ($this->getCheckoutConfig() as $configOption)
             @if(!in_array($configOption['name'] ?? '', ['hostname', 'cloud_image', 'iso_image'], true))
-                <x-form.checkout-field :field="$configOption" />
+                @php $sectionNumber = ($configOption['type'] ?? '') === 'section' ? ++$checkoutSectionNumber : null; @endphp
+                <x-form.checkout-field :field="$configOption" :number="$sectionNumber" />
             @endif
         @endforeach
 

@@ -183,7 +183,13 @@ class Checkout extends Component
     // On change of the plan, update the config options
     public function updatedPlanId($value)
     {
-        $this->plan = Plan::findOrFail($value);
+        $plan = $this->product->plans()->find($value);
+        if (!$plan) {
+            $this->addError('plan_id', __('Select a valid plan.'));
+
+            return;
+        }
+        $this->plan = $plan;
         $this->updatePricing();
     }
 
@@ -211,7 +217,7 @@ class Checkout extends Component
 
     public function getCheckoutConfig()
     {
-        return once(fn () => ExtensionHelper::getCheckoutConfig($this->product, $this->checkoutConfig));
+        return ExtensionHelper::getCheckoutConfig($this->product, $this->checkoutConfig, $this->plan);
     }
 
     protected function checkoutFields(): array

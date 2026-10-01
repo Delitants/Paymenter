@@ -33,6 +33,7 @@
             <article class="my-4 prose dark:prose-invert">
                 {!! $product->description !!}
             </article>
+            <x-products.zone-pricing :product="$product" :expanded="true" />
 
             @if ($product->stock !== 0 && $product->price()->available)
             <a href="{{ route('products.checkout', ['category' => $category, 'product' => $product->slug]) }}"

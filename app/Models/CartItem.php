@@ -85,7 +85,7 @@ class CartItem extends Model
                 }
                 if (is_array($checkoutConfig)) {
                     // Get checkout config from product extension
-                    $extensionCheckoutConfig = ExtensionHelper::getCheckoutConfig($this->product, $checkoutConfig);
+                    $extensionCheckoutConfig = ExtensionHelper::getCheckoutConfig($this->product, $checkoutConfig, $this->plan);
                     foreach ($extensionCheckoutConfig as $config) {
                         // Handle section type with nested fields
                         if (isset($config['type']) && $config['type'] === 'section' && isset($config['fields'])) {

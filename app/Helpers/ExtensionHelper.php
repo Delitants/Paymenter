@@ -10,6 +10,7 @@ use App\Models\Extension;
 use App\Models\Gateway;
 use App\Models\Invoice;
 use App\Models\InvoiceTransaction;
+use App\Models\Plan;
 use App\Models\Product;
 use App\Models\Server;
 use App\Models\Service;
@@ -127,14 +128,24 @@ class ExtensionHelper
      *
      * @return array
      */
-    public static function getCheckoutConfig(Product $product, $values = [])
+    public static function getCheckoutConfig(Product $product, $values = [], ?Plan $plan = null)
     {
         $server = $product->server;
         if (!$server) {
             return [];
         }
 
-        return self::call($server, 'getCheckoutConfig', [$product, $values, self::settingsToArray($product->settings)], mayFail: true) ?? [];
+        return self::call($server, 'getCheckoutConfig', [$product, $values, self::settingsToArray($product->settings), $plan], mayFail: true) ?? [];
+    }
+
+    /** Optional cached catalog presentation; extensions must not perform provider calls here. */
+    public static function getProductPricing(Product $product): ?array
+    {
+        if (!$product->server || !self::hasFunction($product->server, 'getProductPricing')) {
+            return null;
+        }
+
+        return self::call($product->server, 'getProductPricing', [$product], mayFail: true);
     }
 
     /**
