@@ -7,6 +7,7 @@ use App\Services\BillmanagerMigration\CredentialImporter;
 use App\Services\BillmanagerMigration\CustomerImporter;
 use App\Services\BillmanagerMigration\FinancialImporter;
 use App\Services\BillmanagerMigration\GatewayConfigurer;
+use App\Services\BillmanagerMigration\GatewayFeeConfigurer;
 use App\Services\BillmanagerMigration\ImportContext;
 use App\Services\BillmanagerMigration\ImportReport;
 use App\Services\BillmanagerMigration\ProviderAttacher;
@@ -45,7 +46,7 @@ class ImportFromBillmanager extends Command
         try {
             $snapshot = Snapshot::load($this->argument('snapshot'), $this->option('source'), $this->option('login-cutoff'));
             if ($this->option('apply')) {
-                if (!in_array($this->option('stage'), ['customers', 'tickets', 'attachments', 'credentials', 'financial', 'services', 'proxmox', 'provider-configuration', 'provider-accounts', 'registrar-accounts', 'gateway-configuration'], true)) {
+                if (!in_array($this->option('stage'), ['customers', 'tickets', 'attachments', 'credentials', 'financial', 'services', 'proxmox', 'provider-configuration', 'provider-accounts', 'registrar-accounts', 'gateway-configuration', 'gateway-fees'], true)) {
                     $this->error('Full import is not yet available; use an explicitly supported stage');
 
                     return self::FAILURE;
@@ -81,7 +82,13 @@ class ImportFromBillmanager extends Command
                             'status' => 'running', 'created_at' => now(), 'updated_at' => now(),
                         ]);
                         $context = new ImportContext($id, $snapshot->sourceHost());
-                        if ($this->option('stage') === 'gateway-configuration') {
+                        if ($this->option('stage') === 'gateway-fees') {
+                            if (!$this->option('gateway-bundle')) {
+                                throw new \RuntimeException('An encrypted gateway bundle with source fees is required');
+                            }
+                            $gateways = (new GatewayFeeConfigurer)->configure($snapshot, $context, $this->option('gateway-bundle'));
+                            $report = new ImportReport('gateway_fees_configured_disabled', ['gateways' => count($gateways)]);
+                        } elseif ($this->option('stage') === 'gateway-configuration') {
                             if (!$this->option('gateway-bundle')) {
                                 throw new \RuntimeException('An encrypted gateway bundle is required');
                             }

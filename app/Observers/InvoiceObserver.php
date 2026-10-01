@@ -4,6 +4,7 @@ namespace App\Observers;
 
 use App\Events\Invoice as InvoiceEvent;
 use App\Models\Invoice;
+use App\Services\Billing\InvoicePricing;
 use App\Services\Invoice\ProcessPaidInvoiceService;
 
 class InvoiceObserver
@@ -13,6 +14,7 @@ class InvoiceObserver
      */
     public function creating(Invoice $invoice): void
     {
+        (new InvoicePricing)->capture($invoice);
         event(new InvoiceEvent\Creating($invoice));
     }
 

@@ -9,6 +9,8 @@ use App\Models\ServiceUpgrade;
 use App\Services\BillmanagerMigration\MigrationHold;
 use App\Services\Service\RenewServiceService;
 use App\Services\ServiceUpgrade\ServiceUpgradeService;
+use Brick\Math\BigDecimal;
+use Illuminate\Support\Facades\DB;
 
 class ProcessPaidInvoiceService
 {
@@ -35,19 +37,18 @@ class ProcessPaidInvoiceService
                 // Handle the upgrade
                 (new ServiceUpgradeService)->handle($serviceUpgrade);
             } elseif ($item->reference_type == Credit::class) {
-                // Check if user has credits in this currency
-                $user = $invoice->user;
-                $credit = $user->credits()->where('currency_code', $invoice->currency_code)->first();
-
-                if ($credit) {
-                    $credit->amount += $item->price;
-                    $credit->save();
-                } else {
-                    $user->credits()->create([
-                        'currency_code' => $invoice->currency_code,
-                        'amount' => $item->price,
-                    ]);
-                }
+                DB::transaction(function () use ($invoice, $item) {
+                    $credit = $invoice->user->credits()->where('currency_code', $invoice->currency_code)->lockForUpdate()->first();
+                    if ($credit) {
+                        $credit->amount = (string) BigDecimal::of((string) $credit->getRawOriginal('amount'))->plus($item->price)->toScale(2);
+                        $credit->save();
+                    } else {
+                        $invoice->user->credits()->create([
+                            'currency_code' => $invoice->currency_code,
+                            'amount' => $item->price,
+                        ]);
+                    }
+                });
             }
         });
     }

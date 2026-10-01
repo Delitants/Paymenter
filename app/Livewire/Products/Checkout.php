@@ -3,11 +3,11 @@
 namespace App\Livewire\Products;
 
 use App\Classes\Cart;
-use App\Classes\Price;
 use App\Helpers\ExtensionHelper;
 use App\Livewire\Component;
 use App\Models\Category;
 use App\Models\Plan;
+use App\Services\Billing\CatalogPricing;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 use Livewire\Attributes\Locked;
@@ -110,74 +110,14 @@ class Checkout extends Component
 
     public function updatePricing()
     {
-        // Cache plan price to avoid duplicate calculations
-        $planPrice = $this->plan->price();
-        $total = $planPrice->price;
-        $setup_fee = $planPrice->setup_fee;
-        $currency = $planPrice->currency;
-
-        // Pre-load all config option children with their plans/prices
-        $configOptionPrices = [];
-        foreach ($this->product->configOptions as $option) {
-            foreach ($option->children as $child) {
-                $childPrice = $child->price(billing_period: $this->plan->billing_period, billing_unit: $this->plan->billing_unit);
-                $configOptionPrices[$child->id] = [
-                    'price' => $childPrice->price,
-                    'setup_fee' => $childPrice->setup_fee,
-                ];
-            }
+        $options = [];
+        foreach ($this->configOptions as $id => $value) {
+            $options[] = ['option_id' => $id, 'value' => $value];
         }
-
-        $this->product->configOptions->each(function ($option) use (&$total, &$setup_fee, $configOptionPrices) {
-            // Check if checkbox is set, if so, add price if checked
-            if ($option->type === 'checkbox' && (isset($this->configOptions[$option->id]) && $this->configOptions[$option->id])) {
-                $childId = $option->children->first()->id;
-                $total += $configOptionPrices[$childId]['price'] ?? 0;
-                $setup_fee += $configOptionPrices[$childId]['setup_fee'] ?? 0;
-
-                return;
-            }
-            // Skip text, number and checkbox types as they have no price
-            if (in_array($option->type, ['text', 'number', 'checkbox'])) {
-                return;
-            }
-
-            // Add price of selected option from pre-loaded prices
-            $selectedId = $this->configOptions[$option->id] ?? null;
-            if ($selectedId && isset($configOptionPrices[$selectedId])) {
-                $total += $configOptionPrices[$selectedId]['price'];
-                $setup_fee += $configOptionPrices[$selectedId]['setup_fee'];
-            }
-        });
-
-        // Add checkout config prices (e.g., IP addresses section with nested fields)
-        $checkoutConfig = $this->getCheckoutConfig();
-        foreach ($checkoutConfig as $config) {
-            // Handle section type with nested fields
-            if (isset($config['type']) && $config['type'] === 'section' && isset($config['fields'])) {
-                foreach ($config['fields'] as $field) {
-                    if (isset($field['prices']) && isset($this->checkoutConfig[$field['name']])) {
-                        $selectedValue = $this->checkoutConfig[$field['name']];
-                        if (isset($field['prices'][$selectedValue])) {
-                            $total += $field['prices'][$selectedValue] / 100;
-                        }
-                    }
-                }
-            }
-            // Handle simple priced fields (backward compatibility)
-            elseif (isset($config['prices']) && isset($this->checkoutConfig[$config['name']])) {
-                $selectedValue = $this->checkoutConfig[$config['name']];
-                if (isset($config['prices'][$selectedValue])) {
-                    $total += $config['prices'][$selectedValue] / 100;
-                }
-            }
-        }
-
-        $this->total = new Price([
-            'price' => $total,
-            'currency' => $currency,
-            'setup_fee' => $setup_fee,
-        ], apply_exclusive_tax: true);
+        $this->total = (new CatalogPricing)->quote(
+            $this->product, $this->plan, $options, $this->checkoutConfig,
+            session('currency', config('settings.default_currency')), user: auth()->user(), checkoutFields: $this->getCheckoutConfig(),
+        );
     }
 
     // On change of the plan, update the config options

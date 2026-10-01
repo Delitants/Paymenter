@@ -8,6 +8,7 @@ use App\Enums\InvoiceTransactionStatus;
 use App\Models\BillingAgreement;
 use App\Models\Extension;
 use App\Models\Gateway;
+use App\Models\GatewayPaymentAttempt;
 use App\Models\Invoice;
 use App\Models\InvoiceTransaction;
 use App\Models\Plan;
@@ -16,6 +17,9 @@ use App\Models\Server;
 use App\Models\Service;
 use App\Models\User;
 use App\Services\BillmanagerMigration\MigrationHold;
+use App\Services\Gateways\GatewayFeePolicy;
+use App\Services\Gateways\InvoicePaymentDependencies;
+use App\Services\Gateways\PaymentWriteGuard;
 use Exception;
 use Filament\Forms\Components\Placeholder;
 use Illuminate\Database\Eloquent\Collection;
@@ -84,11 +88,14 @@ class ExtensionHelper
      *
      * @return array
      */
-    public static function getConfig($type, $extension, $config = [])
+    public static function getConfig($type, $extension, $config = [], ?Extension $record = null)
     {
         // Get existing DB settings first
         $typeClass = ($type == 'gateway') ? Gateway::class : (($type == 'server') ? Server::class : Extension::class);
-        $record = $typeClass::where('extension', $extension)->first();
+        $record ??= $type === 'gateway' ? null : $typeClass::where('extension', $extension)->first();
+        if ($record && ($record->type !== $type || $record->extension !== $extension)) {
+            throw new \InvalidArgumentException('Configuration record does not match extension.');
+        }
         $dbConfig = $record ? ($record->settings?->pluck('value', 'key')->toArray() ?? []) : [];
 
         // Ensure config is always an array
@@ -99,7 +106,9 @@ class ExtensionHelper
         // Merge DB config with live form values (form values take precedence)
         $config = array_merge($dbConfig, $config);
 
-        return self::getExtension($type, $extension)->getConfig($config);
+        $fields = self::getExtension($type, $extension)->getConfig($config);
+
+        return $type === 'gateway' ? [...$fields, ...(new GatewayFeePolicy)->configFields()] : $fields;
     }
 
     /**
@@ -287,7 +296,7 @@ class ExtensionHelper
      * @param  Extension  $extension
      * @return object
      */
-    public static function getConfigAsInputs(string $type, ?string $name, $config = [])
+    public static function getConfigAsInputs(string $type, ?string $name, $config = [], ?Extension $record = null)
     {
         if (!$name) {
             return [];
@@ -301,7 +310,7 @@ class ExtensionHelper
         $settings = [];
 
         try {
-            foreach (self::getConfig($type, $name, $config) as $key => $config) {
+            foreach (self::getConfig($type, $name, $config, $record) as $key => $config) {
                 $config['name'] = 'settings.' . $config['name'];
                 $settings[] = FilamentInput::convert($config);
             }
@@ -406,18 +415,31 @@ class ExtensionHelper
     public static function getCheckoutGateways($total, $currency, $type, $items = [])
     {
         $gateways = [];
-
-        foreach (Gateway::with('settings')->get() as $gateway) {
-            if (self::hasFunction($gateway, 'canUseGateway')) {
-                if (self::getExtension('gateway', $gateway->extension, $gateway->settings)->canUseGateway($total, $currency, $type, $items)) {
-                    $gateways[] = $gateway;
-                }
-            } else {
+        foreach (Gateway::where('enabled', true)->with('settings')->get() as $gateway) {
+            if (!self::gatewayEligible($gateway, $currency)) {
+                continue;
+            }
+            if (!self::hasFunction($gateway, 'canUseGateway') || self::getExtension('gateway', $gateway->extension, $gateway->settings)->canUseGateway($total, $currency, $type, $items)) {
                 $gateways[] = $gateway;
             }
         }
 
         return $gateways;
+    }
+
+    private static function gatewayEligible(Gateway $gateway, string $currency): bool
+    {
+        $collection = $gateway->settings->firstWhere('key', 'collection_enabled');
+        if ($collection && !filter_var($collection->value, FILTER_VALIDATE_BOOLEAN)) {
+            return false;
+        }
+        try {
+            (new GatewayFeePolicy)->assertSupported($gateway, $currency);
+        } catch (\InvalidArgumentException|\RuntimeException $e) {
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -427,6 +449,11 @@ class ExtensionHelper
     {
         MigrationHold::assertAllowed($invoice, 'pay');
 
+        if (!GatewayPaymentAttempt::where('invoice_id', $invoice->id)->where('gateway_id', $gateway->id)->whereIn('state', ['open', 'initializing'])->exists()) {
+            (new PaymentWriteGuard)->assertEditable($invoice);
+            (new GatewayFeePolicy)->assertSupported($gateway, $invoice->currency_code);
+        }
+
         return self::getExtension('gateway', $gateway->extension, $gateway->settings)->bindRecord($gateway)->pay($invoice, $invoice->remaining);
     }
 
@@ -434,14 +461,20 @@ class ExtensionHelper
     {
         MigrationHold::assertAllowed($invoice, 'charge');
 
-        return self::getExtension('gateway', $gateway->extension, $gateway->settings)->charge($invoice, $invoice->remaining, $billingAgreement);
+        (new PaymentWriteGuard)->assertEditable($invoice);
+        (new GatewayFeePolicy)->assertSupported($gateway, $invoice->currency_code);
+
+        return self::getExtension('gateway', $gateway->extension, $gateway->settings)->bindRecord($gateway)->charge($invoice, $invoice->remaining, $billingAgreement);
     }
 
-    public static function getBillingAgreementGateways()
+    public static function getBillingAgreementGateways(?string $currency = null)
     {
         $gateways = [];
 
-        foreach (Gateway::with('settings')->get() as $gateway) {
+        foreach (Gateway::where('enabled', true)->with('settings')->get() as $gateway) {
+            if (!self::gatewayEligible($gateway, $currency ?? session('currency', config('settings.default_currency')))) {
+                continue;
+            }
             if (self::hasFunction($gateway, 'supportsBillingAgreements')) {
                 if (self::getExtension('gateway', $gateway->extension, $gateway->settings)->supportsBillingAgreements()) {
                     $gateways[] = $gateway;
@@ -510,34 +543,37 @@ class ExtensionHelper
         $invoice = $invoice instanceof Invoice ? $invoice : Invoice::findOrFail($invoice);
         MigrationHold::assertAllowed($invoice, 'add payment');
 
-        if (!$transactionId) {
-            $transaction = $invoice->transactions()->create([
-                'gateway_id' => $gateway?->id,
-                'amount' => $amount,
-                'fee' => $fee,
-                'status' => $status,
-                'is_credit_transaction' => $isCreditTransaction,
-            ]);
-        } else {
-            $updateData = [
-                'gateway_id' => $gateway?->id,
-                'amount' => $amount,
-                'status' => $status,
-                'is_credit_transaction' => $isCreditTransaction,
-            ];
-            if ($fee !== null) {
-                $updateData['fee'] = $fee;
+        return DB::transaction(function () use ($invoice, $gateway, $amount, $fee, $transactionId, $status, $isCreditTransaction) {
+            $invoice = (new InvoicePaymentDependencies)->lock([$invoice->id])->firstWhere('id', $invoice->id);
+            if (!$transactionId) {
+                $transaction = $invoice->transactions()->create([
+                    'gateway_id' => $gateway?->id,
+                    'amount' => $amount,
+                    'fee' => $fee,
+                    'status' => $status,
+                    'is_credit_transaction' => $isCreditTransaction,
+                ]);
+            } else {
+                $updateData = [
+                    'gateway_id' => $gateway?->id,
+                    'amount' => $amount,
+                    'status' => $status,
+                    'is_credit_transaction' => $isCreditTransaction,
+                ];
+                if ($fee !== null) {
+                    $updateData['fee'] = $fee;
+                }
+
+                $transaction = $invoice->transactions()->updateOrCreate(
+                    [
+                        'transaction_id' => $transactionId,
+                    ],
+                    $updateData
+                );
             }
 
-            $transaction = $invoice->transactions()->updateOrCreate(
-                [
-                    'transaction_id' => $transactionId,
-                ],
-                $updateData
-            );
-        }
-
-        return $transaction;
+            return $transaction;
+        });
     }
 
     public static function addProcessingPayment($invoice, $gateway, $amount, $fee = null, $transactionId = null)

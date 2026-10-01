@@ -33,6 +33,11 @@ abstract class Gateway extends Extension
      */
     abstract public function pay(Invoice $invoice, $total);
 
+    public function supportsCustomerFeeCollection(): bool
+    {
+        return false;
+    }
+
     /**
      * Check if gateway supports billing agreements.
      */

@@ -12,6 +12,8 @@ parser.add_argument('--source', required=True)
 parser.add_argument('--id', action='append', required=True)
 parser.add_argument('--mgrctl', default='/usr/local/mgr5/sbin/mgrctl')
 parser.add_argument('--authorizenet-broker')
+parser.add_argument('--include-fees', action='store_true')
+parser.add_argument('--fee-database', default='billmgr')
 args = parser.parse_args()
 if len(set(args.id)) != len(args.id) or any(not x.isdigit() for x in args.id):
     raise RuntimeError('Gateway IDs must be unique numbers')
@@ -22,6 +24,7 @@ fields = {
     'pmwave': ['wave_access_token', 'wave_business_id', 'wave_customer_id', 'wave_product_id', 'return_url_base', 'currency'],
 }
 records = []
+fees = []
 for ident in args.id:
     proc = subprocess.Popen([args.mgrctl, '-m', 'billmgr', 'paymethod.edit', 'elid=' + ident, 'out=xml'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     raw, unused = proc.communicate()
@@ -44,5 +47,22 @@ for ident in args.id:
     for key in ['secret', 'wave_access_token', 'transaction_key', 'signature_key']:
         if key in settings and (not settings[key] or set(settings[key]) == set('*')):
             raise RuntimeError('Gateway credential missing or masked')
+    if args.include_fees:
+        query = 'SELECT id,module,active,currency,commissionpercent,commissionamount FROM paymethod WHERE id=' + ident
+        proc = subprocess.Popen(['mysql', '--default-character-set=utf8', '--xml', '--batch', args.fee_database], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        raw, unused = proc.communicate(query.encode('ascii'))
+        if proc.returncode:
+            raise RuntimeError('Source commission read failed')
+        rows = ET.fromstring(raw).findall('row')
+        if len(rows) != 1:
+            raise RuntimeError('Source commission identity missing or ambiguous')
+        values = dict((field.attrib['name'], field.text) for field in rows[0].findall('field'))
+        if values.get('id') != ident or values.get('module') != module or values.get('active') not in ('on', '1') or values.get('currency') != settings.get('currency') or any(values.get(key) is None for key in ['commissionpercent', 'commissionamount']):
+            raise RuntimeError('Source commission identity or active state changed')
+        values['active'] = 'on'
+        fees.append(values)
     records.append({'id': ident, 'module': module, 'active': 'on', 'settings': settings})
-json.dump({'schema_version': 1, 'kind': 'gateway_settings', 'source_host': args.source, 'gateways': records}, sys.stdout)
+bundle = {'schema_version': 1, 'kind': 'gateway_settings', 'source_host': args.source, 'gateways': records}
+if args.include_fees:
+    bundle['fees'] = fees
+json.dump(bundle, sys.stdout)

@@ -164,31 +164,29 @@
 
     <!-- Totals Section -->
     <div class="totals-section">
-        @if ($invoice->formattedTotal->tax > 0)
+        @php($summary = (new \App\Services\Billing\InvoicePricing)->summary($invoice))
         <table class="totals-table">
             <tr>
                 <td class="label">{{ __('invoices.subtotal') }}</td>
-                <td class="amount">{{ $invoice->formattedTotal->format($invoice->formattedTotal->price - $invoice->formattedTotal->tax) }}</td>
+                <td class="amount">{{ $invoice->formattedTotal->format($summary->productNet) }}</td>
             </tr>
+            @if(\Brick\Math\BigDecimal::of($summary->productTax)->isPositive())
             <tr>
-                <td class="label">
-                    {{ $invoice->tax->name }} ({{ $invoice->tax->rate }}%)
-                </td>
-                <td class="amount">{{ $invoice->formattedTotal->formatted->tax }}</td>
+                <td class="label">{{ $invoice->tax?->name ?? 'Tax' }} ({{ $invoice->tax?->rate }}%)</td>
+                <td class="amount">{{ $invoice->formattedTotal->format($summary->productTax) }}</td>
             </tr>
+            @endif
+            @if(\Brick\Math\BigDecimal::of($summary->gatewayFee)->isPositive())
+            <tr>
+                <td class="label">{{ __('Gateway fee') }}</td>
+                <td class="amount">{{ $invoice->formattedTotal->format($summary->gatewayFee) }}</td>
+            </tr>
+            @endif
             <tr class="total-row">
                 <td class="label">{{ __('invoices.total') }}</td>
-                <td class="amount">{{ $invoice->formattedTotal }}</td>
+                <td class="amount">{{ $invoice->formattedTotal->format($summary->total) }}</td>
             </tr>
         </table>
-        @else
-        <table class="totals-table">
-            <tr class="total-row">
-                <td class="label">{{ __('invoices.total') }}</td>
-                <td class="amount">{{ $invoice->formattedTotal }}</td>
-            </tr>
-        </table>
-        @endif
     </div>
 
     <div style="clear: both;"></div>

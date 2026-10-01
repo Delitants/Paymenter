@@ -16,6 +16,11 @@ use RuntimeException;
 #[ExtensionMeta(name: 'WebMoney', description: 'WebMoney SHA256 merchant payments with destination-bound references', version: '0.1.0', author: 'Paymenter Community')]
 class WebMoney extends Gateway
 {
+    public function supportsCustomerFeeCollection(): bool
+    {
+        return true;
+    }
+
     public function boot()
     {
         require __DIR__ . '/routes.php';

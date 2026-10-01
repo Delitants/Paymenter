@@ -8,7 +8,6 @@ use App\Models\GatewayPaymentAttempt;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\User;
-use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Factory;
 use Illuminate\Support\Facades\Bus;
@@ -16,11 +15,15 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Paymenter\Extensions\Gateways\AuthorizeNet\AuthorizeNet;
+use Tests\Concerns\UsesCommittedDatabase;
+use Tests\Concerns\UsesTaxedGatewayInvoice;
 use Tests\TestCase;
 
 class AuthorizeNetTest extends TestCase
 {
-    use RefreshDatabase;
+    use UsesCommittedDatabase, UsesTaxedGatewayInvoice;
+
+    private bool $taxed = false;
 
     private function fixture(): array
     {
@@ -63,10 +66,46 @@ class AuthorizeNetTest extends TestCase
             if (isset($d['getTransactionDetailsRequest'])) {
                 $a = GatewayPaymentAttempt::sole();
 
-                return Http::response(['transaction' => array_replace(['transId' => '123456', 'transactionType' => 'authCaptureTransaction', 'transactionStatus' => 'capturedPendingSettlement', 'authAmount' => '12.34', 'settleAmount' => '12.34', 'order' => ['invoiceNumber' => $a->reference]], $transactionChanges ?? []), 'messages' => ['resultCode' => 'Ok']]);
+                return Http::response(['transaction' => array_replace(['transId' => '123456', 'transactionType' => 'authCaptureTransaction', 'transactionStatus' => 'capturedPendingSettlement', 'authAmount' => $this->taxed ? '109.88' : '12.34', 'settleAmount' => $this->taxed ? '109.88' : '12.34', 'order' => ['invoiceNumber' => $a->reference]], $transactionChanges ?? []), 'messages' => ['resultCode' => 'Ok']]);
             }
             throw new \RuntimeException('Unexpected synthetic API request');
         });
+    }
+
+    public function test_tax_and_untaxed_fee_lines_match_native_capture(): void
+    {
+        [$invoice, $gateway] = $this->fixture();
+        $this->taxAndFee($invoice, $gateway);
+        $this->taxed = true;
+        $this->fakeApi();
+        ExtensionHelper::pay($gateway, $invoice->fresh());
+        Http::assertSent(fn ($r) => ($r['getHostedPaymentPageRequest']['transactionRequest']['amount'] ?? null) === '109.88');
+        $this->assertSame('109.88', GatewayPaymentAttempt::sole()->amount);
+        $this->sendNotification($gateway)->assertOk();
+        $this->sendNotification($gateway)->assertOk();
+        $this->assertSame('109.88', $invoice->transactions()->sole()->amount);
+        $this->assertSame('7.13', $invoice->items()->where('kind', 'product')->sole()->tax_amount);
+        $this->assertSame('0.00', $invoice->items()->where('kind', 'gateway_fee')->sole()->tax_amount);
+    }
+
+    public function test_bad_tax_allocation_cannot_approve_or_settle(): void
+    {
+        [$invoice, $gateway, $extension] = $this->fixture();
+        $this->taxAndFee($invoice, $gateway);
+        $this->taxed = true;
+        $this->fakeApi();
+        $extension->pay($invoice->fresh(), '107.13');
+        Http::swap(new Factory);
+        Http::preventStrayRequests();
+        $this->fakeApi(['settleAmount' => '109.87']);
+        $this->sendNotification($gateway)->assertStatus(422);
+        Http::swap(new Factory);
+        Http::preventStrayRequests();
+        $this->fakeApi();
+        DB::table('invoice_items')->where('invoice_id', $invoice->id)->where('kind', 'product')->update(['tax_amount' => '7.12']);
+        $this->sendNotification($gateway)->assertStatus(422);
+        $this->assertSame('pending', $invoice->fresh()->status);
+        $this->assertSame(0, $invoice->transactions()->count());
     }
 
     public function test_native_hosted_checkout_caches_token_and_verified_callback_settles_the_correct_gateway_once(): void

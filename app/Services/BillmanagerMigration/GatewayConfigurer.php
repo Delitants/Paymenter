@@ -3,6 +3,7 @@
 namespace App\Services\BillmanagerMigration;
 
 use App\Models\Gateway;
+use App\Services\Gateways\GatewayFeePolicy;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
@@ -95,6 +96,10 @@ final class GatewayConfigurer
                         throw new RuntimeException('Mapped gateway configuration changed');
                     }
                     $actual = $gateway->settings->pluck('value', 'key')->all();
+                    // Optional fee preparation is independently verified and archived.
+                    foreach (array_column((new GatewayFeePolicy)->configFields(), 'name') as $key) {
+                        unset($actual[$key]);
+                    }
                     ksort($actual);
                     ksort($settings);
                     if ($actual !== $settings || $gateway->settings->contains(fn ($s) => !$s->encrypted)) {

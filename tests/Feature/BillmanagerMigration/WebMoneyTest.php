@@ -12,17 +12,18 @@ use App\Models\Service;
 use App\Models\User;
 use App\Services\BillmanagerMigration\MigrationHeldException;
 use Illuminate\Auth\Access\AuthorizationException;
-use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Paymenter\Extensions\Gateways\WebMoney\WebMoney;
+use Tests\Concerns\UsesCommittedDatabase;
+use Tests\Concerns\UsesTaxedGatewayInvoice;
 use Tests\TestCase;
 
 class WebMoneyTest extends TestCase
 {
-    use RefreshDatabase;
+    use UsesCommittedDatabase, UsesTaxedGatewayInvoice;
 
     private function fixture(): array
     {
@@ -54,6 +55,37 @@ class WebMoneyTest extends TestCase
         $p['LMI_HASH'] = strtoupper(hash('sha256', $text));
 
         return $p;
+    }
+
+    public function test_tax_and_untaxed_fee_lines_match_native_capture(): void
+    {
+        [$invoice, $service, $gateway] = $this->fixture();
+        $this->taxAndFee($invoice, $gateway);
+        $view = ExtensionHelper::pay($gateway, $invoice->fresh());
+        $this->assertStringContainsString('value="109.88"', $view->render());
+        $attempt = GatewayPaymentAttempt::sole();
+        $this->assertSame('109.88', $attempt->amount);
+        $body = $this->notification($attempt, ['LMI_PAYMENT_AMOUNT' => '109.88']);
+        $this->post('/extensions/webmoney/' . $gateway->id . '/notify', $body)->assertOk();
+        $expiry = $service->fresh()->expires_at;
+        $this->post('/extensions/webmoney/' . $gateway->id . '/notify', $body)->assertOk();
+        $this->assertSame('109.88', $invoice->transactions()->sole()->amount);
+        $this->assertEquals($expiry, $service->fresh()->expires_at);
+        $this->assertSame('10.00', (string) $service->fresh()->getRawOriginal('price'));
+        Http::assertNothingSent();
+    }
+
+    public function test_bad_tax_allocation_cannot_approve_or_settle(): void
+    {
+        [$invoice,, $gateway, $extension] = $this->fixture();
+        $this->taxAndFee($invoice, $gateway);
+        $extension->pay($invoice->fresh(), '107.13');
+        $attempt = GatewayPaymentAttempt::sole();
+        $this->post('/extensions/webmoney/' . $gateway->id . '/notify', $this->notification($attempt, ['LMI_PAYMENT_AMOUNT' => '109.87']))->assertStatus(422);
+        DB::table('invoice_items')->where('invoice_id', $invoice->id)->where('kind', 'product')->update(['tax_amount' => '7.12']);
+        $this->post('/extensions/webmoney/' . $gateway->id . '/notify', $this->notification($attempt, ['LMI_PAYMENT_AMOUNT' => '109.88']))->assertStatus(422);
+        $this->assertSame('pending', $invoice->fresh()->status);
+        $this->assertSame(0, $invoice->transactions()->count());
     }
 
     public function test_native_checkout_reuses_attempt_and_signed_callback_renews_exactly_once(): void
@@ -167,8 +199,8 @@ class WebMoneyTest extends TestCase
             $e->pay($invoice, '10.00');
             $this->fail('Stale currency accepted');
         } catch (\RuntimeException $ex) {
-            $this->assertStringContainsString('currency',$ex->getMessage());
+            $this->assertStringContainsString('currency', $ex->getMessage());
         }
-        $this->assertSame(0,GatewayPaymentAttempt::count());
+        $this->assertSame(0, GatewayPaymentAttempt::count());
     }
 }

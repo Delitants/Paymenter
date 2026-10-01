@@ -20,7 +20,12 @@ use RuntimeException;
 #[ExtensionMeta(name: 'Wave', description: 'Native Wave invoices with merchant-bound payment reconciliation', version: '0.1.0', author: 'Paymenter Community')]
 class Wave extends Gateway
 {
-    private const INVOICE_FIELDS = 'id internalId business { id } customer { id } invoiceNumber status currency { code } total { value } amountPaid { value } amountDue { value } viewUrl';
+    private const INVOICE_FIELDS = 'id internalId business { id } customer { id } invoiceNumber status currency { code } total { value } amountPaid { value } amountDue { value } viewUrl items { description quantity unitPrice subtotal { value } total { value } product { id } taxes { amount { value } salesTax { id business { id } rate(for: $taxDate) isCompound isArchived } } }';
+
+    public function supportsCustomerFeeCollection(): bool
+    {
+        return true;
+    }
 
     public function boot()
     {
@@ -34,6 +39,7 @@ class Wave extends Gateway
             ['name' => 'access_token', 'label' => 'Wave access token', 'type' => 'password', 'encrypted' => true, 'required' => true],
             ['name' => 'business_id', 'label' => 'GraphQL business ID', 'type' => 'text', 'required' => true],
             ['name' => 'product_id', 'label' => 'Invoice product ID', 'type' => 'text', 'required' => true],
+            ['name' => 'sales_tax_id', 'label' => 'Existing business sales tax ID (required for taxed invoices)', 'type' => 'text'],
             ['name' => 'currency', 'label' => 'Settlement currency', 'type' => 'text', 'required' => true],
             ['name' => 'webhook_business_id', 'label' => 'Webhook business ID (verify separately from GraphQL ID)', 'type' => 'text'],
             ['name' => 'webhook_secret', 'label' => 'Webhook signing secret', 'type' => 'password', 'encrypted' => true],
@@ -85,7 +91,7 @@ class Wave extends Gateway
         if (!$this->gatewayRecord) {
             throw new RuntimeException('Explicit gateway record binding is required');
         }
-        if ((config('settings.tax_enabled', false) && ($invoice->tax?->rate ?? 0) > 0) || $invoice->transactions()->exists()) {
+        if ($invoice->transactions()->exists()) {
             throw new RuntimeException('Wave requires reconciled tax and payment order lines for this invoice');
         }
         $a = (new PaymentAttempts)->begin($this->gatewayRecord, $invoice, $this->merchant(), (string) $this->config('currency'));
@@ -94,16 +100,37 @@ class Wave extends Gateway
             if ($a->state !== 'open' || $a->provider_payload !== null) {
                 throw new RuntimeException('Checkout initialization requires reconciliation');
             }
+            if ($a->pricing_payload === null) {
+                throw new RuntimeException('Legacy Wave tax allocation requires reconciliation.');
+            }
+            $taxDate = now()->toDateString();
+            $tax = null;
+            $allocator = new OrderLines;
+            if (BigDecimal::of($a->pricing_payload['product_tax'])->isPositive()) {
+                $taxId = $this->config('sales_tax_id');
+                if (!is_string($taxId) || $taxId === '') {
+                    throw new RuntimeException('Wave requires an existing business sales tax ID.');
+                }
+                $r = $this->api('query WaveSalesTax($business: ID!, $tax: ID!, $taxDate: Date!) { business(id: $business) { id salesTax(id: $tax) { id business { id } rate(for: $taxDate) isCompound isArchived } } }',
+                    ['business' => $this->config('business_id'), 'tax' => $taxId, 'taxDate' => $taxDate]);
+                $tax = $r['business']['salesTax'] ?? [];
+                if (($r['business']['id'] ?? null) !== $this->config('business_id') || ($tax['id'] ?? null) !== $taxId) {
+                    throw new RuntimeException('Wave business sales tax identity does not match.');
+                }
+                $allocator->assertTax($tax, $this->config('business_id'), $a->pricing_payload['tax_context']['rate']);
+            }
+            $items = $allocator->build($a, (string) $this->config('product_id'), $tax);
             $customerId = (new CustomerBindings)->resolve('Wave', hash('sha256', (string) $this->config('business_id')),
                 $a->invoice->user, fn () => $this->findOrCreateCustomer($a));
             if (!GatewayPaymentAttempt::whereKey($a->id)->where('state', 'open')->whereNull('provider_payload')->update(['state' => 'initializing'])) {
                 throw new RuntimeException('Checkout initialization requires reconciliation');
             }
-            $payload = ['customer_id' => $customerId];
+            $payload = ['customer_id' => $customerId, 'items' => $items, 'verified_tax' => $tax,
+                'tax_date' => $taxDate, 'product_id' => $this->config('product_id')];
             $a->update(['provider_payload' => $payload]);
-            $r = $this->api('mutation WaveCreateInvoice($input: InvoiceCreateInput!) { invoiceCreate(input: $input) { didSucceed invoice { ' . self::INVOICE_FIELDS . ' } } }', ['input' => [
-                'businessId' => $this->config('business_id'), 'customerId' => $customerId, 'status' => 'DRAFT', 'currency' => $a->currency_code, 'invoiceNumber' => 'PAY-' . $a->reference,
-                'items' => [['productId' => $this->config('product_id'), 'description' => 'Invoice ' . ($invoice->number ?: $invoice->id), 'quantity' => '1', 'unitPrice' => $a->amount, 'taxes' => []]],
+            $r = $this->api('mutation WaveCreateInvoice($input: InvoiceCreateInput!, $taxDate: Date!) { invoiceCreate(input: $input) { didSucceed invoice { ' . self::INVOICE_FIELDS . ' } } }', ['taxDate' => $taxDate, 'input' => [
+                'businessId' => $this->config('business_id'), 'customerId' => $customerId, 'status' => 'DRAFT', 'currency' => $a->currency_code, 'invoiceNumber' => 'PAY-' . $a->reference, 'invoiceDate' => $taxDate,
+                'items' => $items,
             ]]);
             if (($r['invoiceCreate']['didSucceed'] ?? null) !== true) {
                 throw new RuntimeException('Wave invoice creation was not confirmed');
@@ -113,7 +140,7 @@ class Wave extends Gateway
                 throw new RuntimeException('Wave invoice identity is missing');
             }
             $a->update(['provider_reference' => $remote['id'], 'provider_webhook_reference' => isset($remote['internalId']) ? (string) $remote['internalId'] : null]);
-            $r = $this->api('mutation WaveApproveInvoice($input: InvoiceApproveInput!) { invoiceApprove(input: $input) { didSucceed invoice { ' . self::INVOICE_FIELDS . ' } } }', ['input' => ['invoiceId' => $remote['id']]]);
+            $r = $this->api('mutation WaveApproveInvoice($input: InvoiceApproveInput!, $taxDate: Date!) { invoiceApprove(input: $input) { didSucceed invoice { ' . self::INVOICE_FIELDS . ' } } }', ['taxDate' => $taxDate, 'input' => ['invoiceId' => $remote['id']]]);
             if (($r['invoiceApprove']['didSucceed'] ?? null) !== true) {
                 throw new RuntimeException('Wave invoice approval was not confirmed');
             }$remote = $r['invoiceApprove']['invoice'] ?? [];
@@ -178,6 +205,7 @@ class Wave extends Gateway
         if (!is_string($r['total']['value'] ?? null) || !BigDecimal::of($r['total']['value'])->isEqualTo($a->amount)) {
             throw new RuntimeException('Wave invoice amount does not match');
         }
+        (new OrderLines)->assertInvoice($a, $r);
         if ($paid && (($r['status'] ?? null) !== 'PAID' || !is_string($r['amountDue']['value'] ?? null) || !is_string($r['amountPaid']['value'] ?? null) || !BigDecimal::of($r['amountDue']['value'])->isZero() || !BigDecimal::of($r['amountPaid']['value'])->isEqualTo($a->amount))) {
             throw new RuntimeException('Wave invoice is not fully paid');
         }
@@ -194,7 +222,7 @@ class Wave extends Gateway
             throw new RuntimeException('Unknown destination invoice');
         }
         $ledger->validate($this->gatewayRecord, $reference, $this->merchant(), $a->amount, $a->currency_code);
-        $r = $this->api('query WaveInvoice($business: ID!, $invoice: ID!) { business(id: $business) { id invoice(id: $invoice) { ' . self::INVOICE_FIELDS . ' } } }', ['business' => $this->config('business_id'), 'invoice' => $a->provider_reference]);
+        $r = $this->api('query WaveInvoice($business: ID!, $invoice: ID!, $taxDate: Date!) { business(id: $business) { id invoice(id: $invoice) { ' . self::INVOICE_FIELDS . ' } } }', ['business' => $this->config('business_id'), 'invoice' => $a->provider_reference, 'taxDate' => $a->provider_payload['tax_date'] ?? now()->toDateString()]);
         if (($r['business']['id'] ?? null) !== $this->config('business_id')) {
             throw new RuntimeException('Wave business does not match');
         }$this->verifyInvoice($a, $r['business']['invoice'] ?? [], true);

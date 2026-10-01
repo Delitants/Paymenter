@@ -4,6 +4,7 @@ namespace Tests\Feature\BillmanagerMigration;
 
 use App\Models\Gateway;
 use App\Services\BillmanagerMigration\GatewayConfigurer;
+use App\Services\BillmanagerMigration\GatewayFeeConfigurer;
 use App\Services\BillmanagerMigration\ImportContext;
 use App\Services\BillmanagerMigration\Snapshot;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -95,7 +96,81 @@ class GatewayConfigurationTest extends TestCase
             $this->apply($s, $c, $b);
             $this->fail('Conflicting currency accepted');
         } catch (\RuntimeException) {
-            $this->assertSame(0,Gateway::count());
+            $this->assertSame(0, Gateway::count());
+        }
+    }
+
+    private function applyFees($snapshot, $context, $bundle): array
+    {
+        $path = tempnam(sys_get_temp_dir(), 'gateway-fees-');
+        file_put_contents($path, Crypt::encryptString(json_encode($bundle)));
+        try {
+            return (new GatewayFeeConfigurer)->configure($snapshot, $context, $path);
+        } finally {
+            unlink($path);
+        }
+    }
+
+    private function withFees(array $bundle): array
+    {
+        $bundle['fees'] = array_map(fn ($record) => [
+            'id' => $record['id'], 'module' => $record['module'], 'active' => 'on',
+            'currency' => '153', 'commissionpercent' => '2.5', 'commissionamount' => '0.2500',
+        ], $bundle['gateways']);
+
+        return $bundle;
+    }
+
+    public function test_mapped_source_fees_import_and_replay_without_enabling_collection(): void
+    {
+        [$s, $c, $b] = $this->fixture();
+        $targets = $this->apply($s, $c, $b);
+        $fees = $this->withFees($b);
+        $this->assertSame($targets, $this->applyFees($s, $c, $fees));
+        $this->assertSame($targets, $this->applyFees($s, $c, $fees));
+        $this->assertSame($targets, $this->apply($s, $c, $b)); // credential replay stays exact
+        foreach ($targets as $target) {
+            $g = Gateway::findOrFail($target);
+            $this->assertFalse((bool) $g->enabled);
+            $this->assertSame('0', $g->settings()->where('key', 'collection_enabled')->first()->value);
+            $this->assertSame('2.5000', $g->settings()->where('key', 'customer_fee_percent')->first()->value);
+            $this->assertSame('0.25', $g->settings()->where('key', 'customer_fee_fixed')->first()->value);
+        }
+        $this->assertSame(4, DB::table('billmanager_records')->where('source_table', 'gateway_source_fees')->count());
+        Http::assertNothingSent();
+    }
+
+    public function test_fee_import_rejects_changed_target_and_source_identity(): void
+    {
+        [$s, $c, $b] = $this->fixture();
+        $targets = $this->apply($s, $c, $b);
+        $fees = $this->withFees($b);
+        $this->applyFees($s, $c, $fees);
+        $g = Gateway::findOrFail(reset($targets));
+        $g->settings()->where('key', 'customer_fee_percent')->first()->update(['value' => '3.0000']);
+        try {
+            $this->applyFees($s, $c, $fees);
+            $this->fail('Changed target fee accepted');
+        } catch (\RuntimeException) {
+            $this->assertSame('3.0000', $g->settings()->where('key', 'customer_fee_percent')->first()->value);
+        }
+        $fees['fees'][0]['module'] = 'unknown';
+        $this->expectException(\RuntimeException::class);
+        $this->applyFees($s, $c, $fees);
+    }
+
+    public function test_fee_source_currency_drift_rolls_back_partial_preparation(): void
+    {
+        [$s, $c, $b] = $this->fixture();
+        $this->apply($s, $c, $b);
+        $fees = $this->withFees($b);
+        $fees['fees'][3]['currency'] = '999';
+        try {
+            $this->applyFees($s, $c, $fees);
+            $this->fail('Source currency drift accepted');
+        } catch (\RuntimeException) {
+            $this->assertSame(0, DB::table('settings')->where('key', 'customer_fee_enabled')->count());
+            $this->assertSame(0, DB::table('billmanager_records')->where('source_table', 'gateway_source_fees')->count());
         }
     }
 }

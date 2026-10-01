@@ -23,7 +23,7 @@ class InvoiceSnapshot extends Model
 
     protected $casts = [
         'properties' => 'array',
-        'tax_rate' => 'decimal:2',
+        'tax_rate' => 'decimal:4',
     ];
 
     public function invoice()

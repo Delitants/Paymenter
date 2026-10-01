@@ -2,25 +2,33 @@
 
 namespace Tests\Feature\BillmanagerMigration;
 
+use App\Enums\InvoiceTransactionStatus;
 use App\Models\Gateway;
 use App\Models\GatewayPaymentAttempt;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\User;
 use App\Services\BillmanagerMigration\MigrationHeldException;
+use App\Services\Gateways\PaymentAttempts;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Factory;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
+use Paymenter\Extensions\Gateways\Wave\OrderLines;
 use Paymenter\Extensions\Gateways\Wave\Wave;
 use Tests\Concerns\UsesCommittedDatabase;
+use Tests\Concerns\UsesTaxedGatewayInvoice;
 use Tests\TestCase;
 
 class WaveTest extends TestCase
 {
-    use UsesCommittedDatabase;
+    use UsesCommittedDatabase, UsesTaxedGatewayInvoice;
+
+    private bool $taxed = false;
+
+    private array $taxChanges = [];
 
     private function fixture(): array
     {
@@ -43,13 +51,39 @@ class WaveTest extends TestCase
 
     private function providerInvoice(array $changes = []): array
     {
-        return array_replace(['id' => 'synthetic-wave-invoice', 'internalId' => '12345', 'business' => ['id' => 'synthetic-business'], 'customer' => ['id' => 'synthetic-customer'], 'invoiceNumber' => 'PAY-' . GatewayPaymentAttempt::sole()->reference, 'status' => 'PAID', 'currency' => ['code' => 'USD'], 'total' => ['value' => '12.34'], 'amountPaid' => ['value' => '12.34'], 'amountDue' => ['value' => '0.00'], 'viewUrl' => 'https://next.waveapps.com/a/invoices/synthetic'], $changes);
+        $amount = $this->taxed ? '109.88' : '12.34';
+
+        return array_replace(['id' => 'synthetic-wave-invoice', 'internalId' => '12345', 'business' => ['id' => 'synthetic-business'], 'customer' => ['id' => 'synthetic-customer'], 'invoiceNumber' => 'PAY-' . GatewayPaymentAttempt::sole()->reference, 'status' => 'PAID', 'currency' => ['code' => 'USD'], 'total' => ['value' => $amount], 'amountPaid' => ['value' => $amount], 'amountDue' => ['value' => '0.00'], 'viewUrl' => 'https://next.waveapps.com/a/invoices/synthetic', 'items' => $this->providerItems()], $changes);
     }
 
-    private function fakeApi(array $changes = [], bool $newCustomer = false): void
+    private function taxRecord(array $changes = []): array
     {
-        Http::fake(function ($r) use ($changes, $newCustomer) {
+        return array_replace(['id' => 'synthetic-tax', 'business' => ['id' => 'synthetic-business'], 'rate' => '0.07125', 'isCompound' => false, 'isArchived' => false], $changes);
+    }
+
+    private function providerItems(): array
+    {
+        $invoice = GatewayPaymentAttempt::sole()->invoice;
+        $id = $invoice->items()->where('kind', 'product')->firstOrFail()->id;
+        $net = $this->taxed ? '100.00' : '12.34';
+        $items = [['description' => 'Paymenter item ' . $id, 'quantity' => '1', 'unitPrice' => $net, 'subtotal' => ['value' => $net],
+            'total' => ['value' => $this->taxed ? '107.13' : '12.34'], 'product' => ['id' => 'synthetic-product'],
+            'taxes' => $this->taxed ? [['salesTax' => $this->taxRecord(), 'amount' => ['value' => '7.13']]] : []]];
+        if ($this->taxed) {
+            $id = $invoice->items()->where('kind', 'gateway_fee')->sole()->id;
+            $items[] = ['description' => 'Paymenter item ' . $id, 'quantity' => '1', 'unitPrice' => '2.75', 'subtotal' => ['value' => '2.75'], 'total' => ['value' => '2.75'], 'product' => ['id' => 'synthetic-product'], 'taxes' => []];
+        }
+
+        return $items;
+    }
+
+    private function fakeApi(array $changes = [], bool $newCustomer = false, array $createChanges = []): void
+    {
+        Http::fake(function ($r) use ($changes, $newCustomer, $createChanges) {
             $query = $r['query'];
+            if (str_contains($query, 'WaveSalesTax')) {
+                return Http::response(['data' => ['business' => ['id' => 'synthetic-business', 'salesTax' => $this->taxRecord($this->taxChanges)]]]);
+            }
             if (str_contains($query, 'WaveReadiness')) {
                 return Http::response(['data' => ['business' => ['id' => 'synthetic-business']]]);
             }
@@ -60,7 +94,7 @@ class WaveTest extends TestCase
                 return Http::response(['data' => ['customerCreate' => ['didSucceed' => true, 'customer' => ['id' => 'synthetic-customer', 'email' => 'wave-fixture@example.test']]]]);
             }
             if (str_contains($query, 'WaveCreateInvoice')) {
-                return Http::response(['data' => ['invoiceCreate' => ['didSucceed' => true, 'invoice' => $this->providerInvoice(['status' => 'DRAFT'])]]]);
+                return Http::response(['data' => ['invoiceCreate' => ['didSucceed' => true, 'invoice' => $this->providerInvoice(array_replace(['status' => 'DRAFT'], $createChanges))]]]);
             }
             if (str_contains($query, 'WaveApproveInvoice')) {
                 return Http::response(['data' => ['invoiceApprove' => ['didSucceed' => true, 'invoice' => $this->providerInvoice(['status' => 'SAVED'])]]]);
@@ -70,6 +104,155 @@ class WaveTest extends TestCase
             }
             throw new \RuntimeException('Unexpected GraphQL request');
         });
+    }
+
+    private function taxedFixture(): array
+    {
+        [$invoice, $gateway] = $this->fixture();
+        $this->taxAndFee($invoice, $gateway);
+        $gateway->settings()->create(['key' => 'sales_tax_id', 'value' => 'synthetic-tax']);
+        $this->taxed = true;
+
+        return [$invoice->fresh(), $gateway, (new Wave($gateway->fresh()->settings->pluck('value', 'key')->all()))->bindRecord($gateway)];
+    }
+
+    public function test_tax_and_untaxed_fee_lines_match_native_capture(): void
+    {
+        [$invoice, $gateway, $extension] = $this->taxedFixture();
+        $this->fakeApi(newCustomer: true);
+        $extension->pay($invoice, '107.13');
+        $requests = Http::recorded()->map(fn ($pair) => $pair[0]['query'])->all();
+        $this->assertStringContainsString('WaveSalesTax', $requests[0]);
+        $request = Http::recorded(fn ($r) => str_contains($r['query'], 'WaveCreateInvoice'))->sole()[0];
+        $items = $request['variables']['input']['items'];
+        $this->assertSame(['100.00', '2.75'], array_column($items, 'unitPrice'));
+        $this->assertSame([['salesTaxId' => 'synthetic-tax']], $items[0]['taxes']);
+        $this->assertSame([], $items[1]['taxes']);
+        $this->assertSame('109.88', GatewayPaymentAttempt::sole()->amount);
+        $gateway->settings()->where('key', 'sales_tax_id')->first()->update(['value' => 'new-tax-setting']);
+        (new Wave($gateway->fresh()->settings->pluck('value', 'key')->all()))->bindRecord($gateway)->pay($invoice->fresh(), '109.88');
+        $this->assertCount(1, Http::recorded(fn ($r) => str_contains($r['query'], 'WaveCreateInvoice')));
+        $this->assertCount(1, Http::recorded(fn ($r) => str_contains($r['query'], 'WaveSalesTax')));
+        $this->notify($gateway)->assertOk();
+        $this->notify($gateway)->assertOk();
+        $this->assertSame('paid', $invoice->fresh()->status);
+        $this->assertSame('109.88', $invoice->transactions()->sole()->amount);
+        Http::assertNotSent(fn ($r) => str_contains($r['query'], 'salesTaxCreate') || str_contains($r['query'], 'salesTaxPatch'));
+    }
+
+    public function test_bad_tax_record_prevents_customer_and_invoice_writes(): void
+    {
+        [$invoice,, $extension] = $this->taxedFixture();
+        foreach ([['id' => 'wrong-tax'], ['business' => ['id' => 'wrong-business']], ['rate' => '0.0712'], ['rate' => 'NaN'], ['isCompound' => true], ['isArchived' => true]] as $change) {
+            Http::swap(new Factory);
+            Http::preventStrayRequests();
+            $this->taxChanges = $change;
+            $this->fakeApi(newCustomer: true);
+            try {
+                $extension->pay($invoice->fresh(), '107.13');
+                $this->fail('Invalid business sales tax accepted');
+            } catch (\RuntimeException) {
+                Http::assertSent(fn ($r) => str_contains($r['query'], 'WaveSalesTax'));
+                Http::assertNotSent(fn ($r) => str_contains($r['query'], 'mutation'));
+            }
+        }
+        $this->assertSame(0, $invoice->transactions()->count());
+        $this->assertSame(0, DB::table('gateway_customer_bindings')->count());
+    }
+
+    public function test_invoice_date_and_readback_tax_date_stay_frozen_after_midnight(): void
+    {
+        [$invoice, $gateway, $extension] = $this->taxedFixture();
+        $this->fakeApi();
+        $date = now()->toDateString();
+        $extension->pay($invoice, '107.13');
+        $request = Http::recorded(fn ($r) => str_contains($r['query'], 'WaveCreateInvoice'))->sole()[0];
+        $this->assertSame($date, $request['variables']['input']['invoiceDate'] ?? null);
+        $this->travel(1)->days();
+        $this->notify($gateway)->assertOk();
+        $request = Http::recorded(fn ($r) => str_contains($r['query'], 'query WaveInvoice'))->sole()[0];
+        $this->assertSame($date, $request['variables']['taxDate']);
+        $this->assertStringContainsString('rate(for: $taxDate)', $request['query']);
+        $this->assertSame('109.88', $invoice->transactions()->sole()->amount);
+    }
+
+    public function test_bad_tax_allocation_cannot_approve_or_settle(): void
+    {
+        [$invoice, $gateway, $extension] = $this->taxedFixture();
+        $this->fakeApi();
+        $extension->pay($invoice, '107.13');
+        $items = $this->providerItems();
+        $badTax = $items;
+        $badTax[0]['taxes'][0]['amount']['value'] = '7.12';
+        $badFee = $items;
+        $badFee[1]['unitPrice'] = '2.76';
+        $taxedFee = $items;
+        $taxedFee[1]['taxes'] = [['salesTax' => $this->taxRecord(), 'amount' => ['value' => '0.20']]];
+        $badProduct = $items;
+        $badProduct[0]['product']['id'] = 'other-product';
+        foreach ([$badTax, $badFee, $taxedFee, $badProduct, array_merge($items, [$items[0]])] as $allocation) {
+            Http::swap(new Factory);
+            Http::preventStrayRequests();
+            $this->fakeApi(['items' => $allocation]);
+            $this->notify($gateway)->assertStatus(422);
+        }
+        $this->assertSame('pending', $invoice->fresh()->status);
+        $this->assertSame(0, $invoice->transactions()->count());
+    }
+
+    public function test_wrong_created_tax_cannot_approve_an_invoice(): void
+    {
+        [$invoice,, $extension] = $this->taxedFixture();
+        $this->fakeApi(createChanges: ['items' => []]);
+        try {
+            $extension->pay($invoice, '107.13');
+            $this->fail('Unverified provider allocation approved');
+        } catch (\RuntimeException) {
+            Http::assertNotSent(fn ($r) => str_contains($r['query'], 'WaveApproveInvoice'));
+        }
+        $this->assertSame('initializing', GatewayPaymentAttempt::sole()->state);
+        $this->assertSame(0, $invoice->transactions()->count());
+    }
+
+    public function test_small_native_unit_rounding_is_preserved_by_split_wave_lines(): void
+    {
+        [$invoice, $gateway] = $this->taxedFixture();
+        $invoice->items()->first()->update(['price' => '0.11', 'quantity' => 3, 'tax_amount' => '0.03']);
+        $attempt = (new PaymentAttempts)->begin($gateway, $invoice->fresh(), hash('sha256', 'synthetic merchant'), 'USD');
+        $items = (new OrderLines)->build($attempt, 'synthetic-product', $this->taxRecord());
+        $this->assertCount(4, $items);
+        $this->assertSame(['0.10', '0.10', '0.10', '0.26'], array_column($items, 'unitPrice'));
+        $this->assertSame(['1', '1', '1', '1'], array_column($items, 'quantity'));
+        $this->assertSame('0.03', $attempt->pricing_payload['product_tax']);
+    }
+
+    public function test_legacy_initialized_attempt_retains_original_callback_contract(): void
+    {
+        [$invoice, $gateway, $extension] = $this->fixture();
+        $this->fakeApi();
+        $extension->pay($invoice, '12.34');
+        $attempt = GatewayPaymentAttempt::sole();
+        $payload = $attempt->provider_payload;
+        unset($payload['items'], $payload['verified_tax'], $payload['tax_date'], $payload['product_id']);
+        $attempt->update(['pricing_payload' => null, 'pricing_fingerprint' => null, 'provider_payload' => $payload]);
+        $extension->pay($invoice, '12.34');
+        $this->notify($gateway)->assertOk();
+        $this->notify($gateway)->assertOk();
+        $this->assertSame('12.34', $invoice->transactions()->sole()->amount);
+        $this->assertSame(0, $invoice->items()->where('kind', 'gateway_fee')->count());
+    }
+
+    public function test_partial_credit_allocation_remains_unavailable_before_provider_calls(): void
+    {
+        [$invoice,, $extension] = $this->taxedFixture();
+        $invoice->transactions()->create(['amount' => '10.00', 'status' => InvoiceTransactionStatus::Succeeded, 'is_credit_transaction' => true]);
+        try {
+            $extension->pay($invoice->fresh(), '97.13');
+            $this->fail('Unaccepted partial-credit allocation submitted');
+        } catch (\RuntimeException) {
+            $this->assertSame(0, GatewayPaymentAttempt::count());
+        }
+        Http::assertNothingSent();
     }
 
     private function notify(Gateway $g, array $changes = [], ?string $key = null, int $offset = 0)
@@ -206,7 +389,9 @@ class WaveTest extends TestCase
                 $remotes[$id] = ['id' => $id, 'internalId' => $id, 'business' => ['id' => 'synthetic-business'],
                     'customer' => ['id' => $input['customerId']], 'invoiceNumber' => $input['invoiceNumber'], 'status' => 'DRAFT',
                     'currency' => ['code' => 'USD'], 'total' => ['value' => '12.34'], 'amountPaid' => ['value' => '0.00'],
-                    'amountDue' => ['value' => '12.34'], 'viewUrl' => 'https://next.waveapps.com/a/invoices/' . $id];
+                    'amountDue' => ['value' => '12.34'], 'viewUrl' => 'https://next.waveapps.com/a/invoices/' . $id,
+                    'items' => [['description' => $input['items'][0]['description'], 'product' => ['id' => 'synthetic-product'],
+                        'quantity' => '1', 'unitPrice' => '12.34', 'subtotal' => ['value' => '12.34'], 'total' => ['value' => '12.34'], 'taxes' => []]]];
 
                 return Http::response(['data' => ['invoiceCreate' => ['didSucceed' => true, 'invoice' => $remotes[$id]]]]);
             }

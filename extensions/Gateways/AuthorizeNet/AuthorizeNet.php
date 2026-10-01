@@ -18,6 +18,11 @@ use RuntimeException;
 #[ExtensionMeta(name: 'Authorize.Net', description: 'Accept Hosted checkout with verified merchant transaction readback', version: '0.1.0', author: 'Paymenter Community')]
 class AuthorizeNet extends Gateway
 {
+    public function supportsCustomerFeeCollection(): bool
+    {
+        return true;
+    }
+
     public function boot()
     {
         require __DIR__ . '/routes.php';
@@ -159,7 +164,7 @@ class AuthorizeNet extends Gateway
         if (isset($transaction['currencyCode']) && $transaction['currencyCode'] !== $this->config('currency')) {
             throw new RuntimeException('Provider currency does not match merchant');
         }
-        $ledger->settle($this->gatewayRecord,$reference,$merchant,(string) $amount,(string) $this->config('currency'),$id);
+        $ledger->settle($this->gatewayRecord, $reference, $merchant, (string) $amount, (string) $this->config('currency'), $id);
 
         return response('OK');
     }

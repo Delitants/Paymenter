@@ -5,6 +5,8 @@ namespace App\Services\ServiceUpgrade;
 use App\Jobs\Server\UpgradeJob;
 use App\Models\Service;
 use App\Models\ServiceUpgrade;
+use App\Services\Gateways\InvoicePaymentDependencies;
+use App\Services\Gateways\PaymentWriteGuard;
 use Illuminate\Support\Facades\DB;
 
 class ServiceUpgradeService
@@ -18,6 +20,13 @@ class ServiceUpgradeService
     public function handle(ServiceUpgrade $serviceUpgrade)
     {
         return DB::transaction(function () use ($serviceUpgrade) {
+            $invoices = (new InvoicePaymentDependencies)->lockService($serviceUpgrade->service_id, $serviceUpgrade->invoice_id);
+            foreach ($invoices as $invoice) {
+                if ($invoice->status === 'pending') {
+                    (new PaymentWriteGuard)->assertEditable($invoice);
+                }
+            }
+            $serviceUpgrade->setRelation('service', Service::whereKey($serviceUpgrade->service_id)->lockForUpdate()->firstOrFail());
             $serviceUpgrade->status = ServiceUpgrade::STATUS_COMPLETED;
             $serviceUpgrade->save();
 

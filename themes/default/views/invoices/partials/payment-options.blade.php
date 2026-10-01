@@ -1,4 +1,7 @@
 <div>
+    @if($this->claimedAttempt)
+    <p class="mb-6 p-4 border border-neutral rounded-lg text-sm" role="status">{{ __('Continue with the original payment method. Changing gateways or applying credits requires reconciliation.') }}</p>
+    @endif
     <!-- Show apply credits button if available -->
     @php
     $credit = Auth::user()->credits()
@@ -7,7 +10,7 @@
     ->first();
     $itemHasCredit = $invoice->items()->where('reference_type', App\Models\Credit::class)->exists();
     @endphp
-    @if($credit && !$itemHasCredit)
+    @if($credit && !$itemHasCredit && !$this->claimedAttempt)
     <div class="mb-6">
         <h3 class="text-lg font-semibold mb-2">{{ __('invoices.pay_with_credits') }}</h3>
         <div wire:click="$set('selectedMethod', 'credit')"
@@ -31,7 +34,7 @@
     </div>
     @endif
 
-    @if($this->savedPaymentMethods)
+    @if($this->savedPaymentMethods->isNotEmpty() || count($this->paymentMethods) > 0)
     <div class="mb-6">
         <h3 class="text-lg font-semibold mb-2">{{ __('account.saved_payment_methods') }}</h3>
         <div class="space-y-3">
@@ -139,15 +142,18 @@
     </div>
     @endif
 
-    @if($selectedMethod && $selectedMethod !== 'credit' && !str_starts_with($selectedMethod, 'gateway-') && $this->recurringServices()->exists())
+    @if(!$this->claimedAttempt && $selectedMethod && $selectedMethod !== 'credit' && !str_starts_with($selectedMethod, 'gateway-') && $this->recurringServices()->exists())
     <div class="mt-4 p-2">
         <x-form.toggle :label="__('invoices.use_for_recurring')" wire:model.live="setAsDefault" />
     </div>
     @endif
 
+    <div class="mt-6 p-4 border border-neutral rounded-lg">
+        <x-billing.payment-summary :summary="$this->paymentSummary" :formatter="$invoice->formattedTotal" :tax-name="$invoice->tax?->name ?? 'Tax'" :tax-rate="(string) ($invoice->tax?->rate ?? '0')" />
+    </div>
     <div class="mt-6">
         <x-button.primary class="w-full" wire:click="processPayment" wire:loading.attr="disabled"
-            :disabled="!$selectedMethod">
+            :disabled="!$selectedMethod || ($this->claimedAttempt && $selectedMethod !== 'gateway-' . $this->claimedAttempt->gateway_id)">
             <x-loading target="processPayment" />
             <div wire:loading.remove wire:target="processPayment">
                 @if($selectedMethod === 'credit' && $credit && $credit->amount >= $invoice->formattedRemaining->total)
@@ -155,7 +161,7 @@
                 @elseif($selectedMethod === 'credit' && $credit)
                 {{ __('invoices.apply_credit_and_continue', ['amount' => $credit->formattedAmount]) }}
                 @else
-                {{ __('invoices.pay_now', ['amount' => $invoice->formattedRemaining]) }}
+                {{ __('Pay :amount', ['amount' => $invoice->formattedTotal->format($this->paymentSummary->payable)]) }}
                 @endif
             </div>
         </x-button.primary>

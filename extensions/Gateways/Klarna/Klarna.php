@@ -19,6 +19,11 @@ use RuntimeException;
 #[ExtensionMeta(name: 'Klarna', description: 'Hosted digital-service checkout with captured-order verification', version: '0.1.0', author: 'Paymenter Community')]
 class Klarna extends Gateway
 {
+    public function supportsCustomerFeeCollection(): bool
+    {
+        return true;
+    }
+
     public function boot()
     {
         require __DIR__ . '/routes.php';
@@ -72,7 +77,7 @@ class Klarna extends Gateway
                 throw new RuntimeException;
             }
 
-return $body;
+            return $body;
         } catch (\Throwable) {
             throw new RuntimeException('Klarna request could not be verified; reconcile before retrying');
         }
@@ -91,24 +96,24 @@ return $body;
         if (!preg_match('/^[A-Z]{3}$/D', (string) $this->config('currency')) || !preg_match('/^[A-Z]{2}$/D', (string) $this->config('purchase_country')) || !preg_match('/^[a-z]{2}-[A-Z]{2}$/D', (string) $this->config('locale'))) {
             throw new RuntimeException('Klarna purchase market is not configured');
         }
-        // Taxed and partially paid accounting invoices need an explicit order-line allocation.
-        if ((config('settings.tax_enabled', false) && ($invoice->tax?->rate ?? 0) > 0) || $invoice->transactions()->exists()) {
+        if ($invoice->transactions()->exists()) {
             throw new RuntimeException('Klarna requires reconciled tax and payment order lines for this invoice');
         }
         $ledger = new PaymentAttempts;
         $a = $ledger->begin($this->gatewayRecord, $invoice, $this->merchant(), (string) $this->config('currency'));
         $payload = $a->provider_payload;
         if (!$payload || !isset($payload['redirect_url'])) {
+            $allocation = (new OrderLines)->build($a, (string) $this->config('purchase_country'));
             if (!GatewayPaymentAttempt::whereKey($a->id)->where('state', 'open')->whereNull('provider_payload')->update(['state' => 'initializing'])) {
                 throw new RuntimeException('Checkout initialization requires reconciliation');
             }
-            $payload = ['callback_token' => bin2hex(random_bytes(32))];
+            $payload = ['callback_token' => bin2hex(random_bytes(32)), 'purchase_country' => $this->config('purchase_country'),
+                'locale' => $this->config('locale'), 'order_allocation' => $allocation];
             $a->update(['provider_payload' => $payload]);
-            $minor = BigDecimal::of($a->amount)->multipliedBy(100)->toInt();
-            $session = $this->api('POST', $this->base() . '/payments/v1/sessions', [
-                'purchase_country' => $this->config('purchase_country'), 'purchase_currency' => $a->currency_code, 'locale' => $this->config('locale'), 'order_amount' => $minor, 'order_tax_amount' => 0, 'merchant_reference1' => $a->reference,
-                'order_lines' => [['type' => 'digital', 'reference' => $a->reference, 'name' => 'Invoice ' . ($invoice->number ?: $invoice->id), 'quantity' => 1, 'unit_price' => $minor, 'tax_rate' => 0, 'total_amount' => $minor, 'total_tax_amount' => 0]],
-            ]);
+            $session = $this->api('POST', $this->base() . '/payments/v1/sessions', array_merge($allocation, [
+                'purchase_country' => $payload['purchase_country'], 'purchase_currency' => $a->currency_code,
+                'locale' => $payload['locale'], 'merchant_reference1' => $a->reference,
+            ]));
             if (!is_string($session['session_id'] ?? null) || !preg_match('/^[A-Za-z0-9-]{1,100}$/D', $session['session_id'])) {
                 throw new RuntimeException('Invalid Klarna payment session');
             }
@@ -188,7 +193,8 @@ return $body;
         if (($order['order_id'] ?? null) !== $id || ($order['merchant_reference1'] ?? null) !== $reference || ($order['purchase_currency'] ?? null) !== $a->currency_code || ($order['status'] ?? null) !== 'CAPTURED' || ($order['fraud_status'] ?? null) !== 'ACCEPTED' || ($order['order_amount'] ?? null) !== $minor || ($order['captured_amount'] ?? null) !== $minor || ($order['refunded_amount'] ?? null) !== 0) {
             throw new RuntimeException('Order identity, amount or captured state does not match');
         }
-        $ledger->settle($this->gatewayRecord,$reference,$this->merchant(),$a->amount,$a->currency_code,$id);
+        (new OrderLines)->assertCaptured($a, $order);
+        $ledger->settle($this->gatewayRecord, $reference, $this->merchant(), $a->amount, $a->currency_code, $id);
 
         return response('OK');
     }

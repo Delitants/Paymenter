@@ -1,13 +1,13 @@
 <div class="container mt-14">
-    <div class="flex flex-col md:grid md:grid-cols-4 gap-8">
-        <div class="flex flex-col col-span-3 gap-4">
+    <div class="flex flex-col lg:grid lg:grid-cols-[minmax(0,1fr)_340px] gap-8">
+        <div class="flex flex-col min-w-0 gap-4">
             @if (Cart::items()->count() === 0)
             <h1 class="text-2xl font-semibold">
                 {{ __('product.empty_cart') }}
             </h1>
             @endif
             @foreach (Cart::items() as $item)
-            <div class="flex flex-row justify-between w-full bg-background-secondary p-3 rounded-md border border-neutral">
+            <div class="flex flex-col sm:flex-row justify-between gap-4 min-w-0 w-full bg-background-secondary p-5 rounded-xl border border-neutral">
                 <div class="flex flex-col gap-1">
                     <h2 class="text-2xl font-semibold">
                         {{ $item->product->name }}
@@ -53,11 +53,11 @@
                 </div>
                 <div class="flex flex-col justify-between items-end gap-4">
                     <h3 class="text-xl font-semibold p-1">
-                        {{ $item->price->format($item->price->total * $item->quantity) }} @if ($item->quantity > 1)
+                        {{ $item->price->format((string) \Brick\Math\BigDecimal::of($item->price->total)->multipliedBy($item->quantity)) }} @if ($item->quantity > 1)
                         ({{ $item->price }} each)
                         @endif
                     </h3>
-                    <div class="flex flex-row gap-2">
+                    <div class="flex flex-wrap justify-end gap-2">
                         @if ($item->product->allow_quantity == 'combined')
                         <div class="flex flex-row gap-1 items-center mr-4">
                             <x-button.secondary
@@ -92,7 +92,7 @@
         </div>
         <div class="flex flex-col gap-4">
             @if (Cart::items()->count() > 0)
-            <div class="flex flex-col gap-2 w-full col-span-1 bg-background-secondary p-3 rounded-md border border-neutral">
+            <div class="flex flex-col gap-2 w-full bg-background-secondary p-5 rounded-xl lg:sticky lg:top-8 border border-neutral">
                 <h2 class="text-2xl font-semibold mb-3">
                     {{ __('product.order_summary') }}
                 </h2>
@@ -114,16 +114,22 @@
                     </div>
                     @endif
                 </div>
-                <div class="font-semibold flex justify-between">
-                    <h4>{{ __('invoices.subtotal') }}:</h4> {{ $total->format($total->subtotal) }}
-                </div>
-                @if ($total->tax > 0)
-                <div class="font-semibold flex justify-between">
-                    <h4>{{ \App\Classes\Settings::tax()->name }} ({{ \App\Classes\Settings::tax()->rate }}%):</h4> {{ $total->format($total->tax) }}
-                </div>
-                @endif
-                <div class="text-lg font-semibold flex justify-between mt-1">
-                    <h4>{{ __('invoices.total') }}:</h4> {{ $total->format($total->total) }}
+                <div class="space-y-4 my-3">
+                    @if(count($this->gateways) > 0)
+                    <x-form.select name="gateway" wire:model.live="gateway" :label="__('Payment method')">
+                        @foreach($this->gateways as $method)
+                        <option value="{{ $method->id }}">{{ $method->name }}</option>
+                        @endforeach
+                    </x-form.select>
+                    @else
+                    <p class="text-sm text-base/70">{{ __('No payment method is currently available.') }}</p>
+                    @endif
+                    @if(Auth::check() && config('settings.credits_enabled') && Auth::user()->credits()->where('currency_code', Cart::get()->currency_code)->where('amount', '>', 0)->exists())
+                    <x-form.checkbox name="use_credits" wire:model.live="use_credits">{{ __('Use available account credits') }}</x-form.checkbox>
+                    @endif
+                    @php($currentTax = \App\Classes\Settings::tax())
+                    <x-billing.payment-summary :summary="$this->paymentSummary" :formatter="$total" :tax-name="$currentTax?->name ?? 'Tax'" :tax-rate="(string) ($currentTax?->rate ?? '0')" paid-label="Account credits applied" />
+                    <p class="text-xs text-base/60">{{ __('Gateway fees are not taxed. The fee is confirmed when payment starts.') }}</p>
                 </div>
 
                 <div class="flex flex-col gap-2 w-full col-span-1">

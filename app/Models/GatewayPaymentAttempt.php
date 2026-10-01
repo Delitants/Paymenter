@@ -6,7 +6,7 @@ class GatewayPaymentAttempt extends Model
 {
     protected $guarded = [];
 
-    protected $casts = ['amount' => 'decimal:2', 'provider_payload' => 'encrypted:array'];
+    protected $casts = ['amount' => 'decimal:2', 'provider_payload' => 'encrypted:array', 'pricing_payload' => 'encrypted:array'];
 
     public function invoice()
     {
