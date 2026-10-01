@@ -2,6 +2,9 @@
     $taxSettings = \App\Classes\Settings::tax();
     $taxName = is_object($taxSettings) ? $taxSettings->name : 'Tax';
     $taxRateDisplay = is_object($taxSettings) ? $taxSettings->rate : 0;
+    if (str_contains((string) $taxRateDisplay, '.')) {
+        $taxRateDisplay = rtrim(rtrim((string) $taxRateDisplay, '0'), '.');
+    }
     $checkoutFields = $this->getCheckoutConfig();
     $checkoutPresentation = collect($checkoutFields)->first(fn ($field) => isset($field['summary'])) ?? [];
     $checkoutSummary = $checkoutPresentation['summary'] ?? null;
@@ -65,7 +68,7 @@
         .checkout-domain-input { display: flex; min-width: 0; border: 1px solid hsl(var(--color-neutral)); border-radius: .375rem; overflow: hidden; }
         .checkout-domain-input input { flex: 1; min-width: 0; width: 100%; border: 0; outline-offset: -2px; }
         .checkout-domain-input span { display: flex; align-items: center; padding: .625rem .875rem; border-left: 1px solid hsl(var(--color-neutral)); background: hsl(var(--color-background-secondary)); font-size: .875rem; font-weight: 700; }
-        .checkout-page input:focus-visible, .checkout-page select:focus-visible, .checkout-page button:focus-visible, .checkout-page a:focus-visible { outline: 2px solid hsl(var(--color-primary)); outline-offset: 2px; }
+        .checkout-page input:focus-visible, .checkout-page select:focus-visible, .checkout-page button:focus-visible, .checkout-page a:focus-visible, .checkout-page summary:focus-visible { outline: 2px solid hsl(var(--color-primary)); outline-offset: 2px; }
         @media (max-width: 1023px) { .checkout-page { grid-template-columns: minmax(0, 1fr); max-width: 760px; } .checkout-summary-column { grid-column: 1; grid-row: 2; position: static; } }
         @media (max-width: 639px) { .checkout-page { margin-top: 1.5rem; padding: 0 1rem; gap: 1.5rem; } .checkout-fields-two { grid-template-columns: minmax(0, 1fr); } .checkout-section, .checkout-summary-panel { padding: 1.25rem; } }
 
@@ -84,13 +87,13 @@
     {{-- Order Summary - Right side on desktop (first in DOM) --}}
     <div class="checkout-summary-column">
     <div class="checkout-summary-panel h-fit">
-        <h2 class="text-2xl font-semibold mb-3">
+        <h2 class="text-xl font-bold mb-5 border-b border-neutral pb-4">
             {{ __('product.order_summary') }}
         </h2>
         @if($checkoutSummary)
             <p class="mb-1 break-all font-semibold">{{ $checkoutSummary['domain'] ?: __('Your domain') }}</p>
             <p class="mb-5 text-sm text-muted">{{ trans_choice(':count year registration|:count years registration', $checkoutSummary['years']) }}</p>
-            <dl class="mb-5 space-y-2 text-sm">
+            <dl class="mb-5 space-y-3 text-sm tabular-nums">
                 <div class="flex justify-between gap-3"><dt>{{ __('Registration') }}</dt><dd>{{ $total->format($checkoutSummary['registration']) }}</dd></div>
                 @if((float) $checkoutSummary['privacy'] > 0)
                     <div class="flex justify-between gap-3"><dt>{{ __('WHOIS protection') }}</dt><dd data-privacy-price>{{ $total->format($checkoutSummary['privacy']) }}</dd></div>
@@ -98,22 +101,18 @@
             </dl>
         @endif
         @if ($total->total_tax > 0)
-            <div class="font-semibold flex justify-between gap-3">
-                <h4>{{ __('invoices.subtotal') }}:</h4> {{ $total->format($total->subtotal) }}
+            <div class="text-sm flex justify-between gap-3 mb-3 tabular-nums">
+                <span>{{ __('invoices.subtotal') }}</span> <span>{{ $total->format($total->subtotal) }}</span>
             </div>
-            <div class="font-semibold flex justify-between gap-3">
-                <h4>{{ $taxName }} ({{ $taxRateDisplay }}%):</h4> {{ $total->format($total->tax) }}
+            <div class="text-sm flex justify-between gap-3 mb-4 tabular-nums">
+                <span>{{ $taxName }} ({{ $taxRateDisplay }}%)</span> <span>{{ $total->format($total->tax) }}</span>
             </div>
         @endif
-        <div class="text-lg font-semibold flex justify-between gap-3">
-            <h4>{{ __('product.total_today') }}:</h4>
+        <div class="font-semibold flex justify-between gap-3 border-t border-neutral pt-4 tabular-nums">
+            <span>{{ __('Total before payment fee') }}</span>
             <span data-checkout-total>{{ $total->formatted->total }}</span>
         </div>
-        @if($checkoutSummary && $checkoutSummary['renewal'])
-            @php $renewalPrice = new \App\Classes\Price(['price' => $checkoutSummary['renewal'], 'currency' => $total->currency], apply_exclusive_tax: true); @endphp
-            <div class="mt-5 border-t border-neutral pt-4 text-sm flex justify-between gap-3"><span>{{ __('Current renewal price') }}</span><span data-domain-renewal>{{ $renewalPrice->formatted->price }}</span></div>
-            <p class="mt-2 text-xs leading-relaxed text-muted">{{ __('For the same term and selected extras. Renewal prices may change before the next invoice is issued.') }}</p>
-        @endif
+        <p class="mt-3 text-xs leading-relaxed text-muted">{{ __('Payment method and its untaxed gateway fee are selected in the cart.') }}</p>
         @if ($total->setup_fee > 0 && $plan->type == 'recurring')
             <div class="mt-2 text-sm font-semibold flex justify-between gap-3">
                 <h4>{{ __('product.then_after_x', ['time' => $plan->billing_period . ' ' . trans_choice(__('services.billing_cycles.' . $plan->billing_unit), $plan->billing_period)]) }}:
@@ -129,6 +128,11 @@
                     </div>
                 </x-button.primary>
             </div>
+        @endif
+        @if($checkoutSummary && $checkoutSummary['renewal'])
+            @php $renewalPrice = new \App\Classes\Price(['price' => $checkoutSummary['renewal'], 'currency' => $total->currency], apply_exclusive_tax: true); @endphp
+            <div class="mt-5 border-t border-neutral pt-4 text-sm flex justify-between gap-3 tabular-nums"><span>{{ __('Current renewal price') }}</span><span data-domain-renewal>{{ $renewalPrice->formatted->price }}</span></div>
+            <p class="mt-2 text-xs leading-relaxed text-muted">{{ __('Includes product tax and selected extras. Renewal prices may change before the next invoice; future gateway fees are excluded.') }}</p>
         @endif
     </div>
     </div>

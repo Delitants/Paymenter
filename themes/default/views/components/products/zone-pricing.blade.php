@@ -1,10 +1,18 @@
-@props(['product', 'expanded' => false])
+@props(['product', 'expanded' => false, 'collapsible' => false])
 @php
     $zonePricing = \App\Helpers\ExtensionHelper::getProductPricing($product);
     $zoneCurrency = $zonePricing ? \App\Models\Currency::find($zonePricing['currency']) : null;
 @endphp
 @if($zonePricing && $zoneCurrency)
     <div class="my-3 text-sm" data-zone-pricing>
+        @if($expanded && $collapsible)
+            <details class="rounded-lg border border-neutral">
+                <summary class="cursor-pointer px-4 py-3 text-primary">
+                    <span class="font-semibold">{{ __('Selected :zone', ['zone' => $zonePricing['zone']]) }}</span>
+                    <span class="block mt-1 text-xs">{{ __('View registration and renewal prices') }}</span>
+                </summary>
+                <div class="px-3 pb-3">
+        @endif
         @if($expanded)
             <div class="overflow-x-auto rounded-lg border border-neutral">
                 <table class="w-full text-left">
@@ -35,6 +43,11 @@
                 <div class="flex justify-between gap-3"><dt>{{ __('Renew') }}</dt><dd>{{ $renewal->formatted->price }}</dd></div>
             </dl>
             <p class="mt-1 text-muted">{{ trans_choice('For :count year|For :count years', $term['years']) }}</p>
+        @endif
+        @if($expanded && $collapsible)
+                <p class="mt-2 text-xs text-muted">{{ __('Prices include product tax. Optional extras and gateway fees are excluded.') }}</p>
+                </div>
+            </details>
         @endif
         <p class="mt-2 text-xs text-muted">{{ __('WHOIS protection is optional. Renewal prices may change before the next invoice is issued.') }}</p>
     </div>

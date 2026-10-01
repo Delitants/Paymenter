@@ -12,6 +12,9 @@
             <x-form.checkout-plan />
         @endif
         </div>
+        @if($field->include_plan ?? false)
+            <x-products.zone-pricing :product="$this->product" :expanded="true" :collapsible="true" />
+        @endif
     </fieldset>
 @elseif(!empty($field->suffix))
     <fieldset class="flex flex-col w-full" x-data="{ full: $wire.entangle('checkoutConfig.{{ $field->name }}').live, suffix: @js($field->suffix), get label() { const value = this.full || ''; return value.endsWith(this.suffix) ? value.slice(0, -this.suffix.length) : value; } }">

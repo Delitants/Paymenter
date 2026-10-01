@@ -95,7 +95,7 @@ class ResellerClubPurchaseTest extends TestCase
         $this->assertTrue($item->checkout_config['whois_protection']);
         Once::flush();
         Livewire::withCookies(['cart' => $item->cart->ulid])->test(CartComponent::class)
-            ->assertSee('12.00 USD for 2 year(s)')->assertDontSee('Enabled (Included)');
+            ->assertSee('12.00 USD for 2 year(s) before tax')->assertDontSee('Enabled (Included)');
         $this->assertSame('ns1.example.test', $item->checkout_config['nameserver_1']);
         Http::assertNotSent(fn ($request) => $request->method() !== 'GET');
     }
@@ -116,7 +116,7 @@ class ResellerClubPurchaseTest extends TestCase
             'checkout_config' => $values + ['whois_protection' => true], 'config_options' => [], 'quantity' => 1]);
         Once::flush();
         Livewire::withCookies(['cart' => $cart->ulid])->test(CartComponent::class)
-            ->assertSee('12.00 USD for 2 year(s)')->assertSee('$30.00')->assertDontSee('Enabled (Included)');
+            ->assertSee('12.00 USD for 2 year(s) before tax')->assertSee('$30.00')->assertDontSee('Enabled (Included)');
         Http::assertNothingSent();
     }
 

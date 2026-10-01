@@ -233,6 +233,8 @@ class KlarnaTest extends TestCase
         $this->assertSame('paid', $i->fresh()->status);
         $this->assertSame(1, $i->transactions()->count());
         Http::assertSent(fn ($r) => str_ends_with($r->url(), '/payments/v1/sessions') && $r['order_amount'] === 1234 && $r['merchant_reference1'] === GatewayPaymentAttempt::sole()->reference);
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_ends_with($r->url(), '/hpp/v1/sessions') && $r['options']['place_order_mode'] === 'CAPTURE_ORDER');
+        $this->assertCount(2, Http::recorded(fn ($r) => $r->method() === 'POST'));
     }
 
     public function test_wrong_callback_token_does_not_query_provider(): void
