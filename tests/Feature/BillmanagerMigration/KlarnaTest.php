@@ -27,6 +27,8 @@ class KlarnaTest extends TestCase
 
     private bool $taxed = false;
 
+    private bool $omitAggregateTax = false;
+
     private function fixture(): array
     {
         Bus::fake();
@@ -59,10 +61,15 @@ class KlarnaTest extends TestCase
                 return Http::response(['session_id' => 'synthetic-hpp', 'status' => $status, 'order_id' => 'synthetic-order']);
             }
             if (str_ends_with($r->url(), '/ordermanagement/v1/orders/synthetic-order')) {
-                return Http::response(array_replace(['order_id' => 'synthetic-order', 'status' => 'CAPTURED', 'fraud_status' => 'ACCEPTED',
+                $order = array_replace(['order_id' => 'synthetic-order', 'status' => 'CAPTURED', 'fraud_status' => 'ACCEPTED',
                     'purchase_country' => 'US', 'purchase_currency' => 'USD', 'order_amount' => $this->taxed ? 10988 : 1234,
                     'order_tax_amount' => $this->taxed ? 713 : 0, 'order_lines' => $this->providerLines(),
-                    'captured_amount' => $this->taxed ? 10988 : 1234, 'refunded_amount' => 0, 'merchant_reference1' => GatewayPaymentAttempt::sole()->reference], $changes));
+                    'captured_amount' => $this->taxed ? 10988 : 1234, 'refunded_amount' => 0, 'merchant_reference1' => GatewayPaymentAttempt::sole()->reference], $changes);
+                if ($this->omitAggregateTax) {
+                    unset($order['order_tax_amount']);
+                }
+
+                return Http::response($order);
             }
             throw new \RuntimeException('Unexpected request');
         });
@@ -130,6 +137,20 @@ class KlarnaTest extends TestCase
         }
         $this->assertSame('pending', $invoice->fresh()->status);
         $this->assertSame(0, $invoice->transactions()->count());
+    }
+
+    public function test_order_management_readback_without_aggregate_tax_settles_and_replays_once(): void
+    {
+        [$invoice, $gateway, $extension] = $this->fixture();
+        $this->taxAndFee($invoice, $gateway);
+        $this->taxed = true;
+        $this->omitAggregateTax = true;
+        $this->fakeApi();
+        $extension->pay($invoice->fresh(), '107.13');
+        $this->notify($gateway)->assertOk();
+        $this->notify($gateway)->assertOk();
+        $this->assertSame('paid', $invoice->fresh()->status);
+        $this->assertSame('109.88', $invoice->transactions()->sole()->amount);
     }
 
     public function test_global_tax_preserves_fractional_native_rate_and_exact_line_tax(): void

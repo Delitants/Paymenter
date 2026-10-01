@@ -66,7 +66,7 @@ final class OrderLines
         $payload = $attempt->provider_payload;
         $expected = $payload['order_allocation'] ?? null;
         if (!is_array($expected) || ($order['purchase_country'] ?? null) !== ($payload['purchase_country'] ?? null) ||
-            ($order['order_tax_amount'] ?? null) !== $expected['order_tax_amount'] ||
+            (array_key_exists('order_tax_amount', $order) && $order['order_tax_amount'] !== $expected['order_tax_amount']) ||
             ($order['order_amount'] ?? null) !== $expected['order_amount'] || !is_array($order['order_lines'] ?? null) ||
             count($order['order_lines']) !== count($expected['order_lines'])) {
             throw new RuntimeException('Klarna captured tax allocation does not match.');
@@ -79,6 +79,7 @@ final class OrderLines
             }
             $byReference[$reference] = $line;
         }
+        $capturedTax = 0;
         foreach ($expected['order_lines'] as $line) {
             $remote = $byReference[$line['reference']] ?? [];
             foreach (['type', 'reference', 'quantity', 'unit_price', 'total_amount', 'total_tax_amount'] as $field) {
@@ -90,6 +91,13 @@ final class OrderLines
                 ($line['type'] === 'sales_tax' && ($remote['name'] ?? null) !== 'Sales Tax')) {
                 throw new RuntimeException('Klarna captured line tax rate does not match.');
             }
+            // Order Management readbacks omit the Payments API's aggregate tax field.
+            $capturedTax += $payload['purchase_country'] === 'US'
+                ? ($remote['type'] === 'sales_tax' ? $remote['total_amount'] : 0)
+                : $remote['total_tax_amount'];
+        }
+        if ($capturedTax !== $expected['order_tax_amount']) {
+            throw new RuntimeException('Klarna captured tax allocation does not match.');
         }
     }
 }
