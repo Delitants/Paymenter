@@ -36,6 +36,18 @@ takeover. An overlapping invoice stays open and can continue once the winning
 customer binding is ready; an uncertain provider operation remains blocked.
 Operator recovery for uncertain or changed bindings still requires acceptance.
 
+## Klarna customer countries and Consumer FX
+
+Single-market checkout remains the default. Customer country selection is opt-in:
+
+1. Confirm Consumer FX, USD settlement and the required country agreements with Klarna. API session creation alone does not prove conversion or capture acceptance.
+2. In the Klarna gateway settings, enable **Customer country selection (Consumer FX confirmed by Klarna)** and enter the enabled ISO country codes in **Enabled customer countries**. No countries are enabled by default.
+3. Test an actual local-currency checkout, authenticated USD capture and callback before enabling collection. Keep migration holds until the separately approved handover.
+
+Customers select their Klarna account country; options show its linked local currency. Klarna determines the billing currency from the customer's account and displays conversion before confirmation. Paymenter creates the session and settles the invoice in USD. It does not calculate a separate exchange rate or accept arbitrary country/currency pairs.
+
+The native authenticated, CSRF-protected selection endpoint requires invoice payment permission and its existing gateway attempt. An obsolete form cannot create or initialize a replacement attempt. Browser validation errors keep the selector and its error visible. Amount, currency and locale cannot be supplied by the customer. The chosen country, locale and billing currency are frozen with the provider allocation before the first API write. Retries retain the original session, market, tax and untaxed fee, including after the administrator changes enabled countries. Unknown or expired sessions require reconciliation. Opening the selection step freezes the existing native payment quote; no provider session is created until a valid country is submitted.
+
 ## Acceptance still required
 
 Synthetic tests do not prove a provider has accepted a merchant, market, hosted checkout, tax configuration or webhook. Complete provider sandbox payment tests, expired/uncertain-session operator recovery, currency and tax checks, callback delivery and public browser checks before enabling collection. Klarna customer-selected markets and Consumer FX remain a separate acceptance gate; USD remains the native accounting currency. Wave writes need an explicitly isolated business and a verified tax record, while WebMoney needs verified merchant test mode. Wave webhook availability and internal-ID correspondence require account-specific verification; its existing source poller remains authoritative during preparation. Its durable customer binding also needs merchant sandbox acceptance before activation.
@@ -50,4 +62,5 @@ Never release customer migration holds, activate gateway records, register live 
 - [WebMoney Web Merchant Interface](https://en.webmoney.wiki/projects/webmoney/wiki/Web_Merchant_Interface)
 - [Klarna hosted checkout](https://docs.klarna.com/acquirer/klarna/web-payments/integrate-with-klarna-payments/integrate-via-hpp/before-you-start/accept-klarna-payments-using-hosted-payment-page/) and [status callbacks](https://docs.klarna.com/acquirer/klarna/web-payments/integrate-with-klarna-payments/integrate-via-hpp/api-documentation/status-callbacks/)
 - [Klarna HPP capture modes](https://docs.klarna.com/acquirer/klarna/web-payments/integrate-with-klarna-payments/tokenized-payments/charge-an-on-demand-payment-via-hpp/) and [automatic capture eligibility](https://docs.klarna.com/acquirer/klarna/web-payments/additional-resources/use-cases/automatic-capture/)
+- [Klarna Consumer FX](https://docs.klarna.com/acquirer/klarna/web-payments/additional-resources/use-cases/consumer-fx/) and [country, currency and locale mapping](https://docs.klarna.com/acquirer/klarna/get-started/data-requirements/puchase-countries-currencies-locales/)
 - [Wave API](https://developer.waveapps.com/hc/en-us/articles/360019968212-API-Reference) and [webhook verification](https://developer.waveapps.com/hc/en-us/articles/51070420388628-Webhooks-Setup-Guide)

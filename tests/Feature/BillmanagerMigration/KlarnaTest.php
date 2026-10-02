@@ -8,6 +8,7 @@ use App\Models\GatewayPaymentAttempt;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\User;
+use App\Services\Billing\InvoicePricing;
 use App\Services\Gateways\PaymentAttempts;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Factory;
@@ -15,6 +16,9 @@ use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\View;
+use Illuminate\Support\ViewErrorBag;
 use Paymenter\Extensions\Gateways\Klarna\Klarna;
 use Paymenter\Extensions\Gateways\Klarna\OrderLines;
 use Tests\Concerns\UsesCommittedDatabase;
@@ -29,6 +33,8 @@ class KlarnaTest extends TestCase
 
     private bool $omitAggregateTax = false;
 
+    private string $providerCountry = 'US';
+
     private function fixture(): array
     {
         Bus::fake();
@@ -36,6 +42,7 @@ class KlarnaTest extends TestCase
         Http::preventStrayRequests();
         $u = User::factory()->create();
         $this->actingAs($u);
+        $this->withSession($this->loginUser($u));
         $i = Invoice::factory()->create(['user_id' => $u->id, 'status' => 'pending']);
         InvoiceItem::factory()->create(['invoice_id' => $i->id, 'price' => '12.34', 'quantity' => 1]);
         $g = Gateway::create(['name' => 'Synthetic Klarna', 'extension' => 'Klarna', 'type' => 'gateway', 'enabled' => true]);
@@ -44,6 +51,8 @@ class KlarnaTest extends TestCase
         }
         $e = (new Klarna($g->settings->pluck('value', 'key')->all()))->bindRecord($g);
         $e->boot();
+        Route::getRoutes()->refreshNameLookups();
+        View::share('errors', new ViewErrorBag);
 
         return [$i->fresh(), $g, $e];
     }
@@ -62,7 +71,7 @@ class KlarnaTest extends TestCase
             }
             if (str_ends_with($r->url(), '/ordermanagement/v1/orders/synthetic-order')) {
                 $order = array_replace(['order_id' => 'synthetic-order', 'status' => 'CAPTURED', 'fraud_status' => 'ACCEPTED',
-                    'purchase_country' => 'US', 'purchase_currency' => 'USD', 'order_amount' => $this->taxed ? 10988 : 1234,
+                    'purchase_country' => $this->providerCountry, 'purchase_currency' => 'USD', 'order_amount' => $this->taxed ? 10988 : 1234,
                     'order_tax_amount' => $this->taxed ? 713 : 0, 'order_lines' => $this->providerLines(),
                     'captured_amount' => $this->taxed ? 10988 : 1234, 'refunded_amount' => 0, 'merchant_reference1' => GatewayPaymentAttempt::sole()->reference], $changes);
                 if ($this->omitAggregateTax) {
@@ -79,6 +88,14 @@ class KlarnaTest extends TestCase
     {
         $invoice = GatewayPaymentAttempt::sole()->invoice;
         $id = $invoice->items()->where('kind', 'product')->firstOrFail()->id;
+        if ($this->taxed && $this->providerCountry === 'DE') {
+            $fee = $invoice->items()->where('kind', 'gateway_fee')->sole()->id;
+
+            return [
+                ['type' => 'digital', 'reference' => 'paymenter-' . $id, 'quantity' => 1, 'unit_price' => 10713, 'total_amount' => 10713, 'total_tax_amount' => 713, 'tax_rate' => 713],
+                ['type' => 'surcharge', 'reference' => 'paymenter-' . $fee, 'quantity' => 1, 'unit_price' => 275, 'total_amount' => 275, 'total_tax_amount' => 0, 'tax_rate' => 0],
+            ];
+        }
         $lines = [['type' => 'digital', 'reference' => 'paymenter-' . $id, 'quantity' => 1,
             'unit_price' => $this->taxed ? 10000 : 1234, 'total_amount' => $this->taxed ? 10000 : 1234, 'total_tax_amount' => 0]];
         if ($this->taxed) {
@@ -293,5 +310,234 @@ class KlarnaTest extends TestCase
         }
         $this->assertSame(1, $calls);
         $this->assertSame('initializing', GatewayPaymentAttempt::sole()->state);
+    }
+
+    private function consumerFx(Gateway $gateway, array $changes = []): Klarna
+    {
+        foreach (array_replace(['consumer_fx_enabled' => '1', 'enabled_purchase_countries' => 'US,DE,GB'], $changes) as $key => $value) {
+            $gateway->settings()->updateOrCreate(['key' => $key], ['value' => $value]);
+        }
+
+        return (new Klarna($gateway->fresh()->settings->pluck('value', 'key')->all()))->bindRecord($gateway);
+    }
+
+    private function checkoutUrl(Invoice $invoice, Gateway $gateway): string
+    {
+        return '/extensions/klarna/' . $gateway->id . '/checkout/' . $invoice->id . '/' . GatewayPaymentAttempt::sole()->reference;
+    }
+
+    public function test_consumer_fx_waits_for_country_selection_before_creating_a_provider_session(): void
+    {
+        [$invoice, $gateway] = $this->fixture();
+        $extension = $this->consumerFx($gateway);
+        $this->fakeApi();
+        $html = $extension->pay($invoice, '12.34')->render();
+        Http::assertNothingSent();
+        $this->assertSame('open', GatewayPaymentAttempt::sole()->state);
+        $this->assertNull(GatewayPaymentAttempt::sole()->provider_payload);
+        $this->assertStringContainsString('name="purchase_country"', $html);
+        $this->assertStringContainsString('value="DE"', $html);
+        $this->assertStringContainsString('EUR', $html);
+        $this->assertStringNotContainsString('value="AU"', $html);
+        $this->assertStringNotContainsString('name="purchase_currency"', $html);
+        $this->assertStringContainsString('12.34', $html);
+        $dom = new \DOMDocument;
+        @$dom->loadHTML($html);
+        $this->assertTrue((new \DOMXPath($dom))->query('//select[@name="purchase_country" and @required]')->length === 1);
+    }
+
+    public function test_selected_country_preserves_usd_tax_fee_and_automatic_capture_then_settles_once(): void
+    {
+        [$invoice, $gateway] = $this->fixture();
+        $this->taxAndFee($invoice, $gateway);
+        $this->taxed = true;
+        $this->providerCountry = 'DE';
+        $extension = $this->consumerFx($gateway);
+        $this->fakeApi();
+        $extension->pay($invoice->fresh(), '107.13');
+        $url = $this->checkoutUrl($invoice, $gateway);
+        $this->post($url, ['purchase_country' => 'DE'])->assertRedirect('https://pay.playground.klarna.com/eu/hpp/payments/synthetic-hpp');
+        $request = Http::recorded(fn ($r) => $r->method() === 'POST' && str_ends_with($r->url(), '/payments/v1/sessions'))->sole()[0];
+        $this->assertSame('DE', $request['purchase_country']);
+        $this->assertSame('USD', $request['purchase_currency']);
+        $this->assertSame('en-DE', $request['locale']);
+        $this->assertSame(10988, $request['order_amount']);
+        $this->assertSame(713, $request['order_tax_amount']);
+        $this->assertSame([10713, 275], array_column($request['order_lines'], 'total_amount'));
+        $this->assertSame([713, 0], array_column($request['order_lines'], 'total_tax_amount'));
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_ends_with($r->url(), '/hpp/v1/sessions') && $r['options']['place_order_mode'] === 'CAPTURE_ORDER');
+        $this->assertSame('EUR', GatewayPaymentAttempt::sole()->provider_payload['billing_currency']);
+        $this->post($url, ['purchase_country' => 'DE'])->assertRedirect();
+        $this->notify($gateway)->assertOk();
+        $this->notify($gateway)->assertOk();
+        $this->assertCount(2, Http::recorded(fn ($r) => $r->method() === 'POST'));
+        $this->assertSame('paid', $invoice->fresh()->status);
+        $this->assertSame('109.88', $invoice->transactions()->sole()->amount);
+        $this->assertSame('USD', $invoice->fresh()->currency_code);
+    }
+
+    public function test_selected_market_is_frozen_across_retries_and_admin_market_changes(): void
+    {
+        [$invoice, $gateway] = $this->fixture();
+        $extension = $this->consumerFx($gateway);
+        $this->fakeApi();
+        $extension->pay($invoice, '12.34');
+        $url = $this->checkoutUrl($invoice, $gateway);
+        $this->post($url, ['purchase_country' => 'DE'])->assertRedirect();
+        $this->post($url, ['purchase_country' => 'GB'])->assertStatus(409);
+        $changed = $this->consumerFx($gateway, ['enabled_purchase_countries' => 'US', 'purchase_country' => 'US', 'consumer_fx_enabled' => '0']);
+        $this->post($url, ['purchase_country' => 'DE'])->assertRedirect();
+        $changed->pay($invoice, '12.34');
+        $this->consumerFx($gateway, ['enabled_purchase_countries' => ''])->pay($invoice, '12.34');
+        $this->assertSame('DE', GatewayPaymentAttempt::sole()->provider_payload['purchase_country']);
+        $this->assertCount(2, Http::recorded(fn ($r) => $r->method() === 'POST'));
+    }
+
+    public function test_disallowed_countries_and_posted_money_cannot_initialize_checkout(): void
+    {
+        [$invoice, $gateway] = $this->fixture();
+        $this->consumerFx($gateway)->pay($invoice, '12.34');
+        $url = $this->checkoutUrl($invoice, $gateway);
+        foreach ([[], ['purchase_country' => 'AU'], ['purchase_country' => 'ZZ'], ['purchase_country' => ['DE']], ['purchase_country' => 'DE', 'purchase_currency' => 'EUR'], ['purchase_country' => 'DE', 'amount' => '0.01'], ['purchase_country' => 'DE', 'locale' => 'de-DE']] as $body) {
+            $this->postJson($url, $body)->assertStatus(422);
+        }
+        Http::assertNothingSent();
+        $this->assertNull(GatewayPaymentAttempt::sole()->provider_payload);
+        $this->assertSame('12.34', GatewayPaymentAttempt::sole()->amount);
+    }
+
+    public function test_country_checkout_requires_the_invoice_owner_and_matching_attempt(): void
+    {
+        [$invoice, $gateway] = $this->fixture();
+        $this->consumerFx($gateway)->pay($invoice, '12.34');
+        $url = $this->checkoutUrl($invoice, $gateway);
+        $owner = $invoice->user;
+        $reader = User::factory()->create();
+        $account = DB::table('billmanager_accounts')->insertGetId(['source_account_id' => 10010, 'owner_user_id' => $owner->id]);
+        DB::table('billmanager_members')->insert(['account_id' => $account, 'user_id' => $reader->id, 'source_user_id' => 10011]);
+        $this->assertTrue($reader->can('view', $invoice));
+        $this->assertFalse($reader->can('update', $invoice));
+        $this->actingAs($reader)->withSession($this->loginUser($reader));
+        // Paymenter masks native authorization denials as 404.
+        $this->postJson($url, ['purchase_country' => 'DE'])->assertNotFound();
+        $this->actingAs($owner)->withSession($this->loginUser($owner));
+        $wrong = Invoice::factory()->create(['user_id' => $owner->id, 'status' => 'pending']);
+        $this->post(str_replace('/checkout/' . $invoice->id . '/', '/checkout/' . $wrong->id . '/', $url), ['purchase_country' => 'DE'])->assertNotFound();
+        $this->app['auth']->forgetGuards();
+        $this->withSession(['user_session' => null]);
+        $this->post($url, ['purchase_country' => 'DE'])->assertRedirect(route('login'));
+        Http::assertNothingSent();
+        $this->assertSame(1, GatewayPaymentAttempt::count());
+    }
+
+    public function test_stale_country_form_cannot_create_or_initialize_a_replacement_attempt(): void
+    {
+        [$invoice, $gateway] = $this->fixture();
+        $extension = $this->consumerFx($gateway);
+        $extension->pay($invoice, '12.34');
+        $oldUrl = $this->checkoutUrl($invoice, $gateway);
+        GatewayPaymentAttempt::sole()->update(['state' => 'reconciled']);
+        $fingerprint = (new InvoicePricing)->fingerprint($invoice);
+        $this->post($oldUrl, ['purchase_country' => 'DE'])->assertStatus(409);
+        $this->assertSame(1, GatewayPaymentAttempt::count());
+        $this->assertSame($fingerprint, (new InvoicePricing)->fingerprint($invoice->fresh()));
+        $extension->pay($invoice, '12.34');
+        $current = GatewayPaymentAttempt::where('state', 'open')->sole();
+        $this->post($oldUrl, ['purchase_country' => 'DE'])->assertStatus(409);
+        $this->assertNull($current->fresh()->provider_payload);
+        $this->assertSame(2, GatewayPaymentAttempt::count());
+        Http::assertNothingSent();
+    }
+
+    public function test_retained_historical_market_does_not_bypass_a_new_country_selection(): void
+    {
+        [$invoice, $gateway] = $this->fixture();
+        $extension = $this->consumerFx($gateway);
+        $this->fakeApi();
+        $extension->pay($invoice, '12.34');
+        $this->post($this->checkoutUrl($invoice, $gateway), ['purchase_country' => 'DE'])->assertRedirect();
+        $old = GatewayPaymentAttempt::sole();
+        $old->update(['state' => 'reconciled']);
+        $html = $extension->pay($invoice, '12.34')->render();
+        $this->assertStringContainsString('name="purchase_country"', $html);
+        $this->assertNull(GatewayPaymentAttempt::where('state', 'open')->sole()->provider_payload);
+        $this->assertSame('DE', $old->fresh()->provider_payload['purchase_country']);
+        Http::assertSentCount(2);
+    }
+
+    public function test_browser_validation_keeps_the_country_form_and_visible_error(): void
+    {
+        [$invoice, $gateway] = $this->fixture();
+        $this->consumerFx($gateway)->pay($invoice, '12.34');
+        $url = $this->checkoutUrl($invoice, $gateway);
+        $this->consumerFx($gateway, ['enabled_purchase_countries' => 'US']);
+        $this->from(route('invoices.show', $invoice))->post($url, ['purchase_country' => 'DE'])
+            ->assertStatus(422)->assertSee('Choose an enabled country of your Klarna account.')
+            ->assertSee('name="purchase_country"', false)->assertSee('Continue with Klarna');
+        Http::assertNothingSent();
+        $this->assertNull(GatewayPaymentAttempt::sole()->provider_payload);
+    }
+
+    public function test_country_submission_binds_the_invoice_id_even_when_another_invoice_number_matches(): void
+    {
+        [$invoice, $gateway] = $this->fixture();
+        $this->consumerFx($gateway)->pay($invoice, '12.34');
+        $historical = Invoice::factory()->create(['user_id' => $invoice->user_id, 'status' => 'paid']);
+        // Historical imports preserve source numbers without the native generator.
+        DB::table('invoices')->where('id', $historical->id)->update(['number' => (string) $invoice->id]);
+        $this->fakeApi();
+        $this->post($this->checkoutUrl($invoice, $gateway), ['purchase_country' => 'DE'])->assertRedirect();
+        $this->assertSame($invoice->id, GatewayPaymentAttempt::sole()->invoice_id);
+        $this->assertSame('DE', GatewayPaymentAttempt::sole()->provider_payload['purchase_country']);
+    }
+
+    public function test_country_checkout_honors_collection_and_migration_holds(): void
+    {
+        [$invoice, $gateway] = $this->fixture();
+        $this->consumerFx($gateway)->pay($invoice, '12.34');
+        $url = $this->checkoutUrl($invoice, $gateway);
+        $gateway->update(['enabled' => false]);
+        $this->post($url, ['purchase_country' => 'DE'])->assertStatus(409);
+        $gateway->update(['enabled' => true]);
+        $gateway->settings()->where('key', 'collection_enabled')->first()->update(['value' => '0']);
+        $this->post($url, ['purchase_country' => 'DE'])->assertStatus(409);
+        $gateway->settings()->where('key', 'collection_enabled')->first()->update(['value' => '1']);
+        DB::table('billmanager_holds')->insert(['model_type' => Invoice::class, 'model_id' => $invoice->id, 'reason' => 'Synthetic hold']);
+        $this->post($url, ['purchase_country' => 'DE'])->assertStatus(409);
+        Http::assertNothingSent();
+        $this->assertNull(GatewayPaymentAttempt::sole()->provider_payload);
+    }
+
+    public function test_unknown_country_session_outcome_keeps_market_and_refuses_new_provider_writes(): void
+    {
+        [$invoice, $gateway] = $this->fixture();
+        $this->consumerFx($gateway)->pay($invoice, '12.34');
+        $calls = 0;
+        Http::fake(function () use (&$calls) {
+            $calls++;
+            throw new ConnectionException('synthetic-secret');
+        });
+        $url = $this->checkoutUrl($invoice, $gateway);
+        $this->post($url, ['purchase_country' => 'DE'])->assertStatus(409)->assertDontSee('synthetic-secret');
+        $this->post($url, ['purchase_country' => 'DE'])->assertStatus(409);
+        $this->post($url, ['purchase_country' => 'GB'])->assertStatus(409);
+        $this->assertSame(1, $calls);
+        $this->assertSame('initializing', GatewayPaymentAttempt::sole()->state);
+        $this->assertSame('DE', GatewayPaymentAttempt::sole()->provider_payload['purchase_country']);
+    }
+
+    public function test_consumer_fx_configuration_fails_closed_without_supported_markets_or_usd(): void
+    {
+        [$invoice, $gateway] = $this->fixture();
+        $this->fakeApi();
+        foreach ([['enabled_purchase_countries' => ''], ['enabled_purchase_countries' => 'US,ZZ'], ['currency' => 'EUR']] as $changes) {
+            try {
+                $this->consumerFx($gateway, array_replace(['currency' => 'USD'], $changes))->pay($invoice, '12.34');
+                $this->fail('Unconfigured Consumer FX checkout was accepted');
+            } catch (\RuntimeException) {
+                $this->assertSame(0, GatewayPaymentAttempt::count());
+            }
+        }
+        Http::assertNothingSent();
     }
 }

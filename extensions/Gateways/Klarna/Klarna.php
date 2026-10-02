@@ -14,9 +14,11 @@ use Brick\Math\BigDecimal;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\View;
+use Illuminate\Support\ViewErrorBag;
+use Illuminate\Validation\ValidationException;
 use RuntimeException;
 
-#[ExtensionMeta(name: 'Klarna', description: 'Hosted digital-service checkout with captured-order verification', version: '0.1.0', author: 'Paymenter Community')]
+#[ExtensionMeta(name: 'Klarna', description: 'Hosted digital-service checkout with captured-order verification', version: '0.2.0', author: 'Paymenter Community')]
 class Klarna extends Gateway
 {
     public function supportsCustomerFeeCollection(): bool
@@ -40,6 +42,10 @@ class Klarna extends Gateway
             ['name' => 'currency', 'label' => 'Settlement currency (two decimal places)', 'type' => 'text', 'required' => true],
             ['name' => 'purchase_country', 'label' => 'Enabled purchase country (ISO code)', 'type' => 'text', 'required' => true],
             ['name' => 'locale', 'label' => 'Checkout locale (for example en-GB)', 'type' => 'text', 'required' => true],
+            ['name' => 'consumer_fx_enabled', 'label' => 'Customer country selection (Consumer FX confirmed by Klarna)', 'type' => 'checkbox', 'default' => false,
+                'description' => 'Enable only after Klarna confirms Consumer FX, USD settlement and each purchase country for this merchant.'],
+            ['name' => 'enabled_purchase_countries', 'label' => 'Enabled customer countries (comma-separated ISO codes)', 'type' => 'text', 'default' => '',
+                'description' => 'Only countries accepted for this merchant. Local billing currency is linked to country; Paymenter invoices stay in USD.'],
             ['name' => 'collection_enabled', 'label' => 'Enable payment collection after handover approval', 'type' => 'checkbox', 'default' => false],
         ];
     }
@@ -90,6 +96,40 @@ class Klarna extends Gateway
 
     public function pay(Invoice $invoice, $total)
     {
+        $claimedMarket = GatewayPaymentAttempt::where('gateway_id', $this->gatewayRecord?->id)
+            ->where('invoice_id', $invoice->id)->whereIn('state', ['open', 'initializing', 'paid'])
+            ->whereNotNull('provider_payload')->exists();
+        $countries = $this->consumerFx() && !$claimedMarket ? $this->countries() : [];
+        $a = $this->beginInvoice($invoice);
+        if ($a->provider_payload === null && $this->consumerFx()) {
+            $countries = $countries ?: $this->countries();
+            if ($a->state !== 'open') {
+                throw new RuntimeException('Checkout initialization requires reconciliation');
+            }
+            View::addNamespace('gateways.klarna', __DIR__ . '/resources/views');
+
+            return view('gateways.klarna::pay', ['redirectUrl' => null, 'attempt' => $a,
+                'countries' => $countries, 'invoice' => $invoice, 'gatewayId' => $this->gatewayRecord->id]);
+        }
+
+        $a = $this->initialize($invoice, $a, ['purchase_country' => $this->config('purchase_country'), 'locale' => $this->config('locale')]);
+
+        return view('gateways.klarna::pay', ['redirectUrl' => $a->provider_payload['redirect_url'], 'attempt' => $a,
+            'countries' => [], 'invoice' => $invoice, 'gatewayId' => $this->gatewayRecord->id]);
+    }
+
+    private function consumerFx(): bool
+    {
+        return filter_var($this->config('consumer_fx_enabled'), FILTER_VALIDATE_BOOLEAN);
+    }
+
+    private function countries(): array
+    {
+        return (new Markets)->enabled((string) $this->config('enabled_purchase_countries'), (string) $this->config('currency'));
+    }
+
+    private function beginInvoice(Invoice $invoice, ?string $reference = null): GatewayPaymentAttempt
+    {
         if (!$this->gatewayRecord) {
             throw new RuntimeException('Explicit gateway record binding is required');
         }
@@ -99,16 +139,77 @@ class Klarna extends Gateway
         if ($invoice->transactions()->exists()) {
             throw new RuntimeException('Klarna requires reconciled tax and payment order lines for this invoice');
         }
-        $ledger = new PaymentAttempts;
-        $a = $ledger->begin($this->gatewayRecord, $invoice, $this->merchant(), (string) $this->config('currency'));
+
+        return (new PaymentAttempts)->begin($this->gatewayRecord, $invoice, $this->merchant(), (string) $this->config('currency'), $reference);
+    }
+
+    public function checkout(Request $request, GatewayRecord $gateway, Invoice $invoice, string $reference)
+    {
+        abort_unless($gateway->extension === 'Klarna', 404);
+        abort_unless(GatewayPaymentAttempt::where('gateway_id', $gateway->id)->where('invoice_id', $invoice->id)->where('reference', $reference)->exists(), 404);
+        $e = (new self($gateway->settings->pluck('value', 'key')->all()))->bindRecord($gateway);
+        try {
+            $a = $e->beginInvoice($invoice, $reference);
+            $request->validate(['purchase_country' => ['required', 'string', 'regex:/^[A-Z]{2}$/D']]);
+            if (array_diff(array_keys($request->except('_token')), ['purchase_country']) !== []) {
+                throw ValidationException::withMessages(['purchase_country' => __('Only the country can be selected for this checkout.')]);
+            }
+            $country = $request->input('purchase_country');
+            $payload = $a->provider_payload;
+            if ($payload !== null) {
+                if (($payload['purchase_country'] ?? null) !== $country) {
+                    throw new RuntimeException('Checkout country is already fixed.');
+                }
+                $market = $payload;
+            } else {
+                if (!$e->consumerFx()) {
+                    throw ValidationException::withMessages(['purchase_country' => __('Customer country selection is unavailable.')]);
+                }
+                $countries = $e->countries();
+                if (!isset($countries[$country])) {
+                    throw ValidationException::withMessages(['purchase_country' => __('Choose an enabled country of your Klarna account.')]);
+                }
+                $market = array_merge($countries[$country], ['purchase_country' => $country]);
+            }
+            $a = $e->initialize($invoice, $a, $market);
+
+            return redirect()->away($a->provider_payload['redirect_url']);
+        } catch (ValidationException $error) {
+            if ($request->expectsJson()) {
+                throw $error;
+            }
+            try {
+                if ($a->provider_payload !== null || !$e->consumerFx()) {
+                    throw new RuntimeException('Country selection is unavailable.');
+                }
+                View::addNamespace('gateways.klarna', __DIR__ . '/resources/views');
+
+                return response()->view('gateways.klarna::selection', ['redirectUrl' => null, 'attempt' => $a,
+                    'countries' => $e->countries(), 'invoice' => $invoice, 'gatewayId' => $gateway->id,
+                    'errors' => (new ViewErrorBag)->put('default', $error->validator->errors())], 422);
+            } catch (RuntimeException) {
+                return response('Klarna country selection is unavailable. Return to your invoice.', 409);
+            }
+        } catch (MigrationHeldException|CollectionDisabledException) {
+            return response('Payment processing is held', 409);
+        } catch (RuntimeException|\InvalidArgumentException) {
+            return response('Klarna checkout requires reconciliation before retrying.', 409);
+        }
+    }
+
+    private function initialize(Invoice $invoice, GatewayPaymentAttempt $a, array $market): GatewayPaymentAttempt
+    {
         $payload = $a->provider_payload;
         if (!$payload || !isset($payload['redirect_url'])) {
-            $allocation = (new OrderLines)->build($a, (string) $this->config('purchase_country'));
+            $allocation = (new OrderLines)->build($a, $market['purchase_country']);
             if (!GatewayPaymentAttempt::whereKey($a->id)->where('state', 'open')->whereNull('provider_payload')->update(['state' => 'initializing'])) {
                 throw new RuntimeException('Checkout initialization requires reconciliation');
             }
-            $payload = ['callback_token' => bin2hex(random_bytes(32)), 'purchase_country' => $this->config('purchase_country'),
-                'locale' => $this->config('locale'), 'order_allocation' => $allocation];
+            $payload = ['callback_token' => bin2hex(random_bytes(32)), 'purchase_country' => $market['purchase_country'],
+                'locale' => $market['locale'], 'order_allocation' => $allocation];
+            if (isset($market['billing_currency'])) {
+                $payload['billing_currency'] = $market['billing_currency'];
+            }
             $a->update(['provider_payload' => $payload]);
             $session = $this->api('POST', $this->base() . '/payments/v1/sessions', array_merge($allocation, [
                 'purchase_country' => $payload['purchase_country'], 'purchase_currency' => $a->currency_code,
@@ -141,7 +242,7 @@ class Klarna extends Gateway
         $this->checkRedirect($payload['redirect_url']);
         View::addNamespace('gateways.klarna', __DIR__ . '/resources/views');
 
-        return view('gateways.klarna::pay', ['redirectUrl' => $payload['redirect_url'], 'attempt' => $a]);
+        return $a;
     }
 
     private function checkRedirect(string $url): void

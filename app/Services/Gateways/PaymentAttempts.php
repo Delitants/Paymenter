@@ -44,14 +44,14 @@ final class PaymentAttempts
         return (string) BigDecimal::of($summary->total)->minus($summary->paid)->toScale(2);
     }
 
-    public function begin(Gateway $gateway, Invoice $invoice, string $merchantFingerprint, ?string $expectedCurrency = null): GatewayPaymentAttempt
+    public function begin(Gateway $gateway, Invoice $invoice, string $merchantFingerprint, ?string $expectedCurrency = null, ?string $expectedReference = null): GatewayPaymentAttempt
     {
         if (DB::transactionLevel() !== 0) {
             throw new RuntimeException('External payment initiation requires a durable claim outside an enclosing transaction.');
         }
         Gate::authorize('update', $invoice);
 
-        return DB::transaction(function () use ($gateway, $invoice, $merchantFingerprint, $expectedCurrency) {
+        return DB::transaction(function () use ($gateway, $invoice, $merchantFingerprint, $expectedCurrency, $expectedReference) {
             $gateway = Gateway::whereKey($gateway->id)->lockForUpdate()->firstOrFail();
             $this->assertCollection($gateway);
             $dependencies = new InvoicePaymentDependencies;
@@ -73,8 +73,14 @@ final class PaymentAttempts
                     throw new RuntimeException('Existing payment attempt requires reconciliation before switching gateways.');
                 }
                 $attempt = $attempts->first();
+                if ($expectedReference !== null && $attempt->reference !== $expectedReference) {
+                    throw new RuntimeException('Checkout reference is no longer active.');
+                }
 
                 return $this->validate($gateway, $attempt->reference, $merchantFingerprint, $amount, $invoice->currency_code);
+            }
+            if ($expectedReference !== null) {
+                throw new RuntimeException('Checkout reference is no longer active.');
             }
             $policy = new GatewayFeePolicy;
             $policy->assertSupported($gateway, $invoice->currency_code);
