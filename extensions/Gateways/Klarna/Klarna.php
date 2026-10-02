@@ -205,6 +205,7 @@ class Klarna extends Gateway
             if (!GatewayPaymentAttempt::whereKey($a->id)->where('state', 'open')->whereNull('provider_payload')->update(['state' => 'initializing'])) {
                 throw new RuntimeException('Checkout initialization requires reconciliation');
             }
+            $a->refresh();
             $payload = ['callback_token' => bin2hex(random_bytes(32)), 'purchase_country' => $market['purchase_country'],
                 'locale' => $market['locale'], 'order_allocation' => $allocation];
             if (isset($market['billing_currency'])) {

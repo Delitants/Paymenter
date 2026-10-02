@@ -357,6 +357,7 @@ class KlarnaTest extends TestCase
         $extension->pay($invoice->fresh(), '107.13');
         $url = $this->checkoutUrl($invoice, $gateway);
         $this->post($url, ['purchase_country' => 'DE'])->assertRedirect('https://pay.playground.klarna.com/eu/hpp/payments/synthetic-hpp');
+        $this->assertSame('open', GatewayPaymentAttempt::sole()->state);
         $request = Http::recorded(fn ($r) => $r->method() === 'POST' && str_ends_with($r->url(), '/payments/v1/sessions'))->sole()[0];
         $this->assertSame('DE', $request['purchase_country']);
         $this->assertSame('USD', $request['purchase_currency']);
