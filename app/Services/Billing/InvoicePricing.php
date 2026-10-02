@@ -104,7 +104,7 @@ final class InvoicePricing
         }
         $paid = BigDecimal::of('0.00');
         foreach ($transactions->get() as $transaction) {
-            if ($transaction->status === InvoiceTransactionStatus::Succeeded) {
+            if ($transaction->status === InvoiceTransactionStatus::Succeeded && $transaction->settlement_state !== 'unsettled') {
                 $paid = $paid->plus($transaction->amount);
             }
         }

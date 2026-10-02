@@ -19,6 +19,7 @@ use App\Models\User;
 use App\Services\BillmanagerMigration\MigrationHold;
 use App\Services\Gateways\GatewayFeePolicy;
 use App\Services\Gateways\InvoicePaymentDependencies;
+use App\Services\Gateways\Operations\OperationPolicy;
 use App\Services\Gateways\PaymentWriteGuard;
 use Exception;
 use Filament\Forms\Components\Placeholder;
@@ -108,7 +109,7 @@ class ExtensionHelper
 
         $fields = self::getExtension($type, $extension)->getConfig($config);
 
-        return $type === 'gateway' ? [...$fields, ...(new GatewayFeePolicy)->configFields()] : $fields;
+        return $type === 'gateway' ? [...$fields, ...(new GatewayFeePolicy)->configFields(), ...(new OperationPolicy)->configFields()] : $fields;
     }
 
     /**
@@ -544,6 +545,9 @@ class ExtensionHelper
         MigrationHold::assertAllowed($invoice, 'add payment');
 
         return DB::transaction(function () use ($invoice, $gateway, $amount, $fee, $transactionId, $status, $isCreditTransaction) {
+            if ($gateway) {
+                $gateway = Gateway::whereKey($gateway->id)->lockForUpdate()->firstOrFail();
+            }
             $invoice = (new InvoicePaymentDependencies)->lock([$invoice->id])->firstWhere('id', $invoice->id);
             if (!$transactionId) {
                 $transaction = $invoice->transactions()->create([
@@ -586,14 +590,9 @@ class ExtensionHelper
         return self::addPayment($invoice, $gateway, $amount, $fee, $transactionId, InvoiceTransactionStatus::Failed);
     }
 
-    public static function addPaymentFee($transactionId, $fee)
+    public static function addPaymentFee($transactionId, $fee, ?InvoiceTransaction $original = null)
     {
-        $transaction = InvoiceTransaction::where('transaction_id', $transactionId)->firstOrFail();
-
-        $transaction->fee = $fee;
-        $transaction->save();
-
-        return $transaction;
+        return (new PaymentWriteGuard)->updateProcessorFee((string) $transactionId, $fee, $original);
     }
 
     /**

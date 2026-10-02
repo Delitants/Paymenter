@@ -26,13 +26,19 @@ final class PaymentAttempts
         }
     }
 
-    public function assertInvoice(Invoice $invoice): void
+    public function assertInvoice(Invoice $invoice, bool $currentRead = false): void
     {
-        MigrationHold::assertAllowed($invoice, 'gateway payment');
+        MigrationHold::assertAllowed($invoice, 'gateway payment', $currentRead);
+        if ($currentRead && DB::transactionLevel() > 0) {
+            $invoice->setRelation('items', $invoice->items()->lockForUpdate()->get());
+        }
         foreach ($invoice->items as $item) {
+            if ($currentRead && DB::transactionLevel() > 0 && $item->reference_type && $item->reference_id) {
+                $item->setRelation('reference', $item->reference()->lockForUpdate()->first());
+            }
             $record = $item->reference;
             if ($record instanceof Model) {
-                MigrationHold::assertAllowed($record, 'gateway payment for invoice item');
+                MigrationHold::assertAllowed($record, 'gateway payment for invoice item', $currentRead);
             }
         }
     }

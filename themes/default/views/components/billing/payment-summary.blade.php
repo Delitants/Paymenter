@@ -6,7 +6,7 @@
     </div>
     @if(\Brick\Math\BigDecimal::of($summary->productTax)->isPositive())
     <div class="flex justify-between gap-4">
-        <dt class="text-base/70">{{ $taxName }} ({{ str_contains($taxRate, '.') ? rtrim(rtrim($taxRate, '0'), '.') : $taxRate }}%)</dt>
+        <dt class="text-base/70">{{ $taxName }}@if($taxRate !== null && $taxRate !== '' && \Brick\Math\BigDecimal::of((string) $taxRate)->isPositive()) ({{ str_contains($taxRate, '.') ? rtrim(rtrim($taxRate, '0'), '.') : $taxRate }}%)@endif</dt>
         <dd class="font-medium tabular-nums">{{ $formatter->format($summary->productTax) }}</dd>
     </div>
     @endif

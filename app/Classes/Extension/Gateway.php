@@ -6,6 +6,7 @@ use App\Models\BillingAgreement;
 use App\Models\Card;
 use App\Models\Invoice;
 use App\Models\User;
+use App\Services\Gateways\Operations\Adapter;
 use Illuminate\Support\Facades\View;
 
 /**
@@ -23,6 +24,11 @@ abstract class Gateway extends Extension
         $this->gatewayRecord = $gateway;
 
         return $this;
+    }
+
+    public function paymentOperations(): ?Adapter
+    {
+        return null;
     }
 
     /**

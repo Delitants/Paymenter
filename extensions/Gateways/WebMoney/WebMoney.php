@@ -34,6 +34,14 @@ class WebMoney extends Gateway
             ['name' => 'secret', 'label' => 'Merchant secret key', 'type' => 'password', 'encrypted' => true, 'required' => true],
             ['name' => 'currency', 'label' => 'Settlement currency', 'type' => 'select', 'options' => ['USD' => 'USD'], 'default' => 'USD', 'required' => true],
             ['name' => 'test_mode', 'label' => 'Merchant is in test mode', 'type' => 'checkbox', 'default' => true],
+            ['name' => 'wm_wmid', 'label' => 'Certificate-authorized merchant WMID', 'type' => 'text', 'required' => false],
+            ['name' => 'wm_certificate', 'label' => 'WebPro client certificate (PEM)', 'type' => 'textarea', 'encrypted' => true, 'required' => false],
+            ['name' => 'wm_private_key', 'label' => 'WebPro private key (PEM)', 'type' => 'textarea', 'encrypted' => true, 'required' => false],
+            ['name' => 'wm_key_passphrase', 'label' => 'Private key passphrase', 'type' => 'password', 'encrypted' => true, 'required' => false],
+            ['name' => 'wm_sequence_floor', 'label' => 'Request number floor (up to 15 digits)', 'type' => 'text', 'default' => '0',
+                'description' => 'Set above every prior request number for this WMID before first use. This can raise the shared high-water mark; existing counters are never reduced or reset.'],
+            ['name' => 'wm_exclusive_sequence', 'label' => 'All XML callers using these credentials share this database request sequence', 'type' => 'checkbox', 'default' => false,
+                'description' => 'Refunds require all XML callers using these certificate credentials to share this Paymenter database sequence, including delegated WMIDs. External uncoordinated callers are unsupported. Test-mode refunds are unsupported.'],
             ['name' => 'collection_enabled', 'label' => 'Enable payment collection after handover approval', 'type' => 'checkbox', 'default' => false],
         ];
     }

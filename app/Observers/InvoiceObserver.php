@@ -45,8 +45,7 @@ class InvoiceObserver
      */
     public function updated(Invoice $invoice): void
     {
-        if ($invoice->isDirty('status') && $invoice->status == 'paid') {
-            app(ProcessPaidInvoiceService::class)->handle($invoice);
+        if ($invoice->isDirty('status') && $invoice->status == 'paid' && app(ProcessPaidInvoiceService::class)->handle($invoice)) {
             event(new InvoiceEvent\Paid($invoice));
         }
         event(new InvoiceEvent\Updated($invoice));

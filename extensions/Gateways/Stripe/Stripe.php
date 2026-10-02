@@ -4,16 +4,19 @@ namespace Paymenter\Extensions\Gateways\Stripe;
 
 use App\Attributes\ExtensionMeta;
 use App\Classes\Extension\Gateway;
+use App\Enums\InvoiceTransactionStatus;
 use App\Events\Service\Updated;
 use App\Events\ServiceCancellation\Created;
 use App\Exceptions\DisplayException;
 use App\Helpers\ExtensionHelper;
 use App\Models\BillingAgreement;
 use App\Models\Extension;
+use App\Models\Gateway as GatewayRecord;
 use App\Models\Invoice;
 use App\Models\InvoiceTransaction;
 use App\Models\Service;
 use App\Models\User;
+use Brick\Math\BigDecimal;
 use Carbon\Carbon;
 use Exception;
 use Filament\Notifications\Notification;
@@ -22,8 +25,10 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\View;
+use RuntimeException;
 use Str;
 
 #[ExtensionMeta(
@@ -201,6 +206,19 @@ class Stripe extends Gateway
         return view('gateways.stripe::pay', ['invoice' => $invoice, 'total' => $total, 'intent' => $intent, 'stripePublishableKey' => $this->config('stripe_publishable_key')]);
     }
 
+    private function authenticatedGateway(): GatewayRecord
+    {
+        $gateways = $this->gatewayRecord ? GatewayRecord::whereKey($this->gatewayRecord->id)->get() : GatewayRecord::where('extension', 'Stripe')->get();
+        $gateways = $gateways->filter(fn ($gateway) => $gateway->extension === 'Stripe' &&
+            $gateway->settings->firstWhere('key', 'stripe_secret_key')?->value === $this->config('stripe_secret_key') &&
+            $gateway->settings->firstWhere('key', 'stripe_webhook_secret')?->value === $this->config('stripe_webhook_secret'));
+        if ($gateways->count() !== 1 || !$this->config('stripe_secret_key') || !$this->config('stripe_webhook_secret')) {
+            throw new RuntimeException('Authenticated Stripe gateway identity is missing, deleted or ambiguous.');
+        }
+
+        return $gateways->first();
+    }
+
     public function webhook(Request $request)
     {
         if (!$this->isValidSignature($request->getContent(), $request->header('Stripe-Signature'), $this->config('stripe_webhook_secret'))) {
@@ -216,7 +234,7 @@ class Stripe extends Gateway
                 if (!isset($paymentIntent->metadata->invoice_id)) {
                     break;
                 }
-                ExtensionHelper::addProcessingPayment($paymentIntent->metadata->invoice_id, 'Stripe', $paymentIntent->amount / 100, null, $paymentIntent->id);
+                ExtensionHelper::addProcessingPayment($paymentIntent->metadata->invoice_id, $this->authenticatedGateway(), $paymentIntent->amount / 100, null, $paymentIntent->id);
                 break;
                 // Normal payment
             case 'payment_intent.succeeded':
@@ -224,28 +242,60 @@ class Stripe extends Gateway
                 if (!isset($paymentIntent->metadata->invoice_id)) {
                     break;
                 }
-                ExtensionHelper::addPayment($paymentIntent->metadata->invoice_id, 'Stripe', $paymentIntent->amount / 100, null, $paymentIntent->id);
+                ExtensionHelper::addPayment($paymentIntent->metadata->invoice_id, $this->authenticatedGateway(), $paymentIntent->amount / 100, null, $paymentIntent->id);
                 break;
             case 'payment_intent.payment_failed':
                 $paymentIntent = $event->data->object; // contains a StripePaymentIntent
                 if (!isset($paymentIntent->metadata->invoice_id)) {
                     break;
                 }
-                ExtensionHelper::addFailedPayment($paymentIntent->metadata->invoice_id, 'Stripe', $paymentIntent->amount / 100, null, $paymentIntent->id);
+                ExtensionHelper::addFailedPayment($paymentIntent->metadata->invoice_id, $this->authenticatedGateway(), $paymentIntent->amount / 100, null, $paymentIntent->id);
                 break;
             case 'charge.updated':
-                $charge = $event->data->object; // contains a StripeCharge
-                $invoiceTransaction = InvoiceTransaction::where('transaction_id', $charge->payment_intent)->first();
-                if (!$invoiceTransaction) {
+                $charge = $event->data->object;
+                $matches = InvoiceTransaction::where('transaction_id', $charge->payment_intent)->limit(2)->get();
+                if ($matches->isEmpty()) {
                     break;
                 }
-                // Get fee from charge
-                $fee = 0;
-                if ($charge->balance_transaction) {
-                    $balanceTransaction = $this->request('get', '/balance_transactions/' . $charge->balance_transaction);
-                    $fee = $balanceTransaction->fee / 100;
+                if ($matches->count() !== 1) {
+                    throw new RuntimeException('Original Stripe payment reference is ambiguous.');
                 }
-                ExtensionHelper::addPaymentFee($charge->payment_intent, $fee);
+                $invoiceTransaction = $matches->first();
+                $gateway = $this->authenticatedGateway();
+                if ($invoiceTransaction->gateway_id !== $gateway->id ||
+                    $invoiceTransaction->status !== InvoiceTransactionStatus::Succeeded || $invoiceTransaction->is_credit_transaction ||
+                    $invoiceTransaction->settlement_origin === 'manual_record' || $invoiceTransaction->settlement_state === 'unsettled' ||
+                    !isset($charge->amount, $charge->currency) || !preg_match('/^[0-9]+$/D', (string) $charge->amount) ||
+                    !BigDecimal::of($invoiceTransaction->amount)->multipliedBy(100)->isEqualTo((string) $charge->amount) ||
+                    strtoupper($charge->currency) !== $invoiceTransaction->invoice->currency_code) {
+                    throw new RuntimeException('Original Stripe charge payment identity does not match.');
+                }
+                if (empty($charge->balance_transaction)) {
+                    break;
+                }
+                $balanceTransaction = $this->request('get', '/balance_transactions/' . $charge->balance_transaction);
+                if (($balanceTransaction->id ?? null) !== $charge->balance_transaction || ($balanceTransaction->source ?? null) !== ($charge->id ?? null) ||
+                    !isset($balanceTransaction->amount, $balanceTransaction->currency, $balanceTransaction->fee) ||
+                    !preg_match('/^[0-9]+$/D', (string) $balanceTransaction->amount) ||
+                    !is_string($balanceTransaction->currency) || !preg_match('/^[a-z]{3}$/Di', $balanceTransaction->currency) ||
+                    !preg_match('/^[0-9]+$/D', (string) $balanceTransaction->fee)) {
+                    throw new RuntimeException('Authenticated Stripe processor deduction identity does not match.');
+                }
+                if (strtoupper($balanceTransaction->currency) !== $invoiceTransaction->invoice->currency_code) {
+                    // This model has no settlement-fee currency. Preserve its prior
+                    // deduction rather than relabelling or guessing an FX conversion.
+                    Log::notice('Stripe processor fee metadata is unsupported.', [
+                        'outcome_code' => 'unsupported_processor_fee_currency',
+                        'original_transaction_id' => $invoiceTransaction->id, 'gateway_id' => $gateway->id,
+                    ]);
+
+                    return response()->json(['received' => true, 'outcome_code' => 'unsupported_processor_fee_currency']);
+                }
+                if (!BigDecimal::of((string) $balanceTransaction->amount)->isEqualTo((string) $charge->amount)) {
+                    throw new RuntimeException('Authenticated Stripe processor deduction identity does not match.');
+                }
+                $fee = (string) BigDecimal::of((string) $balanceTransaction->fee)->dividedBy(100, 2);
+                ExtensionHelper::addPaymentFee($charge->payment_intent, $fee, $invoiceTransaction);
 
                 break;
             case 'setup_intent.succeeded':
@@ -293,6 +343,7 @@ class Stripe extends Gateway
                 $service = Service::where('subscription_id', $invoice->parent->subscription_details->subscription)->first();
                 if ($service) {
                     $invoiceModel = $service->invoiceItems->sortByDesc('created_at')->first()->invoice;
+                    $gateway = $this->authenticatedGateway();
                     $paymentIntents = $this->request('get', '/invoice_payments', ['invoice' => $invoice->id]);
                     $paymentIntent = collect($paymentIntents->data)->first();
 
@@ -300,7 +351,7 @@ class Stripe extends Gateway
                         break;
                     }
 
-                    ExtensionHelper::addPayment($invoiceModel->id, 'Stripe', $invoice->amount_paid / 100, null, $paymentIntent->payment->payment_intent);
+                    ExtensionHelper::addPayment($invoiceModel->id, $gateway, $invoice->amount_paid / 100, null, $paymentIntent->payment->payment_intent);
                 }
                 break;
             default:

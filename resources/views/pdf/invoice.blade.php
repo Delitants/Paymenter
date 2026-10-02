@@ -172,7 +172,8 @@
             </tr>
             @if(\Brick\Math\BigDecimal::of($summary->productTax)->isPositive())
             <tr>
-                <td class="label">{{ $invoice->tax?->name ?? 'Tax' }} ({{ $invoice->tax?->rate }}%)</td>
+                @php($invoiceTax = $invoice->tax)
+                <td class="label">{{ $invoiceTax instanceof \App\Models\TaxRate ? (($invoiceTax->name ?? 'Tax') . ' (' . $invoiceTax->rate . '%)') : 'Tax' }}</td>
                 <td class="amount">{{ $invoice->formattedTotal->format($summary->productTax) }}</td>
             </tr>
             @endif

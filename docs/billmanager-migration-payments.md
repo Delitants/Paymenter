@@ -64,3 +64,7 @@ Never release customer migration holds, activate gateway records, register live 
 - [Klarna HPP capture modes](https://docs.klarna.com/acquirer/klarna/web-payments/integrate-with-klarna-payments/tokenized-payments/charge-an-on-demand-payment-via-hpp/) and [automatic capture eligibility](https://docs.klarna.com/acquirer/klarna/web-payments/additional-resources/use-cases/automatic-capture/)
 - [Klarna Consumer FX](https://docs.klarna.com/acquirer/klarna/web-payments/additional-resources/use-cases/consumer-fx/) and [country, currency and locale mapping](https://docs.klarna.com/acquirer/klarna/get-started/data-requirements/puchase-countries-currencies-locales/)
 - [Wave API](https://developer.waveapps.com/hc/en-us/articles/360019968212-API-Reference) and [webhook verification](https://developer.waveapps.com/hc/en-us/articles/51070420388628-Webhooks-Setup-Guide)
+
+## Administrative refunds and settlement
+
+See [Native administrative payment operations](admin-payment-operations.md) for the audited native actions, exact refund preview, contextual capture, safe history and explicit-actor read-only reconciliation command. These operations default to disabled and retain source migration holds. BILLmanager remains authoritative until the separate billing handover.

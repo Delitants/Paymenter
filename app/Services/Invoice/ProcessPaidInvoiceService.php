@@ -4,9 +4,11 @@ namespace App\Services\Invoice;
 
 use App\Models\Credit;
 use App\Models\Invoice;
+use App\Models\InvoicePaidProcessing;
 use App\Models\Service;
 use App\Models\ServiceUpgrade;
 use App\Services\BillmanagerMigration\MigrationHold;
+use App\Services\Gateways\InvoicePaymentDependencies;
 use App\Services\Service\RenewServiceService;
 use App\Services\ServiceUpgrade\ServiceUpgradeService;
 use Brick\Math\BigDecimal;
@@ -17,9 +19,23 @@ class ProcessPaidInvoiceService
     /**
      * Handle the processing of a paid invoice.
      */
-    public function handle(Invoice $invoice): void
+    public function handle(Invoice $invoice): bool
     {
-        MigrationHold::assertAllowed($invoice, 'process payment');
+        return DB::transaction(function () use ($invoice) {
+            $invoice = (new InvoicePaymentDependencies)->lock([$invoice->id])->firstWhere('id', $invoice->id);
+            MigrationHold::assertAllowed($invoice, 'process payment');
+            if ($invoice->status !== 'paid' || InvoicePaidProcessing::whereKey($invoice->id)->lockForUpdate()->exists()) {
+                return false;
+            }
+            InvoicePaidProcessing::create(['invoice_id' => $invoice->id, 'origin' => 'native', 'processed_at' => now()]);
+            $this->process($invoice);
+
+            return true;
+        });
+    }
+
+    private function process(Invoice $invoice): void
+    {
         // Update services if invoice is paid (suspended -> active etc.)
         $invoice->items->each(function ($item) use ($invoice) {
             if ($item->reference_type == Service::class) {

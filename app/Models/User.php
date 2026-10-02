@@ -6,6 +6,7 @@ namespace App\Models;
 
 use App\Models\Traits\HasProperties;
 use App\Observers\UserObserver;
+use App\Services\Gateways\PaymentWriteGuard;
 use Dedoc\Scramble\Attributes\SchemaName;
 use Filament\Models\Contracts\FilamentUser;
 use Filament\Models\Contracts\HasAvatar;
@@ -24,6 +25,11 @@ use OwenIt\Auditing\Contracts\Auditable;
 class User extends Authenticatable implements Auditable, FilamentUser, HasAvatar, OAuthenticatable
 {
     use HasApiTokens, HasFactory, HasProperties, Notifiable, Traits\Auditable;
+
+    protected function performDeleteOnModel()
+    {
+        return (new PaymentWriteGuard)->withParentDeletion($this, fn () => parent::performDeleteOnModel());
+    }
 
     /**
      * The attributes that are mass assignable.

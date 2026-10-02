@@ -44,6 +44,27 @@ class InvoicePricingTest extends TestCase
         return $invoice->fresh();
     }
 
+    public function test_customer_summary_preserves_positive_tax_without_inventing_rate(): void
+    {
+        $invoice = $this->fixture();
+        foreach ([['7.1250', true], [null, false], ['0.0000', false]] as [$rate, $known]) {
+            DB::table('invoices')->where('id', $invoice->id)->update(['pricing_tax_rate' => $rate, 'pricing_tax_name' => $known ? 'Synthetic sales tax' : null]);
+            DB::table('invoice_items')->where('invoice_id', $invoice->id)->update(['tax_amount' => '7.13']);
+            config(['settings.tax_enabled' => $known]);
+            Once::flush();
+            $current = $invoice->fresh();
+            $summary = (new InvoicePricing)->summary($current);
+            $html = $this->blade('<x-billing.payment-summary :summary="$summary" :formatter="$formatter" :tax-name="$taxName" :tax-rate="$taxRate" />', [
+                'summary' => $summary, 'formatter' => $current->formattedTotal,
+                'taxName' => $current->tax?->name ?? 'Tax', 'taxRate' => (string) ($current->tax?->rate ?? '0'),
+            ]);
+            $html->assertSee('$7.13')->assertSee('$107.13')->assertDontSee('Tax (0%)');
+            $known ? $html->assertSee('Synthetic sales tax (7.125%)') : $html->assertDontSee('%');
+            $this->assertSame('7.13', $summary->productTax);
+            $this->assertSame('107.13', $summary->total);
+        }
+    }
+
     public function test_issued_tax_survives_country_and_settings_changes(): void
     {
         $invoice = $this->fixture();
