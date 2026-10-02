@@ -394,6 +394,70 @@ class AdminGatewayAdaptersTest extends TestCase
         $this->assertCount(0, Http::recorded(fn ($request) => isset($request['createTransactionRequest'])));
     }
 
+    public static function authorizeEmptyReporting(): array
+    {
+        $empty = ['messages' => ['resultCode' => 'Ok', 'message' => [['code' => 'I00004', 'text' => 'No records found.']]]];
+
+        return [
+            'provider omits both empty collections' => [$empty, $empty + ['totalNumInResultSet' => 0], true],
+            'provider omits empty transaction collection' => [$empty + ['batchList' => []], $empty + ['totalNumInResultSet' => 0], true],
+            'provider omits empty batch collection' => [$empty, $empty + ['transactions' => [], 'totalNumInResultSet' => 0], true],
+            'provider returns explicit empty collections' => [$empty + ['batchList' => []], $empty + ['transactions' => [], 'totalNumInResultSet' => 0], true],
+            'settled batch omits its empty transaction collection' => [['messages' => ['resultCode' => 'Ok', 'message' => [['code' => 'I00001', 'text' => 'Successful.']]], 'batchList' => [['batchId' => '7654321']]], $empty + ['totalNumInResultSet' => 0], true],
+            'missing list with nonzero total' => [$empty + ['batchList' => []], $empty + ['totalNumInResultSet' => 1], false],
+            'explicit empty list with positive total' => [$empty + ['batchList' => []], $empty + ['transactions' => [], 'totalNumInResultSet' => 1], false],
+            'missing list without total' => [$empty + ['batchList' => []], $empty, false],
+            'missing list without no records code' => [$empty + ['batchList' => []], ['messages' => ['resultCode' => 'Ok'], 'totalNumInResultSet' => 0], false],
+            'missing batch without no records code' => [['messages' => ['resultCode' => 'Ok']], $empty + ['totalNumInResultSet' => 0], false],
+            'explicit null batch list' => [$empty + ['batchList' => null], $empty + ['totalNumInResultSet' => 0], false],
+            'explicit null list' => [$empty + ['batchList' => []], $empty + ['transactions' => null, 'totalNumInResultSet' => 0], false],
+            'nonempty list with zero total' => [$empty + ['batchList' => []], $empty + ['transactions' => [['transId' => '7654321', 'transactionStatus' => 'settledSuccessfully']], 'totalNumInResultSet' => 0], false],
+            'negative total' => [$empty + ['batchList' => []], $empty + ['transactions' => [], 'totalNumInResultSet' => -1], false],
+            'fractional total' => [$empty + ['batchList' => []], $empty + ['transactions' => [], 'totalNumInResultSet' => '0.5'], false],
+        ];
+    }
+
+    #[DataProvider('authorizeEmptyReporting')]
+    public function test_authorizenet_preparation_distinguishes_proven_empty_reporting_from_missing_evidence(array $batches, array $unsettled, bool $accepted): void
+    {
+        [$invoice, $gateway, $transaction, $adapter] = $this->fixture('AuthorizeNet', ['api_login_id' => 'synthetic-login', 'transaction_key' => 'synthetic-key', 'environment' => 'test', 'currency' => 'USD'], '1234567');
+        $attempt = $this->nativeAttempt($invoice, $gateway, $transaction, '1234567', hash('sha256', 'synthetic-login:test:USD'));
+        Http::fake(['apitest.authorize.net/xml/v1/request.api' => function ($request) use ($attempt, $batches, $unsettled) {
+            if (isset($request['getTransactionDetailsRequest'])) {
+                return Http::response(['messages' => ['resultCode' => 'Ok'], 'transaction' => ['transId' => '1234567', 'transactionType' => 'authCaptureTransaction', 'transactionStatus' => 'settledSuccessfully',
+                    'order' => ['invoiceNumber' => $attempt->reference], 'settleAmount' => '109.88', 'authAmount' => '109.88', 'submitTimeUTC' => now()->subDays(2)->toIso8601String(),
+                    'payment' => ['creditCard' => ['cardNumber' => 'XXXX1111']]]]);
+            }
+            if (isset($request['getSettledBatchListRequest'])) {
+                return Http::response($batches);
+            }
+            if (isset($request['getUnsettledTransactionListRequest']) || isset($request['getTransactionListRequest'])) {
+                return Http::response($unsettled);
+            }
+            throw new \RuntimeException('Unexpected synthetic reporting request');
+        }]);
+        $context = $error = null;
+        try {
+            $context = $adapter->prepare($invoice, $transaction->fresh(), 'provider_refund', '1234567', '25.00', 'USD');
+        } catch (\RuntimeException $e) {
+            $error = $e;
+        }
+        if ($accepted) {
+            $this->assertNull($error, $error?->getMessage() ?? '');
+            $this->assertSame('0.00', $context['already_refunded']);
+        } else {
+            $this->assertInstanceOf(\RuntimeException::class, $error, 'Incomplete reporting evidence authorized refund preparation.');
+            $this->assertSame(0, PaymentOperation::count());
+            if (is_array($batches['batchList'] ?? null)) {
+                $this->assertNotEmpty(Http::recorded(fn ($request) => isset($request['getUnsettledTransactionListRequest'])));
+            }
+        }
+        if (!empty($batches['batchList'])) {
+            Http::assertSent(fn ($request) => ($request['getTransactionListRequest']['batchId'] ?? null) === '7654321');
+        }
+        $this->assertCount(0, Http::recorded(fn ($request) => isset($request['createTransactionRequest'])));
+    }
+
     public function test_webmoney_missing_certificate_and_test_mode_never_offer_movement(): void
     {
         [, , , $adapter] = $this->fixture('WebMoney', ['purse' => 'Z123456789012', 'secret_key' => 'synthetic-secret', 'test_mode' => '1'], '1234567');
@@ -441,6 +505,7 @@ class AdminGatewayAdaptersTest extends TestCase
             if (isset($request['createTransactionRequest'])) {
                 $write = $request['createTransactionRequest'];
                 $this->assertSame('refundTransaction', $write['transactionRequest']['transactionType']);
+                $this->assertSame(['transactionType', 'amount', 'payment', 'refTransId', 'order', 'transactionSettings'], array_keys($write['transactionRequest']), 'Authorize.Net JSON is converted to its ordered XML schema.');
                 $this->assertSame('1234567', $write['transactionRequest']['refTransId']);
                 $this->assertSame('25.00', $write['transactionRequest']['amount']);
                 $this->assertSame('1111', $write['transactionRequest']['payment']['creditCard']['cardNumber']);

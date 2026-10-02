@@ -72,8 +72,9 @@ final class AuthorizeNet extends ProviderAdapter
         for ($start = $submitted; $start->lessThan($end); $start = $finish) {
             $finish = $start->addDays(30)->min($end);
             $batches = $this->api('getSettledBatchListRequest', ['firstSettlementDate' => $start->toIso8601String(), 'lastSettlementDate' => $finish->toIso8601String()]);
-            $this->require(is_array($batches['batchList'] ?? null) && count($batches['batchList']) <= 200);
-            foreach ($batches['batchList'] as $batch) {
+            $batchList = !array_key_exists('batchList', $batches) && $this->noRecords($batches) ? [] : ($batches['batchList'] ?? null);
+            $this->require(is_array($batchList) && array_is_list($batchList) && count($batchList) <= 200);
+            foreach ($batchList as $batch) {
                 $requests[] = ['getTransactionListRequest', ['batchId' => $this->id((string) ($batch['batchId'] ?? ''))]];
             }
         }
@@ -82,8 +83,11 @@ final class AuthorizeNet extends ProviderAdapter
         foreach ($requests as [$name, $data]) {
             for ($page = 1; $page <= 100; $page++) {
                 $list = $this->api($name, array_merge($data, ['paging' => ['limit' => 100, 'offset' => $page]]));
-                $this->require(is_array($list['transactions'] ?? null) && isset($list['totalNumInResultSet']) && is_numeric($list['totalNumInResultSet']));
-                foreach ($list['transactions'] as $entry) {
+                $total = $list['totalNumInResultSet'] ?? null;
+                $this->require((is_int($total) || is_string($total)) && preg_match('/^(?:0|[1-9][0-9]*)$/D', (string) $total) === 1 && $total <= 10000);
+                $transactions = !array_key_exists('transactions', $list) && (string) $total === '0' && $this->noRecords($list) ? [] : ($list['transactions'] ?? null);
+                $this->require(is_array($transactions) && array_is_list($transactions) && ($total == 0 ? $transactions === [] : $transactions !== []));
+                foreach ($transactions as $entry) {
                     $id = (string) ($entry['transId'] ?? '');
                     if (isset($seen[$id])) {
                         continue;
@@ -98,14 +102,21 @@ final class AuthorizeNet extends ProviderAdapter
                         $sum = $sum->plus($this->money($refund['settleAmount'] ?? null));
                     }
                 }
-                if ($page * 100 >= (int) $list['totalNumInResultSet']) {
+                if ($page * 100 >= (int) $total) {
                     break;
                 }
-                $this->require(count($list['transactions']) > 0 && $page < 100);
+                $this->require(count($transactions) > 0 && $page < 100);
             }
         }
 
         return (string) $sum->toScale(2);
+    }
+
+    private function noRecords(array $response): bool
+    {
+        $messages = $response['messages']['message'] ?? null;
+
+        return is_array($messages) && count($messages) === 1 && ($messages[0]['code'] ?? null) === 'I00004';
     }
 
     protected function write(PaymentOperation $operation, array $context): string
@@ -113,17 +124,21 @@ final class AuthorizeNet extends ProviderAdapter
         $original = $this->transaction($context['original_reference']);
         $action = $context['action'];
         $refId = substr(hash('sha256', $operation->request_key), 0, 20);
-        $data = ['transactionType' => $action, 'refTransId' => $context['original_reference'],
-            'transactionSettings' => ['setting' => [['settingName' => 'emailCustomer', 'settingValue' => 'false']]]];
+        // Authorize.Net converts JSON members to its ordered XML schema.
+        $data = ['transactionType' => $action];
         if ($action === 'refundTransaction') {
             $card = $original['payment']['creditCard']['cardNumber'] ?? null;
             $this->require(is_string($card) && preg_match('/^X{4,16}([0-9]{4})$/D', $card, $digits) === 1 &&
                 ($original['transactionStatus'] ?? null) === 'settledSuccessfully');
-            $data += ['amount' => $context['amount'], 'payment' => ['creditCard' => ['cardNumber' => $digits[1], 'expirationDate' => 'XXXX']],
-                'order' => ['invoiceNumber' => $context['attempt_reference'], 'description' => $operation->request_key]];
+            $data += ['amount' => $context['amount'], 'payment' => ['creditCard' => ['cardNumber' => $digits[1], 'expirationDate' => 'XXXX']]];
         } else {
             $this->require($action === 'voidTransaction' && ($original['transactionStatus'] ?? null) === 'capturedPendingSettlement' && $context['amount'] === $context['original_amount']);
         }
+        $data['refTransId'] = $context['original_reference'];
+        if ($action === 'refundTransaction') {
+            $data['order'] = ['invoiceNumber' => $context['attempt_reference'], 'description' => $operation->request_key];
+        }
+        $data['transactionSettings'] = ['setting' => [['settingName' => 'emailCustomer', 'settingValue' => 'false']]];
         $binding = new AcceptedRequest;
         $binding->claim($operation, 'AuthorizeNet', $action);
         $response = $this->api('createTransactionRequest', ['refId' => $refId, 'transactionRequest' => $data]);
