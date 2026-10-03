@@ -77,9 +77,9 @@ class WaveTest extends TestCase
         return $items;
     }
 
-    private function fakeApi(array $changes = [], bool $newCustomer = false, array $createChanges = []): void
+    private function fakeApi(array $changes = [], bool $newCustomer = false, array $createChanges = [], ?callable $beforeApprove = null): void
     {
-        Http::fake(function ($r) use ($changes, $newCustomer, $createChanges) {
+        Http::fake(function ($r) use ($changes, $newCustomer, $createChanges, $beforeApprove) {
             $query = $r['query'];
             if (str_contains($query, 'WaveSalesTax')) {
                 return Http::response(['data' => ['business' => ['id' => 'synthetic-business', 'salesTax' => $this->taxRecord($this->taxChanges)]]]);
@@ -97,6 +97,10 @@ class WaveTest extends TestCase
                 return Http::response(['data' => ['invoiceCreate' => ['didSucceed' => true, 'invoice' => $this->providerInvoice(array_replace(['status' => 'DRAFT'], $createChanges))]]]);
             }
             if (str_contains($query, 'WaveApproveInvoice')) {
+                if ($beforeApprove) {
+                    $beforeApprove();
+                }
+
                 return Http::response(['data' => ['invoiceApprove' => ['didSucceed' => true, 'invoice' => $this->providerInvoice(['status' => 'SAVED'])]]]);
             }
             if (str_contains($query, 'WaveInvoice')) {
@@ -116,11 +120,29 @@ class WaveTest extends TestCase
         return [$invoice->fresh(), $gateway, (new Wave($gateway->fresh()->settings->pluck('value', 'key')->all()))->bindRecord($gateway)];
     }
 
+    public function test_payment_confirmed_during_approval_is_not_reopened(): void
+    {
+        [$invoice, , $extension] = $this->fixture();
+        $this->fakeApi(beforeApprove: fn () => $extension->syncPayment(GatewayPaymentAttempt::sole()->reference));
+        $rejected = false;
+        try {
+            $extension->pay($invoice, '12.34');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('Checkout initialization requires reconciliation', $exception->getMessage());
+            $rejected = true;
+        }
+        $this->assertSame('paid', GatewayPaymentAttempt::sole()->state);
+        $this->assertSame('paid', $invoice->fresh()->status);
+        $this->assertCount(1, $invoice->transactions);
+        $this->assertTrue($rejected);
+    }
+
     public function test_tax_and_untaxed_fee_lines_match_native_capture(): void
     {
         [$invoice, $gateway, $extension] = $this->taxedFixture();
         $this->fakeApi(newCustomer: true);
         $extension->pay($invoice, '107.13');
+        $this->assertSame('open', GatewayPaymentAttempt::sole()->state);
         $requests = Http::recorded()->map(fn ($pair) => $pair[0]['query'])->all();
         $this->assertStringContainsString('WaveSalesTax', $requests[0]);
         $request = Http::recorded(fn ($r) => str_contains($r['query'], 'WaveCreateInvoice'))->sole()[0];

@@ -147,7 +147,10 @@ class Wave extends Gateway
             $this->verifyInvoice($a, $remote, false);
             $this->checkUrl($remote['viewUrl'] ?? '');
             $payload['view_url'] = $remote['viewUrl'];
-            $a->update(['provider_payload' => $payload, 'state' => 'open']);
+            $a->provider_payload = $payload;
+            if (!GatewayPaymentAttempt::whereKey($a->id)->where('state', 'initializing')->update(['provider_payload' => $a->getAttributes()['provider_payload'], 'state' => 'open'])) {
+                throw new RuntimeException('Checkout initialization requires reconciliation');
+            }
         }
         $this->checkUrl($payload['view_url']);
         View::addNamespace('gateways.wave', __DIR__ . '/resources/views');
