@@ -10,9 +10,11 @@ use App\Models\InvoiceItem;
 use App\Models\User;
 use App\Services\BillmanagerMigration\MigrationHeldException;
 use App\Services\Gateways\PaymentAttempts;
+use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Factory;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
@@ -118,6 +120,149 @@ class WaveTest extends TestCase
         $this->taxed = true;
 
         return [$invoice->fresh(), $gateway, (new Wave($gateway->fresh()->settings->pluck('value', 'key')->all()))->bindRecord($gateway)];
+    }
+
+    public function test_scheduled_sync_confirms_paid_invoice_once_in_customer_account(): void
+    {
+        [$invoice, $gateway, $extension] = $this->fixture();
+        $this->fakeApi();
+        $view = $extension->pay($invoice, '12.34');
+        $this->assertStringContainsString('After you pay your Wave invoice, please allow up to 5 minutes for your payment to appear in your account.', $view->render());
+        Http::swap(new Factory);
+        $this->fakeApi();
+        $this->artisan('wave:sync-payments', ['--gateway' => $gateway->id])->assertSuccessful();
+        $this->assertSame('paid', $invoice->fresh()->status);
+        $this->assertSame('paid', GatewayPaymentAttempt::sole()->state);
+        $this->assertCount(1, $invoice->transactions);
+        $this->assertSame($invoice->id, $invoice->user->invoices()->where('status', 'paid')->sole()->id);
+        $receipt = $invoice->transactions()->sole()->getAttributes();
+        $this->artisan('wave:sync-payments', ['--gateway' => $gateway->id])->assertSuccessful();
+        $this->assertSame($receipt, $invoice->transactions()->sole()->getAttributes());
+        Http::assertSentCount(1);
+        Http::assertNotSent(fn ($r) => str_starts_with($r['query'], 'mutation'));
+    }
+
+    public function test_scheduled_sync_leaves_partial_payment_pending(): void
+    {
+        [$invoice, $gateway, $extension] = $this->fixture();
+        $this->fakeApi();
+        $extension->pay($invoice, '12.34');
+        Http::swap(new Factory);
+        $this->fakeApi(['status' => 'PARTIAL', 'amountPaid' => ['value' => '1.00'], 'amountDue' => ['value' => '11.34']]);
+        $this->artisan('wave:sync-payments', ['--gateway' => $gateway->id])->assertSuccessful();
+        $this->assertSame('pending', $invoice->fresh()->status);
+        $this->assertSame('open', GatewayPaymentAttempt::sole()->state);
+        $this->assertCount(0, $invoice->transactions);
+        Http::assertSentCount(1);
+    }
+
+    public function test_scheduled_sync_makes_no_provider_call_for_disabled_collection_or_holds(): void
+    {
+        [$invoice, $gateway, $extension] = $this->fixture();
+        $this->fakeApi();
+        $extension->pay($invoice, '12.34');
+        Http::swap(new Factory);
+        Http::preventStrayRequests();
+        $gateway->update(['enabled' => false]);
+        $this->artisan('wave:sync-payments')->assertSuccessful();
+        $gateway->update(['enabled' => true]);
+        $gateway->settings()->where('key', 'collection_enabled')->first()->update(['value' => '0']);
+        $this->artisan('wave:sync-payments')->assertSuccessful();
+        $gateway->settings()->where('key', 'collection_enabled')->first()->update(['value' => '1']);
+        DB::table('billmanager_holds')->insert(['model_type' => Invoice::class, 'model_id' => $invoice->id, 'reason' => 'Synthetic migration hold']);
+        $this->artisan('wave:sync-payments')->assertSuccessful();
+        $this->assertSame('pending', $invoice->fresh()->status);
+        $this->assertCount(0, $invoice->transactions);
+        Http::assertNothingSent();
+    }
+
+    public function test_scheduled_sync_rotates_bounded_batches_after_failed_queries(): void
+    {
+        [$invoice, $gateway, $extension] = $this->fixture();
+        $this->fakeApi();
+        $extension->pay($invoice, '12.34');
+        $first = GatewayPaymentAttempt::sole();
+        $secondInvoice = Invoice::factory()->create(['user_id' => $invoice->user_id, 'status' => 'pending']);
+        InvoiceItem::factory()->create(['invoice_id' => $secondInvoice->id, 'price' => '12.34', 'quantity' => 1]);
+        $second = (new PaymentAttempts)->begin($gateway, $secondInvoice->fresh(), $first->merchant_fingerprint, 'USD');
+        $second->update(['provider_reference' => 'synthetic-second-invoice', 'provider_payload' => $first->provider_payload]);
+        Http::swap(new Factory);
+        Http::fake(fn () => Http::response(['errors' => [['message' => 'synthetic-access-token']]], 500));
+        for ($n = 0; $n < 3; $n++) {
+            $this->artisan('wave:sync-payments', ['--gateway' => $gateway->id, '--limit' => 1])->assertFailed();
+        }
+        $this->assertSame([$first->provider_reference, $second->provider_reference, $first->provider_reference], Http::recorded()->map(fn ($pair) => $pair[0]['variables']['invoice'])->all());
+        $this->assertSame(0, $invoice->transactions()->count() + $secondInvoice->transactions()->count());
+    }
+
+    public function test_scheduled_sync_revisits_paid_invoice_while_new_checkouts_arrive(): void
+    {
+        [$invoice, $gateway, $extension] = $this->fixture();
+        $this->fakeApi();
+        $extension->pay($invoice, '12.34');
+        $first = GatewayPaymentAttempt::sole();
+        $paidInvoice = $this->providerInvoice();
+        $addAttempt = function () use ($invoice, $gateway, $first) {
+            $nextInvoice = Invoice::factory()->create(['user_id' => $invoice->user_id, 'status' => 'pending']);
+            InvoiceItem::factory()->create(['invoice_id' => $nextInvoice->id, 'price' => '12.34', 'quantity' => 1]);
+            $next = (new PaymentAttempts)->begin($gateway, $nextInvoice->fresh(), $first->merchant_fingerprint, 'USD');
+            $next->update(['provider_reference' => 'synthetic-new-invoice-' . $next->id, 'provider_payload' => $first->provider_payload]);
+
+            return $next;
+        };
+        $second = $addAttempt();
+        $paid = false;
+        Http::swap(new Factory);
+        Http::fake(function ($request) use ($first, $paidInvoice, &$paid) {
+            if ($request['variables']['invoice'] !== $first->provider_reference) {
+                return Http::response(['errors' => [['message' => 'Synthetic unavailable invoice']]], 500);
+            }
+            $providerInvoice = $paid ? $paidInvoice : array_replace($paidInvoice, ['status' => 'SAVED', 'amountPaid' => ['value' => '0.00'], 'amountDue' => ['value' => '12.34']]);
+
+            return Http::response(['data' => ['business' => ['id' => 'synthetic-business', 'invoice' => $providerInvoice]]]);
+        });
+        $options = ['--gateway' => $gateway->id, '--limit' => 1];
+        $this->artisan('wave:sync-payments', $options)->assertSuccessful();
+        $this->assertSame('pending', $invoice->fresh()->status);
+        $paid = true;
+        $addAttempt();
+        $this->artisan('wave:sync-payments', $options)->assertFailed();
+        $addAttempt();
+        $this->artisan('wave:sync-payments', $options)->assertSuccessful();
+        $this->assertSame('paid', $invoice->fresh()->status);
+        $this->assertSame('paid', $first->fresh()->state);
+        $this->assertCount(1, $invoice->transactions);
+        $this->assertSame([$first->provider_reference, $second->provider_reference, $first->provider_reference], Http::recorded()->map(fn ($pair) => $pair[0]['variables']['invoice'])->all());
+        Http::assertNotSent(fn ($r) => str_starts_with($r['query'], 'mutation'));
+    }
+
+    public function test_scheduled_sync_respects_command_lock_and_invalid_limits(): void
+    {
+        [$invoice, $gateway, $extension] = $this->fixture();
+        $this->fakeApi();
+        $extension->pay($invoice, '12.34');
+        Http::swap(new Factory);
+        Http::preventStrayRequests();
+        $lock = Cache::lock('wave:payment-sync', 900);
+        $this->assertTrue($lock->get());
+        try {
+            $this->artisan('wave:sync-payments')->assertSuccessful();
+        } finally {
+            $lock->release();
+        }
+        foreach (['0', '-1', '501', '1junk'] as $limit) {
+            $this->artisan('wave:sync-payments', ['--limit' => $limit])->assertFailed();
+        }
+        $this->assertCount(0, $invoice->transactions);
+        Http::assertNothingSent();
+    }
+
+    public function test_wave_payment_polling_is_scheduled_every_five_minutes(): void
+    {
+        $event = collect(app(Schedule::class)->events())->filter(fn ($event) => str_contains($event->command ?? '', 'wave:sync-payments'))->sole();
+        $this->assertSame('*/5 * * * *', $event->expression);
+        $this->assertTrue($event->withoutOverlapping);
+        $this->assertTrue($event->onOneServer);
     }
 
     public function test_payment_confirmed_during_approval_is_not_reopened(): void
