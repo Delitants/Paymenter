@@ -24,6 +24,11 @@ return [
                 'deleteAny' => 'Bulk Delete Invoices',
             ],
             'invoice_transactions' => [
+                'manual_settle' => 'Record or restore manual settlement',
+                'manual_unsettle' => 'Reverse manual settlement',
+                'refund' => 'Issue or record payment refunds',
+                'capture' => 'Capture authorized payments',
+                'reconcile' => 'Reconcile payment operations',
                 'create' => 'Create Invoice Transactions',
                 'update' => 'Update Invoice Transactions',
                 'viewAny' => 'View Invoice Transactions',

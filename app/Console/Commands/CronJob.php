@@ -14,7 +14,13 @@ use App\Models\Service;
 use App\Models\ServiceUpgrade;
 use App\Models\Setting;
 use App\Models\Ticket;
+use App\Services\Billing\InvoicePricing;
+use App\Services\BillmanagerMigration\MigrationHold;
+use App\Services\Gateways\InvoicePaymentDependencies;
+use App\Services\Gateways\PaymentWriteGuard;
+use App\Services\Service\PaidServiceLifecycle;
 use App\Services\Service\RenewServiceService;
+use Brick\Math\BigDecimal;
 use Exception;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Config;
@@ -51,16 +57,35 @@ class CronJob extends Command
             // Send invoices if due date is x days away
             $this->runCronJob('invoices_created', function ($number = 0) {
                 Service::where('status', 'active')->where('expires_at', '<', now()->addDays((int) config('settings.cronjob_invoice', 7)))->get()->each(function ($service) use (&$number) {
+                    if (!$this->lockPendingInvoices($service)) {
+                        return;
+                    }
+                    $service = Service::whereKey($service->id)->lockForUpdate()->firstOrFail();
+                    if (MigrationHold::isHeld($service) || PaidServiceLifecycle::pending($service) ||
+                        $service->status !== Service::STATUS_ACTIVE || $service->expires_at >= now()->addDays((int) config('settings.cronjob_invoice', 7))) {
+                        return;
+                    }
                     // Does the service have already a pending invoice?
                     if ($service->invoices()->where('status', 'pending')->exists() || $service->cancellation()->exists()) {
                         return;
                     }
 
+                    // Opt-in local pricing preparation; never perform provider writes here.
+                    if ($service->product->server && ExtensionHelper::hasFunction($service->product->server, 'prepareRenewalInvoice')) {
+                        try {
+                            ExtensionHelper::call($service->product->server, 'prepareRenewalInvoice', [$service]);
+                        } catch (Exception $e) {
+                            report($e);
+
+                            return;
+                        }
+                    }
+
                     // Calculate if we should edit the price because of the coupon
                     if ($service->coupon) {
                         // Calculate what iteration of the coupon we are in
-                        $iteration = $service->invoices()->count() + 1;
-                        if ($iteration == $service->coupon->recurring) {
+                        $paidCycles = $service->invoices()->where('status', Invoice::STATUS_PAID)->count();
+                        if ((int) $service->coupon->recurring > 1 && $paidCycles === (int) $service->coupon->recurring) {
                             // Calculate the price
                             $service->price = $service->calculatePrice();
                             $service->save();
@@ -126,7 +151,10 @@ class CronJob extends Command
                 Service::where('status', 'pending')->whereDoesntHave('invoices', function ($query) {
                     $query->where('status', 'paid');
                 })->where('created_at', '<', now()->subDays((int) config('settings.cronjob_order_cancel', 7)))->get()->each(function ($service) use (&$number) {
-                    $service->invoices()->where('status', 'pending')->update(['status' => 'cancelled']);
+                    if (MigrationHold::isHeld($service) || !$this->lockPendingInvoices($service)) {
+                        return;
+                    }
+                    $service->invoices()->where('status', 'pending')->get()->each->update(['status' => 'cancelled']);
 
                     $service->update(['status' => 'cancelled']);
 
@@ -143,6 +171,18 @@ class CronJob extends Command
             $this->runCronJob('upgrade_invoices_updated', function ($number = 0) {
                 // Update pending upgrade invoices
                 ServiceUpgrade::where('status', 'pending')->get()->each(function ($upgrade) use (&$number) {
+                    if (!$this->lockPendingInvoices($upgrade->service)) {
+                        return;
+                    }
+                    if ($upgrade->invoice) {
+                        $invoice = Invoice::whereKey($upgrade->invoice_id)->lockForUpdate()->firstOrFail();
+                        if ((new PaymentWriteGuard)->isFrozen($invoice)) {
+                            return;
+                        }
+                    }
+                    if (MigrationHold::isHeld($upgrade->service)) {
+                        return;
+                    }
                     if ($upgrade->service->expires_at < now()) {
                         $upgrade->update(['status' => 'cancelled']);
                         // Somehow people manage to have an upgrade without an invoice
@@ -158,7 +198,7 @@ class CronJob extends Command
                         return;
                     }
 
-                    $upgrade->invoice->items()->update([
+                    $upgrade->invoice->items()->get()->each->update([
                         'price' => $upgrade->calculatePrice()->price,
                     ]);
 
@@ -171,6 +211,14 @@ class CronJob extends Command
             $this->runCronJob('services_suspended', function ($number = 0) {
                 // Suspend orders if due date is overdue for x days
                 Service::where('status', 'active')->where('expires_at', '<', now()->subDays((int) config('settings.cronjob_order_suspend', 2)))->get()->each(function ($service) use (&$number) {
+                    if (!$this->lockPendingInvoices($service)) {
+                        return;
+                    }
+                    $service = Service::whereKey($service->id)->lockForUpdate()->firstOrFail();
+                    if (MigrationHold::isHeld($service) || PaidServiceLifecycle::pending($service) ||
+                        $service->status !== Service::STATUS_ACTIVE || $service->expires_at >= now()->subDays((int) config('settings.cronjob_order_suspend', 2))) {
+                        return;
+                    }
                     SuspendJob::dispatch($service);
 
                     $service->update(['status' => 'suspended']);
@@ -183,11 +231,19 @@ class CronJob extends Command
             $this->runCronJob('services_terminated', function ($number = 0) {
                 // Terminate orders if due date is overdue for x days
                 Service::where('status', 'suspended')->where('expires_at', '<', now()->subDays((int) config('settings.cronjob_order_terminate', 14)))->each(function ($service) use (&$number) {
+                    if (!$this->lockPendingInvoices($service)) {
+                        return;
+                    }
+                    $service = Service::whereKey($service->id)->lockForUpdate()->firstOrFail();
+                    if (MigrationHold::isHeld($service) || PaidServiceLifecycle::pending($service) ||
+                        $service->status !== Service::STATUS_SUSPENDED || $service->expires_at >= now()->subDays((int) config('settings.cronjob_order_terminate', 14))) {
+                        return;
+                    }
                     TerminateJob::dispatch($service);
 
                     $service->update(['status' => 'cancelled']);
                     // Cancel outstanding invoices
-                    $service->invoices()->where('status', 'pending')->update(['status' => 'cancelled']);
+                    $service->invoices()->where('status', 'pending')->get()->each->update(['status' => 'cancelled']);
 
                     if ($service->product->stock !== null) {
                         $service->product->increment('stock', $service->quantity);
@@ -202,6 +258,9 @@ class CronJob extends Command
             $this->runCronJob('tickets_closed', function ($number = 0) {
                 // Close tickets if no response for x days
                 Ticket::where('status', 'replied')->each(function ($ticket) use (&$number) {
+                    if (MigrationHold::isHeld($ticket)) {
+                        return;
+                    }
                     $lastMessage = $ticket->messages()->latest('created_at')->first();
                     if ($lastMessage && $lastMessage->created_at < now()->subDays((int) config('settings.cronjob_close_ticket', 7))) {
                         $ticket->update(['status' => 'closed']);
@@ -261,14 +320,31 @@ class CronJob extends Command
         if (!config('settings.credits_auto_use', true)) {
             return;
         }
-        $user = $invoice->user;
-        $credits = $user->credits()->where('currency_code', $invoice->currency_code)->first();
-        if ($invoice->remaining > 0 && $credits && $credits->amount >= $invoice->remaining) {
-            $credits->amount -= $invoice->remaining;
-            $credits->save();
+        DB::transaction(function () use ($invoice) {
+            $invoice = (new InvoicePaymentDependencies)->lock([$invoice->id])->firstWhere('id', $invoice->id);
+            if ((new PaymentWriteGuard)->isFrozen($invoice) || $invoice->status !== 'pending') {
+                return;
+            }
+            $credits = $invoice->user->credits()->where('currency_code', $invoice->currency_code)->lockForUpdate()->first();
+            $remaining = BigDecimal::of((new InvoicePricing)->summary($invoice)->payable);
+            if ($remaining->isPositive() && $credits && BigDecimal::of((string) $credits->amount)->isGreaterThanOrEqualTo($remaining)) {
+                $credits->update(['amount' => (string) BigDecimal::of((string) $credits->amount)->minus($remaining)->toScale(2)]);
+                ExtensionHelper::addPayment($invoice, null, (string) $remaining, isCreditTransaction: true);
+            }
+        });
+    }
 
-            ExtensionHelper::addPayment($invoice->id, null, amount: $invoice->remaining, isCreditTransaction: true);
+    private function lockPendingInvoices(Service $service): bool
+    {
+        // Match settlement's invoice-before-service order before any lifecycle job.
+        $invoices = (new InvoicePaymentDependencies)->lockService($service->id);
+        foreach ($invoices as $invoice) {
+            if ($invoice->status === 'pending' && (new PaymentWriteGuard)->isFrozen($invoice)) {
+                return false;
+            }
         }
+
+        return true;
     }
 
     /**

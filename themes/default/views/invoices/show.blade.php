@@ -119,29 +119,7 @@
                 </table>
             </div>
             <div class="space-y-3 sm:text-right sm:ml-auto sm:w-72 mt-10">
-                @if ($invoice->formattedTotal->tax > 0)
-                <div class="flex justify-between">
-                    <div class="text-sm font-medium text-gray-500 uppercase dark:text-base">{{ __('invoices.subtotal') }}
-                    </div>
-                    <div class="text-base font-medium text-gray-900 dark:text-white">
-                        {{ $invoice->formattedTotal->format($invoice->formattedTotal->subtotal) }}
-                    </div>
-                </div>
-                <div class="flex justify-between">
-                    <div class="text-sm font-medium text-gray-500 uppercase dark:text-base">
-                        {{ $invoice->tax->name }} ({{ $invoice->tax->rate }}%)
-                    </div>
-                    <div class="text-base font-medium text-gray-900 dark:text-white">
-                        {{ $invoice->formattedTotal->formatted->tax }}
-                    </div>
-                </div>
-                @endif
-                <div class="flex justify-between">
-                    <div class="text-base font-semibold text-gray-900 uppercase dark:text-white">Total</div>
-                    <div class="text-base font-bold text-gray-900 dark:text-white">
-                        {{ $invoice->formattedTotal }}
-                    </div>
-                </div>
+                <x-billing.payment-summary :summary="$this->paymentSummary" :formatter="$invoice->formattedTotal" :tax-name="$invoice->tax?->name ?? 'Tax'" :tax-rate="(string) ($invoice->tax?->rate ?? '0')" />
             </div>
 
             @if ($invoice->transactions->isNotEmpty())

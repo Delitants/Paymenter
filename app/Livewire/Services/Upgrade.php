@@ -10,6 +10,7 @@ use App\Models\Service;
 use App\Models\ServiceConfig;
 use App\Models\ServiceUpgrade;
 use App\Models\User;
+use App\Services\BillmanagerMigration\MigrationHold;
 use App\Services\ServiceUpgrade\ServiceUpgradeService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
@@ -29,7 +30,8 @@ class Upgrade extends Component
 
     public function mount()
     {
-        $this->authorize('view', $this->service);
+        $this->authorize('update', $this->service);
+        MigrationHold::assertAllowed($this->service, 'upgrade service');
 
         if (!$this->service->upgradable) {
             $this->notify('This service is not upgradable.', 'error', true);
@@ -132,6 +134,8 @@ class Upgrade extends Component
 
     public function doUpgrade()
     {
+        $this->authorize('update', $this->service);
+        MigrationHold::assertAllowed($this->service, 'upgrade service');
         if (!$this->service->upgradable) {
             $this->notify('This service is not upgradable.', 'error', true);
 

@@ -4,6 +4,7 @@ namespace App\Jobs\Server;
 
 use App\Helpers\ExtensionHelper;
 use App\Models\Service;
+use App\Services\BillmanagerMigration\MigrationHold;
 use Exception;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -29,6 +30,7 @@ class UpgradeJob implements ShouldQueue
      */
     public function handle(): void
     {
+        MigrationHold::assertAllowed($this->service, 'UpgradeJob');
         // $data is the data that will be used to send the email, data is coming from the extension itself
         try {
             ExtensionHelper::upgradeServer($this->service);

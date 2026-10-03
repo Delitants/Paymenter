@@ -8,12 +8,19 @@ use App\Enums\InvoiceTransactionStatus;
 use App\Models\BillingAgreement;
 use App\Models\Extension;
 use App\Models\Gateway;
+use App\Models\GatewayPaymentAttempt;
 use App\Models\Invoice;
 use App\Models\InvoiceTransaction;
+use App\Models\Plan;
 use App\Models\Product;
 use App\Models\Server;
 use App\Models\Service;
 use App\Models\User;
+use App\Services\BillmanagerMigration\MigrationHold;
+use App\Services\Gateways\GatewayFeePolicy;
+use App\Services\Gateways\InvoicePaymentDependencies;
+use App\Services\Gateways\Operations\OperationPolicy;
+use App\Services\Gateways\PaymentWriteGuard;
 use Exception;
 use Filament\Forms\Components\Placeholder;
 use Illuminate\Database\Eloquent\Collection;
@@ -82,11 +89,14 @@ class ExtensionHelper
      *
      * @return array
      */
-    public static function getConfig($type, $extension, $config = [])
+    public static function getConfig($type, $extension, $config = [], ?Extension $record = null)
     {
         // Get existing DB settings first
         $typeClass = ($type == 'gateway') ? Gateway::class : (($type == 'server') ? Server::class : Extension::class);
-        $record = $typeClass::where('extension', $extension)->first();
+        $record ??= $type === 'gateway' ? null : $typeClass::where('extension', $extension)->first();
+        if ($record && ($record->type !== $type || $record->extension !== $extension)) {
+            throw new \InvalidArgumentException('Configuration record does not match extension.');
+        }
         $dbConfig = $record ? ($record->settings?->pluck('value', 'key')->toArray() ?? []) : [];
 
         // Ensure config is always an array
@@ -97,7 +107,9 @@ class ExtensionHelper
         // Merge DB config with live form values (form values take precedence)
         $config = array_merge($dbConfig, $config);
 
-        return self::getExtension($type, $extension)->getConfig($config);
+        $fields = self::getExtension($type, $extension)->getConfig($config);
+
+        return $type === 'gateway' ? [...$fields, ...(new GatewayFeePolicy)->configFields(), ...(new OperationPolicy)->configFields()] : $fields;
     }
 
     /**
@@ -126,14 +138,24 @@ class ExtensionHelper
      *
      * @return array
      */
-    public static function getCheckoutConfig(Product $product, $values = [])
+    public static function getCheckoutConfig(Product $product, $values = [], ?Plan $plan = null)
     {
         $server = $product->server;
         if (!$server) {
             return [];
         }
 
-        return self::call($server, 'getCheckoutConfig', [$product, $values, self::settingsToArray($product->settings)], mayFail: true) ?? [];
+        return self::call($server, 'getCheckoutConfig', [$product, $values, self::settingsToArray($product->settings), $plan], mayFail: true) ?? [];
+    }
+
+    /** Optional cached catalog presentation; extensions must not perform provider calls here. */
+    public static function getProductPricing(Product $product): ?array
+    {
+        if (!$product->server || !self::hasFunction($product->server, 'getProductPricing')) {
+            return null;
+        }
+
+        return self::call($product->server, 'getProductPricing', [$product], mayFail: true);
     }
 
     /**
@@ -231,6 +253,9 @@ class ExtensionHelper
 
     public static function call($extension, $function, $args = [], $mayFail = false)
     {
+        if (($args[0] ?? null) instanceof Service) {
+            MigrationHold::assertAllowed($args[0], 'extension action');
+        }
         try {
             if (!self::hasFunction($extension, $function)) {
                 throw new Exception('Function not found');
@@ -252,6 +277,7 @@ class ExtensionHelper
 
     public static function callService(Service $service, $function, $args = [], $mayFail = false)
     {
+        MigrationHold::assertAllowed($service, 'service action');
         $server = $service->product->server;
 
         if (!$server) {
@@ -271,7 +297,7 @@ class ExtensionHelper
      * @param  Extension  $extension
      * @return object
      */
-    public static function getConfigAsInputs(string $type, ?string $name, $config = [])
+    public static function getConfigAsInputs(string $type, ?string $name, $config = [], ?Extension $record = null)
     {
         if (!$name) {
             return [];
@@ -285,7 +311,7 @@ class ExtensionHelper
         $settings = [];
 
         try {
-            foreach (self::getConfig($type, $name, $config) as $key => $config) {
+            foreach (self::getConfig($type, $name, $config, $record) as $key => $config) {
                 $config['name'] = 'settings.' . $config['name'];
                 $settings[] = FilamentInput::convert($config);
             }
@@ -390,13 +416,11 @@ class ExtensionHelper
     public static function getCheckoutGateways($total, $currency, $type, $items = [])
     {
         $gateways = [];
-
-        foreach (Gateway::with('settings')->get() as $gateway) {
-            if (self::hasFunction($gateway, 'canUseGateway')) {
-                if (self::getExtension('gateway', $gateway->extension, $gateway->settings)->canUseGateway($total, $currency, $type, $items)) {
-                    $gateways[] = $gateway;
-                }
-            } else {
+        foreach (Gateway::where('enabled', true)->with('settings')->get() as $gateway) {
+            if (!self::gatewayEligible($gateway, $currency)) {
+                continue;
+            }
+            if (!self::hasFunction($gateway, 'canUseGateway') || self::getExtension('gateway', $gateway->extension, $gateway->settings)->canUseGateway($total, $currency, $type, $items)) {
                 $gateways[] = $gateway;
             }
         }
@@ -404,24 +428,54 @@ class ExtensionHelper
         return $gateways;
     }
 
+    private static function gatewayEligible(Gateway $gateway, string $currency): bool
+    {
+        $collection = $gateway->settings->firstWhere('key', 'collection_enabled');
+        if ($collection && !filter_var($collection->value, FILTER_VALIDATE_BOOLEAN)) {
+            return false;
+        }
+        try {
+            (new GatewayFeePolicy)->assertSupported($gateway, $currency);
+        } catch (\InvalidArgumentException|\RuntimeException $e) {
+            return false;
+        }
+
+        return true;
+    }
+
     /**
      * Get payment url or view
      */
     public static function pay($gateway, $invoice)
     {
-        return self::getExtension('gateway', $gateway->extension, $gateway->settings)->pay($invoice, $invoice->remaining);
+        MigrationHold::assertAllowed($invoice, 'pay');
+
+        if (!GatewayPaymentAttempt::where('invoice_id', $invoice->id)->where('gateway_id', $gateway->id)->whereIn('state', ['open', 'initializing'])->exists()) {
+            (new PaymentWriteGuard)->assertEditable($invoice);
+            (new GatewayFeePolicy)->assertSupported($gateway, $invoice->currency_code);
+        }
+
+        return self::getExtension('gateway', $gateway->extension, $gateway->settings)->bindRecord($gateway)->pay($invoice, $invoice->remaining);
     }
 
     public static function charge(Gateway $gateway, Invoice $invoice, BillingAgreement $billingAgreement): bool
     {
-        return self::getExtension('gateway', $gateway->extension, $gateway->settings)->charge($invoice, $invoice->remaining, $billingAgreement);
+        MigrationHold::assertAllowed($invoice, 'charge');
+
+        (new PaymentWriteGuard)->assertEditable($invoice);
+        (new GatewayFeePolicy)->assertSupported($gateway, $invoice->currency_code);
+
+        return self::getExtension('gateway', $gateway->extension, $gateway->settings)->bindRecord($gateway)->charge($invoice, $invoice->remaining, $billingAgreement);
     }
 
-    public static function getBillingAgreementGateways()
+    public static function getBillingAgreementGateways(?string $currency = null)
     {
         $gateways = [];
 
-        foreach (Gateway::with('settings')->get() as $gateway) {
+        foreach (Gateway::where('enabled', true)->with('settings')->get() as $gateway) {
+            if (!self::gatewayEligible($gateway, $currency ?? session('currency', config('settings.default_currency')))) {
+                continue;
+            }
             if (self::hasFunction($gateway, 'supportsBillingAgreements')) {
                 if (self::getExtension('gateway', $gateway->extension, $gateway->settings)->supportsBillingAgreements()) {
                     $gateways[] = $gateway;
@@ -441,6 +495,8 @@ class ExtensionHelper
      */
     public static function createBillingAgreement($user, $gateway)
     {
+        MigrationHold::assertAllowed($user, 'createBillingAgreement');
+
         return self::getExtension('gateway', $gateway->extension, $gateway->settings)->createBillingAgreement($user);
     }
 
@@ -451,11 +507,14 @@ class ExtensionHelper
      */
     public static function cancelBillingAgreement(BillingAgreement $billingAgreement)
     {
+        MigrationHold::assertAllowed($billingAgreement, 'cancelBillingAgreement');
+
         return self::getExtension('gateway', $billingAgreement->gateway->extension, $billingAgreement->gateway->settings)->cancelBillingAgreement($billingAgreement);
     }
 
     public static function makeBillingAgreement(User $user, $gateway, $name, $externalReference, $type = null, $expiry = null)
     {
+        MigrationHold::assertAllowed($user, 'makeBillingAgreement');
         $gateway = Gateway::where('extension', $gateway)->firstOrFail();
 
         $billingAgreement = BillingAgreement::updateOrCreate([
@@ -478,40 +537,47 @@ class ExtensionHelper
      */
     public static function addPayment($invoice, $gateway, $amount, $fee = null, $transactionId = null, InvoiceTransactionStatus $status = InvoiceTransactionStatus::Succeeded, $isCreditTransaction = false)
     {
-        if (isset($gateway)) {
+        if (isset($gateway) && !($gateway instanceof Gateway)) {
             $gateway = Gateway::where('extension', $gateway)->first();
         }
 
-        $invoice = Invoice::findOrFail($invoice);
+        $invoice = $invoice instanceof Invoice ? $invoice : Invoice::findOrFail($invoice);
+        MigrationHold::assertAllowed($invoice, 'add payment');
 
-        if (!$transactionId) {
-            $transaction = $invoice->transactions()->create([
-                'gateway_id' => $gateway?->id,
-                'amount' => $amount,
-                'fee' => $fee,
-                'status' => $status,
-                'is_credit_transaction' => $isCreditTransaction,
-            ]);
-        } else {
-            $updateData = [
-                'gateway_id' => $gateway?->id,
-                'amount' => $amount,
-                'status' => $status,
-                'is_credit_transaction' => $isCreditTransaction,
-            ];
-            if ($fee !== null) {
-                $updateData['fee'] = $fee;
+        return DB::transaction(function () use ($invoice, $gateway, $amount, $fee, $transactionId, $status, $isCreditTransaction) {
+            if ($gateway) {
+                $gateway = Gateway::whereKey($gateway->id)->lockForUpdate()->firstOrFail();
+            }
+            $invoice = (new InvoicePaymentDependencies)->lock([$invoice->id])->firstWhere('id', $invoice->id);
+            if (!$transactionId) {
+                $transaction = $invoice->transactions()->create([
+                    'gateway_id' => $gateway?->id,
+                    'amount' => $amount,
+                    'fee' => $fee,
+                    'status' => $status,
+                    'is_credit_transaction' => $isCreditTransaction,
+                ]);
+            } else {
+                $updateData = [
+                    'gateway_id' => $gateway?->id,
+                    'amount' => $amount,
+                    'status' => $status,
+                    'is_credit_transaction' => $isCreditTransaction,
+                ];
+                if ($fee !== null) {
+                    $updateData['fee'] = $fee;
+                }
+
+                $transaction = $invoice->transactions()->updateOrCreate(
+                    [
+                        'transaction_id' => $transactionId,
+                    ],
+                    $updateData
+                );
             }
 
-            $transaction = $invoice->transactions()->updateOrCreate(
-                [
-                    'transaction_id' => $transactionId,
-                ],
-                $updateData
-            );
-        }
-
-        return $transaction;
+            return $transaction;
+        });
     }
 
     public static function addProcessingPayment($invoice, $gateway, $amount, $fee = null, $transactionId = null)
@@ -524,14 +590,9 @@ class ExtensionHelper
         return self::addPayment($invoice, $gateway, $amount, $fee, $transactionId, InvoiceTransactionStatus::Failed);
     }
 
-    public static function addPaymentFee($transactionId, $fee)
+    public static function addPaymentFee($transactionId, $fee, ?InvoiceTransaction $original = null)
     {
-        $transaction = InvoiceTransaction::where('transaction_id', $transactionId)->firstOrFail();
-
-        $transaction->fee = $fee;
-        $transaction->save();
-
-        return $transaction;
+        return (new PaymentWriteGuard)->updateProcessorFee((string) $transactionId, $fee, $original);
     }
 
     /**
@@ -539,6 +600,7 @@ class ExtensionHelper
      */
     public static function cancelSubscription(Service $service)
     {
+        MigrationHold::assertAllowed($service, 'cancel subscription');
         foreach (Gateway::all() as $gateway) {
             if (self::hasFunction($gateway, 'cancelSubscription')) {
                 if (self::getExtension('gateway', $gateway->extension, $gateway->settings)->cancelSubscription($service)) {
@@ -600,6 +662,7 @@ class ExtensionHelper
      */
     public static function createServer(Service $service)
     {
+        MigrationHold::assertAllowed($service, 'createServer');
         $server = self::checkServer($service, 'createServer');
 
         self::recordAudit($service, 'extension_action', [], ['action' => 'create_server']);
@@ -612,6 +675,7 @@ class ExtensionHelper
      */
     public static function suspendServer(Service $service)
     {
+        MigrationHold::assertAllowed($service, 'suspendServer');
         $server = self::checkServer($service, 'suspendServer');
 
         self::recordAudit($service, 'extension_action', [], ['action' => 'suspend_server']);
@@ -624,6 +688,7 @@ class ExtensionHelper
      */
     public static function unsuspendServer(Service $service)
     {
+        MigrationHold::assertAllowed($service, 'unsuspendServer');
         $server = self::checkServer($service, 'unsuspendServer');
 
         self::recordAudit($service, 'extension_action', [], ['action' => 'unsuspend_server']);
@@ -636,6 +701,7 @@ class ExtensionHelper
      */
     public static function terminateServer(Service $service)
     {
+        MigrationHold::assertAllowed($service, 'terminateServer');
         $server = self::checkServer($service, 'terminateServer');
 
         self::recordAudit($service, 'extension_action', [], ['action' => 'terminate_server']);
@@ -648,6 +714,7 @@ class ExtensionHelper
      */
     public static function upgradeServer(Service $service)
     {
+        MigrationHold::assertAllowed($service, 'upgradeServer');
         $server = self::checkServer($service, 'upgradeServer');
 
         self::recordAudit($service, 'extension_action', [], ['action' => 'upgrade_server']);

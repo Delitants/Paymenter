@@ -4,6 +4,7 @@ namespace App\Policies;
 
 use App\Models\Ticket;
 use App\Models\User;
+use App\Services\BillmanagerMigration\AccountAccess;
 
 class TicketPolicy extends BasePolicy
 {
@@ -20,7 +21,7 @@ class TicketPolicy extends BasePolicy
      */
     public function view(User $user, Ticket $ticket): bool
     {
-        return $this->adminPermission($user, 'admin.tickets.view') || $ticket->user_id === $user->id;
+        return $this->adminPermission($user, 'admin.tickets.view') || AccountAccess::canRead($user, $ticket);
     }
 
     /**

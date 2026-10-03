@@ -6,6 +6,7 @@ use App\Models\BillingAgreement;
 use App\Models\Card;
 use App\Models\Invoice;
 use App\Models\User;
+use App\Services\Gateways\Operations\Adapter;
 use Illuminate\Support\Facades\View;
 
 /**
@@ -13,6 +14,23 @@ use Illuminate\Support\Facades\View;
  */
 abstract class Gateway extends Extension
 {
+    protected ?\App\Models\Gateway $gatewayRecord = null;
+
+    public function bindRecord(\App\Models\Gateway $gateway): static
+    {
+        if ($gateway->extension !== class_basename(static::class)) {
+            throw new \RuntimeException('Gateway record does not match the extension');
+        }
+        $this->gatewayRecord = $gateway;
+
+        return $this;
+    }
+
+    public function paymentOperations(): ?Adapter
+    {
+        return null;
+    }
+
     /**
      * Pay the given invoice with the given total amount.
      *
@@ -20,6 +38,11 @@ abstract class Gateway extends Extension
      * @return View|string
      */
     abstract public function pay(Invoice $invoice, $total);
+
+    public function supportsCustomerFeeCollection(): bool
+    {
+        return false;
+    }
 
     /**
      * Check if gateway supports billing agreements.

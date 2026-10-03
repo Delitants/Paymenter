@@ -1,0 +1,94 @@
+# Payment gateway preparation
+
+The migration installs native WebMoney, Authorize.Net, Klarna and Wave gateway records **disabled**, with `collection_enabled=0`. Every imported setting is encrypted. Source credentials and callback settings are retained in the encrypted migration archive. Existing source callbacks and synchronization jobs are not changed.
+
+`billmanager:import ... --stage=gateway-configuration --gateway-bundle=/private/gateway-settings.enc --apply` requires the same source identity, cutoff and allowed database as the other stages. Currency IDs are resolved through the validated snapshot, including Authorize.Net credentials obtained from an external broker. Repeating the stage verifies existing settings and refuses changed or enabled records.
+
+Stream credentials with `tools/billmanager/export-gateway-settings.py --source SOURCE --id ID [...]` directly over SSH to `tools/billmanager/receive-gateway-settings.php PRIVATE_OUTPUT EXPECTED_SOURCE` on the destination. Authorize.Net's optional `--authorizenet-broker PATH` uses the adjacent PHP tokenizer to read literal declarations without executing the broker. Never store the plaintext stream or include it in a repository.
+
+## Product tax and customer gateway fees
+
+The shared decimal calculator uses two-decimal money, four fractional percentage digits and HALF_UP unit rounding before quantity. Inclusive prices round extracted tax and derive net as the remainder. A coupon preserves an unchanged inclusive component. New invoices retain their issued tax context, including zero tax. Untouched historical invoices retain aggregate tax rounding. A new payment claim freezes a legacy invoice's existing gross, tax allocation and context before collecting; an already initialized legacy attempt retains its earlier contract. No history or negotiated price is rewritten by the additive schema migration.
+
+Native upgrade previews retain signed, rounded proration through the legacy display interface. Pending renewal and upgrade invoices for the same service share ascending invoice locks before service mutation. Collection on either invoice waits if a related invoice has an unresolved claim; the upgrade cannot collect a payment whose lifecycle would have to reprice a frozen renewal. Financial checks read committed claims and amounts after a lock wait.
+
+Common gateway fields are `customer_fee_enabled`, `customer_fee_percent`, `customer_fee_fixed` and `customer_fee_currency`. Defaults are disabled/zero. The fee is a percentage of discounted unpaid product net before tax, plus one fixed fee; it is never taxed or included in recurring service prices. A nonzero fixed fee must match the invoice currency. Customer fees are separate from processor deductions recorded on transactions.
+
+Cart and invoice previews show product net, tax, fee and payable total without changing accounting rows or calling providers. External initiation locks the native invoice, creates one separate untaxed fee item, and freezes an encrypted pricing allocation and fingerprint. Financial edits, wallet payments and gateway switching require reconciliation while that attempt is open, initializing or paid. A paid callback replay verifies the original native payment and remains idempotent. Legacy initialized attempts keep their original provider contract without adding fees retroactively.
+
+The source export carries fee settings separately from credentials. Apply the opt-in `gateway-fees` import stage with the validated encrypted gateway bundle only to mapped disabled gateway records. The importer verifies source identity, snapshot, active method, module, currency and any prior preparation before writing encrypted settings. Real fee and tax policies belong in private deployment configuration.
+
+## Payment records and verification
+
+Native checkout binds the exact gateway record. A destination payment attempt records its owner, amount, currency, merchant fingerprint and an independent reference. Invoice and referenced service migration holds apply to initiation and settlement. Provider requests use verified TLS, bounded timeouts and redacted errors.
+
+Only verified provider payment data calls Paymenter's invoice settlement hooks. Gateway and invoice row locks, a unique provider transaction key and persisted attempt state prevent repeated notifications from recording a second payment or renewing a service twice. Browser redirects never record payments. An uncertain creation response remains `initializing`; refreshing checkout does not submit it again. Expired hosted sessions require reconciliation rather than automatic replacement. Reconciliation tooling for uncertain requests remains an operator acceptance item.
+
+- **WebMoney:** WMZ/USD and SHA256 `LMI_HASH` only. Prerequests validate destination reference, purse, amount and mode without recording payment. Held payments and unsupported escrow fields are rejected. Actual merchant test/live and hash settings must be verified before changing the imported safe test-mode default.
+- **Authorize.Net:** Accept Hosted token is encrypted and reused for up to 14 minutes. Raw-body HMAC-SHA512 uses the merchant's signature-key string. A valid notification triggers `getTransactionDetailsRequest`; captured state, transaction ID, destination invoice reference and amount must match. This adapter supports a verified USD merchant account. `authenticateTestRequest` verifies API credentials, not hosted checkout or the webhook signature configuration.
+- **Klarna:** Payments session plus hosted payment page in `CAPTURE_ORDER` mode for immediately delivered digital services. A per-session secret token protects the status callback, then authenticated session and order reads verify identity, accepted fraud status, exact full capture, currency and zero refunds. The importer leaves API region, purchase country and locale unset until verified. Frozen order lines preserve native product net, tax and the untaxed customer fee. US checkout uses a separate sales-tax line; other configured markets use inclusive line taxes and integer rate encoding. Unrepresentable tax allocations are refused before creating a provider session. Captured order readback must match every line, quantity, tax and fee. Order Management readbacks may omit the aggregate tax field; exact authenticated sales-tax lines (US) or inclusive line taxes determine the captured tax, and any supplied aggregate must match. Purchase country, locale and allocation remain fixed across retries. Partially paid invoices remain unavailable until separately accepted.
+- **Wave:** Finds an exact, unique active customer by the invoice owner's email, or creates that customer. A durable business/user claim serializes creation across invoices and gateway records sharing that business. The provider customer reference is encrypted and cannot bind to two native users within one merchant. Unknown responses and changed local emails require reconciliation; a later checkout does not create another customer. Creates and approves a destination-numbered invoice; never calls invoice email delivery. Reuses the stored customer/invoice. Signed webhook timestamps must match and be within five minutes; merchant and provider-returned internal invoice ID must match before authenticated GraphQL readback verifies business, customer, destination number, currency and fully paid amounts. GraphQL IDs and webhook IDs are distinct; webhook business ID and signing secret require separate configuration. `wave:reconcile GATEWAY REFERENCE --apply` uses the same verification for explicit polling. `wave:sync-payments` checks pending native destination invoices every five minutes through the existing Laravel scheduler; it uses the same authenticated verification and native settlement path. It respects disabled collection and migration holds, rotates bounded batches using a shared cache cursor and a fixed cycle boundary so new checkouts cannot starve older invoices, prevents overlapping runs, and never creates a provider payment. Paid invoices produce one native receipt visible in the invoice owner's account. `--gateway=ID --limit=N` supports bounded operator runs. The checkout explains that status updates can take up to five minutes. Taxed invoices require an existing `sales_tax_id`: an authenticated business-scoped read verifies its owner, effective rate and noncompound, nonarchived state before customer or invoice writes. Product lines use net prices and that tax; the fee line explicitly uses no taxes. The invoice date and tax date are frozen. Unit lines are split when necessary to preserve native tax rounding, up to 1,000 lines. Create, approve and paid readback must match every item and tax amount. Tax records are never created or changed implicitly. Partially paid invoices remain unavailable until separately accepted.
+
+Customer creation requires an autocommit connection. Wrapping the provider call in
+an outer database transaction is refused because rolling it back could erase the
+claim after a remote customer was created. The claim has no automatic expiry or
+takeover. An overlapping invoice stays open and can continue once the winning
+customer binding is ready; an uncertain provider operation remains blocked.
+Operator recovery for uncertain or changed bindings still requires acceptance.
+
+## Klarna customer countries and Consumer FX
+
+Single-market checkout remains the default. Customer country selection is opt-in:
+
+1. Confirm Consumer FX, USD settlement and the required country agreements with Klarna. API session creation alone does not prove conversion or capture acceptance.
+2. In the Klarna gateway settings, enable **Customer country selection (Consumer FX confirmed by Klarna)** and enter the enabled ISO country codes in **Enabled customer countries**. No countries are enabled by default.
+3. Test an actual local-currency checkout, authenticated USD capture and callback before enabling collection. Keep migration holds until the separately approved handover.
+
+Customers select their Klarna account country; options show its linked local currency. Klarna determines the billing currency from the customer's account and displays conversion before confirmation. Paymenter creates the session and settles the invoice in USD. It does not calculate a separate exchange rate or accept arbitrary country/currency pairs.
+
+The native authenticated, CSRF-protected selection endpoint requires invoice payment permission and its existing gateway attempt. An obsolete form cannot create or initialize a replacement attempt. Browser validation errors keep the selector and its error visible. Amount, currency and locale cannot be supplied by the customer. The chosen country, locale and billing currency are frozen with the provider allocation before the first API write. Retries retain the original session, market, tax and untaxed fee, including after the administrator changes enabled countries. Unknown or expired sessions require reconciliation. Opening the selection step freezes the existing native payment quote; no provider session is created until a valid country is submitted.
+
+## Isolated Wave and WebMoney testing
+
+### Wave
+
+Wave has no dedicated sandbox account. Its [testing guide](https://developer.waveapps.com/hc/en-us/articles/50675235838996-1-Create-a-Wave-account-and-test-business) uses a Starter account and a test business; Pro is not required for initial API testing. Prefer a separate account containing only test businesses because [Full Access tokens](https://developer.waveapps.com/hc/en-us/articles/50682277703188-3-Authentication) can access every business in the account.
+
+1. Create the test business and a development application through **Manage applications**.
+2. Select that application and click **Create token**. Store the token privately, outside the repository; it belongs in the isolated QA configuration, not the imported production gateway.
+3. Verify the exact business and an active sellable product through authenticated API reads. For taxed invoices, create or select a noncompound, active sales-tax record in that test business matching the configured invoice tax rate. Configure its `sales_tax_id`; an API access token alone does not complete tax acceptance.
+4. Test customer/invoice creation and authenticated readback only in the confirmed test business. Creating a development business does not simulate card processing or make real payment submissions harmless.
+
+Actual [webhook delivery](https://developer.waveapps.com/hc/en-us/articles/51070420388628-Webhooks-Setup-Guide) requires a Pro-enabled business and OAuth authorization with the appropriate invoice scope. Starter API access supports scheduled status reconciliation without webhooks. Starter API tests do not prove webhook delivery. Configure a separate HTTPS QA endpoint and verify the webhook secret and raw business ID independently before assigning `webhook_secret` and `webhook_business_id`. Keep source polling, callbacks and billing unchanged until handover.
+
+### WebMoney
+
+The native payment form already sends `LMI_SIM_MODE=0` when its local test-mode setting is enabled. The [Web Merchant Interface](https://en.webmoney.wiki/projects/webmoney/wiki/Web_Merchant_Interface) defines this field only for a purse already in merchant-side Test mode: `0` simulates success, `1` failure and `2` mixed outcomes. It does not turn a production purse into a test purse. A verified notification must carry `LMI_MODE=1` for test processing; `0` indicates a real payment and is rejected by a test-configured gateway.
+
+1. Keep the source production purse in Work mode. Use a dedicated WMZ test purse.
+2. Follow the [merchant setup guide](https://en.webmoney.wiki/projects/webmoney/wiki/Two_Simple_Steps_to_Accept_WebMoney_Payments): **Settings**, select the test purse, set **Test/Active mode: Test** and **Activity: On**. Configure a test Secret Key and SHA256 notification signatures.
+3. Supply the test purse and secret privately. Bind only the isolated QA gateway to them. Use its separate Result URL; configure callback URL overrides on that test purse only if needed. The production Result URL stays unchanged.
+4. Verify the actual prerequest, signed test notification, exact amount/reference and native once-only settlement before accepting the gateway. The provider documents test payments through WM Keeper; a synthetic callback is not provider acceptance.
+
+Test payments do not prove certificate-based refund acceptance or coordinated XML request numbering. Those remain separate gates.
+
+## Acceptance still required
+
+Synthetic tests do not prove a provider has accepted a merchant, market, hosted checkout, tax configuration or webhook. Complete provider sandbox payment tests, expired/uncertain-session operator recovery, currency and tax checks, callback delivery and public browser checks before enabling collection. Klarna customer-selected markets and Consumer FX remain a separate acceptance gate; USD remains the native accounting currency. Wave writes need an explicitly isolated business and a verified tax record, while WebMoney needs verified merchant test mode. Wave webhook availability and internal-ID correspondence require account-specific verification; its existing source poller remains authoritative during preparation. Its durable customer binding also needs merchant sandbox acceptance before activation.
+
+Klarna hosted checkout requests immediate automatic capture with `CAPTURE_ORDER` for immediately delivered digital services. The customer completes Klarna checkout; the operator does not need to capture each new Paymenter order in the merchant portal. Paymenter confirms payment only after authenticated readback proves the full amount is captured. Authorized, partially captured, pending-fraud or refunded orders remain unpaid. Repeated callbacks settle once without issuing another capture request. Existing orders created outside this flow are not captured automatically by this adapter.
+
+Never release customer migration holds, activate gateway records, register live callbacks, enable delivery or start collection as a side effect of importing settings. Billing handover is a separate approved operation.
+
+## Provider references
+
+- [Authorize.Net Accept Hosted](https://developer.authorize.net/api/reference/features/accept-hosted.html) and [webhooks](https://developer.authorize.net/api/reference/features/webhooks.html)
+- [WebMoney Web Merchant Interface](https://en.webmoney.wiki/projects/webmoney/wiki/Web_Merchant_Interface)
+- [Klarna hosted checkout](https://docs.klarna.com/acquirer/klarna/web-payments/integrate-with-klarna-payments/integrate-via-hpp/before-you-start/accept-klarna-payments-using-hosted-payment-page/) and [status callbacks](https://docs.klarna.com/acquirer/klarna/web-payments/integrate-with-klarna-payments/integrate-via-hpp/api-documentation/status-callbacks/)
+- [Klarna HPP capture modes](https://docs.klarna.com/acquirer/klarna/web-payments/integrate-with-klarna-payments/tokenized-payments/charge-an-on-demand-payment-via-hpp/) and [automatic capture eligibility](https://docs.klarna.com/acquirer/klarna/web-payments/additional-resources/use-cases/automatic-capture/)
+- [Klarna Consumer FX](https://docs.klarna.com/acquirer/klarna/web-payments/additional-resources/use-cases/consumer-fx/) and [country, currency and locale mapping](https://docs.klarna.com/acquirer/klarna/get-started/data-requirements/puchase-countries-currencies-locales/)
+- [Wave API](https://developer.waveapps.com/hc/en-us/articles/360019968212-API-Reference) and [webhook verification](https://developer.waveapps.com/hc/en-us/articles/51070420388628-Webhooks-Setup-Guide)
+
+## Administrative refunds and settlement
+
+See [Native administrative payment operations](admin-payment-operations.md) for the audited native actions, exact refund preview, contextual capture, safe history and explicit-actor read-only reconciliation command. These operations default to disabled and retain source migration holds. BILLmanager remains authoritative until the separate billing handover.

@@ -9,6 +9,7 @@ use App\Livewire\Component;
 use App\Models\Credit;
 use App\Models\Gateway;
 use App\Models\Invoice;
+use App\Services\Billing\MoneyCalculator;
 use Exception;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -93,7 +94,9 @@ class Credits extends Component
             $invoice->items()->create([
                 'description' => __('account.credit_deposit', ['currency' => $this->currency]),
                 'quantity' => 1,
-                'price' => $this->amount,
+                'price' => (string) (new MoneyCalculator)->money((string) $this->amount),
+                'kind' => 'credit_allocation',
+                'tax_amount' => '0.00',
                 'reference_type' => Credit::class,
             ]);
 

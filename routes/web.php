@@ -1,9 +1,12 @@
 <?php
 
+use App\Http\Controllers\BillmanagerAttachmentController;
+use App\Http\Controllers\LogoutController;
 use App\Http\Controllers\SocialLoginController;
 use App\Http\Controllers\TicketAttachmentController;
 use App\Http\Middleware\MustVerfiyEmail;
 use App\Livewire\Auth;
+use App\Livewire\Billing\LegacyHistory;
 use App\Livewire\Cart;
 use App\Livewire\Client;
 use App\Livewire\Dashboard;
@@ -37,6 +40,8 @@ Route::group(['middleware' => ['web', 'auth', MustVerfiyEmail::class]], function
 
     Route::get('/invoices', Invoices\Index::class)->name('invoices');
     Route::get('/invoices/{invoice}', Invoices\Show::class)->name('invoices.show')->middleware('can:view,invoice');
+    Route::get('/billing/history', LegacyHistory::class)->name('billing.history');
+    Route::get('/billing/history/{record}', LegacyHistory::class)->name('billing.history.show')->middleware('can:view,record');
 
     Route::get('/tickets', Tickets\Index::class)->name('tickets');
     Route::get('/tickets/create', Tickets\Create::class)->name('tickets.create');
@@ -45,9 +50,12 @@ Route::group(['middleware' => ['web', 'auth', MustVerfiyEmail::class]], function
     Route::get('/services', Services\Index::class)->name('services');
     Route::get('/services/{service}', Services\Show::class)->name('services.show')->middleware('can:view,service');
     Route::get('/services/{service}/upgrade', Services\Upgrade::class)->name('services.upgrade')->middleware('can:view,service');
+    Route::get('/services/{service}/credentials', Services\Credentials::class)->name('services.credentials')->middleware('can:view,service');
 });
 
 Route::group(['middleware' => ['web', 'auth']], function () {
+    Route::post('/logout', LogoutController::class)->name('logout');
+
     Route::get('/account', Client\Account::class)->name('account');
     Route::get('/account/security', Client\Security::class)->name('account.security');
     Route::get('/account/credits', Client\Credits::class)->name('account.credits');
@@ -61,6 +69,7 @@ Route::group(['middleware' => ['web', 'auth']], function () {
         return redirect()->route('dashboard');
     })->middleware(['signed'])->name('verification.verify');
     Route::get('/tickets/attachments/{attachment:uuid}', [TicketAttachmentController::class, 'download'])->name('tickets.attachments.show')->middleware('can:view,attachment');
+    Route::get('/legacy-ticket-attachments/{legacyAttachment}', [BillmanagerAttachmentController::class, 'download'])->name('billmanager.attachments.show')->middleware('can:view,legacyAttachment');
 });
 
 Route::get('cart', Cart::class)->name('cart')->middleware('checkout');
