@@ -48,6 +48,30 @@ Customers select their Klarna account country; options show its linked local cur
 
 The native authenticated, CSRF-protected selection endpoint requires invoice payment permission and its existing gateway attempt. An obsolete form cannot create or initialize a replacement attempt. Browser validation errors keep the selector and its error visible. Amount, currency and locale cannot be supplied by the customer. The chosen country, locale and billing currency are frozen with the provider allocation before the first API write. Retries retain the original session, market, tax and untaxed fee, including after the administrator changes enabled countries. Unknown or expired sessions require reconciliation. Opening the selection step freezes the existing native payment quote; no provider session is created until a valid country is submitted.
 
+## Isolated Wave and WebMoney testing
+
+### Wave
+
+Wave has no dedicated sandbox account. Its [testing guide](https://developer.waveapps.com/hc/en-us/articles/50675235838996-1-Create-a-Wave-account-and-test-business) uses a Starter account and a test business; Pro is not required for initial API testing. Prefer a separate account containing only test businesses because [Full Access tokens](https://developer.waveapps.com/hc/en-us/articles/50682277703188-3-Authentication) can access every business in the account.
+
+1. Create the test business and a development application through **Manage applications**.
+2. Select that application and click **Create token**. Store the token privately, outside the repository; it belongs in the isolated QA configuration, not the imported production gateway.
+3. Verify the exact business and an active sellable product through authenticated API reads. For taxed invoices, create or select a noncompound, active sales-tax record in that test business matching the configured invoice tax rate. Configure its `sales_tax_id`; an API access token alone does not complete tax acceptance.
+4. Test customer/invoice creation and authenticated readback only in the confirmed test business. Creating a development business does not simulate card processing or make real payment submissions harmless.
+
+Actual [webhook delivery](https://developer.waveapps.com/hc/en-us/articles/51070420388628-Webhooks-Setup-Guide) requires a Pro-enabled business and OAuth authorization with the appropriate invoice scope. Starter API tests do not prove webhook delivery. Configure a separate HTTPS QA endpoint and verify the webhook secret and raw business ID independently before assigning `webhook_secret` and `webhook_business_id`. Keep source polling, callbacks and billing unchanged until handover.
+
+### WebMoney
+
+The native payment form already sends `LMI_SIM_MODE=0` when its local test-mode setting is enabled. The [Web Merchant Interface](https://en.webmoney.wiki/projects/webmoney/wiki/Web_Merchant_Interface) defines this field only for a purse already in merchant-side Test mode: `0` simulates success, `1` failure and `2` mixed outcomes. It does not turn a production purse into a test purse. A verified notification must carry `LMI_MODE=1` for test processing; `0` indicates a real payment and is rejected by a test-configured gateway.
+
+1. Keep the source production purse in Work mode. Use a dedicated WMZ test purse.
+2. Follow the [merchant setup guide](https://en.webmoney.wiki/projects/webmoney/wiki/Two_Simple_Steps_to_Accept_WebMoney_Payments): **Settings**, select the test purse, set **Test/Active mode: Test** and **Activity: On**. Configure a test Secret Key and SHA256 notification signatures.
+3. Supply the test purse and secret privately. Bind only the isolated QA gateway to them. Use its separate Result URL; configure callback URL overrides on that test purse only if needed. The production Result URL stays unchanged.
+4. Verify the actual prerequest, signed test notification, exact amount/reference and native once-only settlement before accepting the gateway. The provider documents test payments through WM Keeper; a synthetic callback is not provider acceptance.
+
+Test payments do not prove certificate-based refund acceptance or coordinated XML request numbering. Those remain separate gates.
+
 ## Acceptance still required
 
 Synthetic tests do not prove a provider has accepted a merchant, market, hosted checkout, tax configuration or webhook. Complete provider sandbox payment tests, expired/uncertain-session operator recovery, currency and tax checks, callback delivery and public browser checks before enabling collection. Klarna customer-selected markets and Consumer FX remain a separate acceptance gate; USD remains the native accounting currency. Wave writes need an explicitly isolated business and a verified tax record, while WebMoney needs verified merchant test mode. Wave webhook availability and internal-ID correspondence require account-specific verification; its existing source poller remains authoritative during preparation. Its durable customer binding also needs merchant sandbox acceptance before activation.
