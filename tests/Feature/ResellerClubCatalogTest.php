@@ -27,6 +27,25 @@ class ResellerClubCatalogTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_catalog_pins_provider_identity_and_uses_recurring_plans_without_changing_used_plans(): void
+    {
+        $this->provider();
+        [$server, $category] = $this->fixture();
+        $sync = new CatalogSync;
+        $sync->sync($server, $category, 'customer', '0');
+        $product = Product::where('server_id', $server->id)->firstOrFail();
+        $metadata = json_decode($product->settings()->where('key', CatalogSync::KEY)->value('value'), true);
+        $this->assertSame(hash('sha256', 'test:123'), $metadata['provider_identity'] ?? null);
+        $plan = $product->plans()->firstOrFail();
+        $this->assertSame('recurring', $plan->type);
+        $plan->update(['type' => 'one-time']);
+        $service = Service::factory()->create(['user_id' => User::factory()->create()->id, 'product_id' => $product->id, 'plan_id' => $plan->id, 'price' => '77.00']);
+        $before = $service->fresh()->getRawOriginal();
+        $sync->sync($server, $category, 'customer', '0');
+        $this->assertSame('one-time', $plan->fresh()->type);
+        $this->assertSame($before, $service->fresh()->getRawOriginal());
+    }
+
     private function provider(array $changes = []): ResellerClub
     {
         Http::swap(new Factory);

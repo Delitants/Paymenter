@@ -65,6 +65,22 @@ class ResellerClubManagedCatalogTest extends TestCase
         Http::assertNotSent(fn ($request) => $request->method() !== 'GET' || str_contains($request->url(), '/domains/'));
     }
 
+    public function test_catalog_caches_actual_privacy_eligibility_and_wholesale_cost_without_reusing_retail_price(): void
+    {
+        $provider = $this->provider(changes: [
+            '*/products/details.json*' => Http::response(['bundle' => ['tldlist' => ['test'], 'isprivacyprotectionallowed' => 'true']]),
+            '*/products/reseller-cost-price.json*' => Http::response(['bundle' => ['addnewdomain' => [1 => '10'], 'renewdomain' => [1 => '10']], 'privacy_protection' => '5.005']),
+            '*/products/customer-price.json*' => Http::response(['bundle' => ['addnewdomain' => [1 => '12'], 'renewdomain' => [1 => '12']], 'privacy_protection' => '99']),
+        ]);
+        $quote = $provider->getCatalog('managed')['tlds']['.test'];
+        $this->assertSame(['supported' => true, 'annual_cost' => '5.005', 'currency' => 'USD'], $quote['privacy']);
+        Http::assertSentCount(4);
+        Http::assertNotSent(fn ($request) => $request->method() !== 'GET');
+        [$server, $category] = $this->fixture();
+        (new CatalogSync)->sync($server, $category, 'managed', '0');
+        $this->assertSame(['supported' => true, 'annual_cost' => '5.005', 'currency' => 'USD'], $this->metadata(Product::where('server_id', $server->id)->sole())['prices']['privacy']);
+    }
+
     public function test_different_retail_and_cost_currencies_are_rejected_without_implicit_conversion(): void
     {
         $extension = $this->provider(costCurrency: 'EUR');
