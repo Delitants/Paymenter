@@ -105,7 +105,7 @@
                 <span>{{ __('invoices.subtotal') }}</span> <span>{{ $total->format($total->subtotal) }}</span>
             </div>
             <div class="text-sm flex justify-between gap-3 mb-4 tabular-nums">
-                <span>{{ $taxName }} ({{ $taxRateDisplay }}%)</span> <span>{{ $total->format($total->tax) }}</span>
+                <span>{{ $taxName }} ({{ $taxRateDisplay }}%)</span> <span>{{ $total->format($total->total_tax) }}</span>
             </div>
         @endif
         <div class="font-semibold flex justify-between gap-3 border-t border-neutral pt-4 tabular-nums">

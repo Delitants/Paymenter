@@ -6,6 +6,8 @@ use App\Livewire\Products\Checkout;
 use App\Models\Cart;
 use App\Models\CartItem;
 use App\Models\ConfigOption;
+use App\Models\Setting;
+use App\Models\TaxRate;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Once;
@@ -218,6 +220,35 @@ class CheckoutTest extends TestCase
         $item = CartItem::firstOrFail();
         $this->assertSame($total->price, $item->price->price);
         $this->assertSame($total->setup_fee, $item->price->setup_fee);
+    }
+
+    public function test_checkout_tax_line_includes_tax_on_paid_option_setup_charge(): void
+    {
+        foreach (['tax_enabled' => true, 'tax_type' => 'exclusive', 'tax_scope' => 'all'] as $key => $value) {
+            Setting::updateOrCreate(['key' => $key, 'settingable_type' => null, 'settingable_id' => null], ['value' => $value]);
+        }
+        config(['settings' => collect(config('settings'))->all()]);
+        config(['settings.tax_enabled' => true, 'settings.tax_type' => 'exclusive', 'settings.tax_scope' => 'all']);
+        TaxRate::query()->delete();
+        TaxRate::create(['name' => 'Synthetic tax', 'rate' => '7.1250', 'country' => 'all']);
+        $option = ConfigOption::create(['name' => 'Synthetic backup', 'type' => 'checkbox']);
+        $child = $option->children()->create(['name' => 'Enabled', 'type' => 'select']);
+        $option->products()->attach($this->product->product);
+        $plan = $child->plans()->create(['name' => 'Monthly', 'type' => 'recurring', 'billing_period' => 1, 'billing_unit' => 'month']);
+        $plan->prices()->create(['price' => '3.00', 'setup_fee' => '7.00', 'currency_code' => 'USD']);
+        $component = Livewire::test(Checkout::class, ['category' => $this->product->product->category, 'product' => $this->product->product->slug])
+            ->set('configOptions.' . $option->id, true);
+        $dom = new \DOMDocument;
+        @$dom->loadHTML($component->html());
+        $xpath = new \DOMXPath($dom);
+        $panel = $xpath->query('//*[contains(concat(" ", normalize-space(@class), " "), " checkout-summary-panel ")]')->item(0);
+        $tax = $xpath->query('.//div[span[1][contains(., "Synthetic tax")]]/span[2]', $panel);
+        $this->assertSame(1, $tax->length);
+        // 13.00 recurring + 7.00 setup = 20.00 net; 0.93 + 0.50 = 1.43 tax.
+        $this->assertSame('$1.43', trim($tax->item(0)->textContent));
+        $this->assertStringContainsString('$20.00', $panel->textContent);
+        $this->assertStringContainsString('$21.43', $panel->textContent);
+        $this->assertStringContainsString('$13.93', $panel->textContent);
     }
 
     public function test_top_level_and_nested_provider_fields_are_rendered(): void
