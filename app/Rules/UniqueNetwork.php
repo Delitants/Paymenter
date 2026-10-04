@@ -5,13 +5,16 @@ namespace App\Rules;
 use Closure;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Translation\PotentiallyTranslatedString;
 
 class UniqueNetwork implements ValidationRule
 {
+    public function __construct(public ?int $ignorePoolId = null) {}
+
     /**
      * Run the validation rule.
      *
-     * @param  \Closure(string): \Illuminate\Translation\PotentiallyTranslatedString  $fail
+     * @param  Closure(string): PotentiallyTranslatedString  $fail
      */
     public function validate(string $attribute, mixed $value, Closure $fail): void
     {
@@ -24,12 +27,15 @@ class UniqueNetwork implements ValidationRule
         $ipVersion = filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? 'ipv6' : 'ipv4';
 
         // Check for exact duplicate
-        $exists = DB::table('ip_pools')
+        $pools = DB::table('ip_pools')
+            ->when($this->ignorePoolId !== null, fn ($query) => $query->where('id', '!=', $this->ignorePoolId));
+        $exists = (clone $pools)
             ->where('network_address', $value)
             ->exists();
 
         if ($exists) {
             $fail("Network {$value} already exists in another pool.");
+
             return;
         }
 
@@ -38,7 +44,7 @@ class UniqueNetwork implements ValidationRule
             $newStart = ip2long($ip);
             $newEnd = $newStart + pow(2, (32 - $cidr)) - 1;
 
-            $existingPools = DB::table('ip_pools')
+            $existingPools = $pools
                 ->where('ip_version', 'ipv4')
                 ->whereNotNull('network_address')
                 ->get();
@@ -51,6 +57,7 @@ class UniqueNetwork implements ValidationRule
 
                 if ($newStart <= $existingEnd && $newEnd >= $existingStart) {
                     $fail("Network {$value} overlaps with existing pool: {$pool->network_address}.");
+
                     return;
                 }
             }
