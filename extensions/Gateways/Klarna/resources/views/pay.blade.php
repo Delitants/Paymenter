@@ -6,7 +6,18 @@
         </p>
     </div>
 
-    @if(!$redirectUrl)
+    @php($conversionQuote = $attempt->provider_payload['conversion_quote'] ?? null)
+    @if(!$redirectUrl && $conversionQuote)
+        <form method="POST" action="{{ route('extensions.gateways.klarna.checkout', ['gateway' => $gatewayId, 'invoice' => $invoice->id, 'reference' => $attempt->reference]) }}" class="space-y-4">
+            @csrf
+            <input type="hidden" name="purchase_country" value="{{ $conversionQuote['purchase_country'] }}">
+            <input type="hidden" name="quote_fingerprint" value="{{ $conversionQuote['fingerprint'] }}">
+            <p class="text-sm">{{ __('Selected country: :country', ['country' => $conversionQuote['purchase_country']]) }}</p>
+            @include('gateways.klarna::summary')
+            <x-button.primary type="submit" class="min-h-11">{{ __('Confirm and continue with Klarna') }}</x-button.primary>
+            <p class="text-xs text-base/70">{{ __('This quote is available for 30 minutes. Your country and payment amount stay fixed once you continue.') }}</p>
+        </form>
+    @elseif(!$redirectUrl)
         <form method="POST" action="{{ route('extensions.gateways.klarna.checkout', ['gateway' => $gatewayId, 'invoice' => $invoice->id, 'reference' => $attempt->reference]) }}" class="space-y-4">
             @csrf
             <div class="flex flex-col gap-2">
@@ -19,9 +30,9 @@
                 </select>
                 @error('purchase_country')<p role="alert" class="text-xs text-error">{{ $message }}</p>@enderror
             </div>
-            <p id="klarna-currency-note" class="text-xs text-base/70">{{ __('Billing currency is linked to your country. Klarna confirms it using your account.') }}</p>
+            <p id="klarna-currency-note" class="text-xs text-base/70">{{ ($localCurrency ?? false) ? __('Payment currency is linked to your country. You will review the converted total before continuing.') : __('Billing currency is linked to your country. Klarna confirms it using your account.') }}</p>
             @include('gateways.klarna::summary')
-            <x-button.primary type="submit" class="min-h-11 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">{{ __('Continue with Klarna') }}</x-button.primary>
+            <x-button.primary type="submit" class="min-h-11 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">{{ ($localCurrency ?? false) ? __('Review payment') : __('Continue with Klarna') }}</x-button.primary>
             <p class="text-center text-xs text-base/70">{{ __('Country is fixed once you continue.') }}</p>
         </form>
     @else

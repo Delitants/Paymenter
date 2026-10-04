@@ -30,6 +30,7 @@ use Filament\Schemas\Components\Utilities\Get;
 use Filament\Tables\Columns\TextColumn;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Paymenter\Extensions\Gateways\Klarna\ConversionQuote;
 use RuntimeException;
 
 /** Native form consumers; all money writes and allocation use the shared services. */
@@ -97,11 +98,13 @@ final class PaymentActions
                     ->helperText('Raises the eligible maximum. A partial amount consumes product net and tax first; the fee is refunded only when that amount exceeds remaining product money. The fee has zero tax.'),
                 TextInput::make('amount')->label('Total partial refund amount')->numeric()->minValue(0.01)->required(fn (Get $get) => $get('refund_mode') === 'partial')
                     ->visible(fn (Get $get) => $get('refund_mode') === 'partial')->live(debounce: 500),
-                Text::make(function (Get $get, InvoiceTransaction $record): string {
+                Text::make(function (Get $get, InvoiceTransaction $record) use ($provider): string {
                     try {
-                        $quote = self::refundPreview(auth()->user(), $record, $get('refund_mode') ?? 'full', $get('amount'), (bool) $get('include_fee'));
+                        $quote = self::refundPreview(auth()->user(), $record, $get('refund_mode') ?? 'full', $get('amount'), (bool) $get('include_fee'), $provider);
 
-                        return 'Refund ' . $quote['amount'] . ' ' . $quote['currency'] . ': product net ' . $quote['allocation']['net'] . ', tax ' . $quote['allocation']['tax'] . ', untaxed customer fee ' . $quote['allocation']['fee'] . '. Eligible maximum ' . $quote['remaining'] . '; available afterward ' . $quote['remaining_after'] . '.';
+                        $converted = $provider && isset($quote['provider_amount']) ? ' Klarna will refund ' . $quote['provider_amount'] . ' ' . $quote['provider_currency'] . ' using the original conversion.' : '';
+
+                        return 'Refund ' . $quote['amount'] . ' ' . $quote['currency'] . ': product net ' . $quote['allocation']['net'] . ', tax ' . $quote['allocation']['tax'] . ', untaxed customer fee ' . $quote['allocation']['fee'] . '. Eligible maximum ' . $quote['remaining'] . '; available afterward ' . $quote['remaining_after'] . '.' . $converted;
                     } catch (\Throwable $e) {
                         return $e instanceof RuntimeException ? $e->getMessage() : 'Refund preview unavailable for the current permission or payment.';
                     }
@@ -112,7 +115,7 @@ final class PaymentActions
             ->action(function (InvoiceTransaction $record, array $data, Action $action) use ($provider) {
                 self::perform(function () use ($record, $data, $provider) {
                     self::assertBinding($record, $data);
-                    $quote = self::refundPreview(auth()->user(), $record, $data['refund_mode'], $data['amount'] ?? null, (bool) $data['include_fee']);
+                    $quote = self::refundPreview(auth()->user(), $record, $data['refund_mode'], $data['amount'] ?? null, (bool) $data['include_fee'], $provider);
                     $refunds = new Refunds;
 
                     return $provider ? $refunds->submit(auth()->user(), $record, $quote['amount'], (bool) $data['include_fee'], $data['reason'], $data['request_key']) :
@@ -121,7 +124,7 @@ final class PaymentActions
             });
     }
 
-    public static function refundPreview(User $actor, InvoiceTransaction $transaction, string $mode, mixed $amount, bool $includeFee): array
+    public static function refundPreview(User $actor, InvoiceTransaction $transaction, string $mode, mixed $amount, bool $includeFee, bool $provider = false): array
     {
         if (!$transaction->gateway) {
             throw new RuntimeException('Original payment gateway is missing.');
@@ -136,7 +139,19 @@ final class PaymentActions
             throw new RuntimeException('No refundable amount remains for this fee choice.');
         }
 
-        return $allocation->quote($transaction, $amount, $includeFee) + ['amount' => $amount, 'currency' => $transaction->invoice->currency_code];
+        $preview = $allocation->quote($transaction, $amount, $includeFee) + ['amount' => $amount, 'currency' => $transaction->invoice->currency_code];
+        if ($provider && $transaction->gateway->extension === 'Klarna') {
+            $attempts = GatewayPaymentAttempt::where('invoice_id', $transaction->invoice_id)->where('gateway_id', $transaction->gateway_id)->where('state', 'paid')->get()
+                ->filter(fn ($a) => $a->provider_transaction_id && $transaction->transaction_id === 'gateway:' . $a->gateway_id . ':' . $a->provider_transaction_id);
+            if ($attempts->count() === 1 && isset($attempts->first()->provider_payload['conversion_quote'])) {
+                $converter = new ConversionQuote;
+                $q = $converter->validate($attempts->first());
+                $minor = $converter->refund($q, BigDecimal::of($transaction->refunded_amount)->multipliedBy(100)->toInt(), BigDecimal::of($amount)->multipliedBy(100)->toInt());
+                $preview += ['provider_amount' => (string) BigDecimal::of($minor)->dividedBy(100, 2), 'provider_currency' => $q['provider_currency']];
+            }
+        }
+
+        return $preview;
     }
 
     private static function transition(bool $restore): Action
@@ -182,6 +197,15 @@ final class PaymentActions
             ->schema([
                 Hidden::make('payment_binding'), Hidden::make('gateway_id'), Hidden::make('reference'), Hidden::make('amount'), Hidden::make('currency'),
                 Text::make(fn (Get $get) => 'Gateway verified authorization ' . $get('reference') . ': capture ' . $get('amount') . ' ' . $get('currency')),
+                Text::make(function () use ($invoice): string {
+                    $attempts = GatewayPaymentAttempt::where('invoice_id', $invoice()->id)->where('state', 'open')->get();
+                    if ($attempts->count() !== 1 || $attempts->first()->gateway?->extension !== 'Klarna' || !isset($attempts->first()->provider_payload['conversion_quote'])) {
+                        return '';
+                    }
+                    $quote = (new ConversionQuote)->validate($attempts->first());
+
+                    return 'Klarna will capture ' . BigDecimal::of($quote['allocation']['order_amount'])->dividedBy(100, 2) . ' ' . $quote['provider_currency'] . ' against the original USD invoice.';
+                }),
                 ...self::auditFields(false),
             ])
             ->action(function (array $data, Action $action) use ($invoice) {

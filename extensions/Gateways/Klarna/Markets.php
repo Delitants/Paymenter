@@ -20,6 +20,15 @@ final class Markets
         'GB' => ['United Kingdom', 'GBP'], 'US' => ['United States', 'USD'],
     ];
 
+    public static function currency(string $country): string
+    {
+        if (!isset(self::COUNTRIES[$country])) {
+            throw new RuntimeException('Unsupported Klarna purchase country.');
+        }
+
+        return self::COUNTRIES[$country][1];
+    }
+
     public function enabled(string $countries, string $settlementCurrency): array
     {
         if ($settlementCurrency !== 'USD' || trim($countries) === '') {

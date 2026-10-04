@@ -36,6 +36,18 @@ takeover. An overlapping invoice stays open and can continue once the winning
 customer binding is ready; an uncertain provider operation remains blocked.
 Operator recovery for uncertain or changed bindings still requires acceptance.
 
+## Klarna local-currency charges against USD invoices
+
+The **Local-currency checkout against USD invoices** setting is disabled by default. Enable it only for individually accepted merchant countries after actual playground checkout, automatic capture, callback and refund tests. Enter those ISO country codes in **Enabled customer countries**. Keep **Consumer FX** disabled for new local-currency checkouts; the two modes are mutually exclusive. Existing initialized sessions keep their saved contract.
+
+The customer chooses their Klarna account country and reviews the linked local-currency total before confirming. Paymenter calculates an exact quote using ECB daily reference inputs, with no additional currency markup. The original USD invoice, configured native tax and untaxed gateway fee are preserved. Rates must be no more than four calendar days old; validated rate data is cached for one hour. Country, exact rate inputs, both currencies, converted line allocations and original native identities are frozen in an encrypted snapshot. The quote must be confirmed within 30 minutes before initialization. Unknown or expired attempts require reconciliation before replacement; changing settings or rates cannot reinitialize an existing session.
+
+ECB publishes informational reference rates and discourages transaction use. This policy quotes a merchant selling price; it is not a guaranteed Klarna conversion or bank payout. Paymenter records the original USD invoice receipt after proving the matching local-currency capture. It does not assert that Klarna paid the same USD amount to the merchant's bank.
+
+Klarna receives country-matched purchase currency and integer local-currency order lines. Rounding residuals are apportioned deterministically; unit groups split when required. Unrepresentable tax allocations and orders exceeding 1,000 provider lines are refused before a provider session. The hosted flow still requests **CAPTURE_ORDER**. Authenticated order readback must match the frozen local currency, total, full capture, country and every line before creating one native USD receipt.
+
+Admin refund previews show both the requested native USD allocation and exact local-currency refund. Partial refunds use cumulative proportional rounding against the original captured pair of totals; the final refund consumes exactly the remaining local amount. Native operation context and retained authenticated proof contain both currencies, both amounts and the conversion fingerprint. Prior native refunds must match authenticated remote children and aggregate refund money. Unexplained outside refunds block new automated refunds; processing and uncertain operations retain their existing locks and read-only reconciliation rules. Manual records remain explicitly manual and are not gateway capture evidence.
+
 ## Klarna customer countries and Consumer FX
 
 Single-market checkout remains the default. Customer country selection is opt-in:

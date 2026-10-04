@@ -7,9 +7,12 @@ use App\Models\InvoiceTransaction;
 use App\Models\PaymentOperation;
 use App\Services\Gateways\Operations\OperationResult;
 use Illuminate\Support\Facades\Http;
+use Paymenter\Extensions\Gateways\Klarna\ConversionQuote;
 
 final class Klarna extends ProviderAdapter
 {
+    private ?string $readRequestKey = null;
+
     public function capabilities(): array
     {
         return ['refund' => $this->config('merchant_id') !== '' && $this->config('secret') !== '', 'capture' => $this->config('merchant_id') !== '' && $this->config('secret') !== '', 'reconcile' => true];
@@ -31,6 +34,9 @@ final class Klarna extends ProviderAdapter
     {
         $this->require(in_array($context['kind'], ['provider_refund', 'provider_capture'], true) && $attempt !== null && $context['currency'] === $this->config('currency') &&
             $attempt->merchant_fingerprint === hash('sha256', $this->base() . ':' . $this->config('merchant_id') . ':' . $this->config('currency')));
+        $quote = isset($attempt->provider_payload['conversion_quote']) ? (new ConversionQuote)->validate($attempt) : null;
+        $providerCurrency = $quote ? $quote['provider_currency'] : $context['currency'];
+        $providerTotal = $quote ? $quote['allocation']['order_amount'] : $this->units($attempt->amount);
         $capture = $context['kind'] === 'provider_capture';
         $orderId = $context['original_reference'];
         $priorCapture = null;
@@ -49,11 +55,12 @@ final class Klarna extends ProviderAdapter
         }
         $order = $this->api('/ordermanagement/v1/orders/' . $this->id($orderId));
         $this->require(($order['order_id'] ?? null) === $orderId && ($order['merchant_reference1'] ?? null) === $attempt->reference &&
-            ($order['purchase_currency'] ?? null) === $context['currency'] && ($order['fraud_status'] ?? null) === 'ACCEPTED' &&
+            ($order['purchase_currency'] ?? null) === $providerCurrency &&
+            (!$quote || ($order['purchase_country'] ?? null) === $quote['purchase_country']) && ($order['fraud_status'] ?? null) === 'ACCEPTED' &&
             ($order['original_order_amount'] ?? null) === ($order['order_amount'] ?? null));
         if ($capture && $eligible) {
             $this->require(($order['status'] ?? null) === 'AUTHORIZED' && ($order['captured_amount'] ?? null) === 0 && ($order['refunded_amount'] ?? null) === 0 &&
-                ($order['remaining_authorized_amount'] ?? null) === $this->units($context['amount']) && count($order['captures'] ?? []) === 0 &&
+                ($order['remaining_authorized_amount'] ?? null) === $providerTotal && count($order['captures'] ?? []) === 0 &&
                 is_string($order['expires_at'] ?? null) && strtotime($order['expires_at']) > now()->timestamp && $context['amount'] === $attempt->amount);
         } else {
             $this->require(in_array($order['status'] ?? null, ['CAPTURED', 'PART_CAPTURED', 'CLOSED'], true) && count($order['captures'] ?? []) === 1 &&
@@ -64,7 +71,7 @@ final class Klarna extends ProviderAdapter
             $this->require(($order['captures'][0]['capture_id'] ?? null) === $context['original_reference'] &&
                 ($order['captures'][0]['reference'] ?? null) === $priorCapture->request_key &&
                 ($originalChild['capture_id'] ?? null) === $context['original_reference'] && ($originalChild['reference'] ?? null) === $priorCapture->request_key &&
-                $this->minor($originalChild['captured_amount'] ?? null) === $priorCapture->amount &&
+                $this->minor($originalChild['captured_amount'] ?? null) === ($priorCapture->payload['provider_context']['provider_amount'] ?? $priorCapture->amount) &&
                 is_string($originalChild['captured_at'] ?? null) && strtotime($originalChild['captured_at']) !== false);
         }
         $allocation = $attempt->provider_payload['order_allocation'] ?? null;
@@ -81,9 +88,70 @@ final class Klarna extends ProviderAdapter
             }
         }
 
+        $converted = $quote ? $this->convertedContext($context, $quote, $order, $eligible, $orderId) : [];
+
         return ['merchant' => $this->config('merchant_id'), 'environment' => $this->base(), 'provider_object_type' => $priorCapture === null ? 'order' : 'capture',
-            'original_amount' => $this->minor($order['order_amount']), 'already_refunded' => $this->minor($order['refunded_amount'] ?? null),
-            'order_lines' => $allocation['order_lines'], 'order' => $orderId];
+            'original_amount' => $quote ? $quote['native_amount'] : $this->minor($order['order_amount']),
+            'already_refunded' => $converted['already_refunded'] ?? $this->minor($order['refunded_amount'] ?? null),
+            'order_lines' => $allocation['order_lines'], 'order' => $orderId] + $converted;
+    }
+
+    private function convertedContext(array $context, array $quote, array $order, bool $eligible, string $orderId): array
+    {
+        $capture = $context['kind'] === 'provider_capture';
+        $previous = $providerPrevious = 0;
+        $expectedIds = [];
+        if (!$capture) {
+            $prior = PaymentOperation::where('original_transaction_id', $context['transaction_id'])->whereIn('kind', ['provider_refund', 'external_refund'])
+                ->where('state', 'succeeded')->orderBy('id')->get();
+            $this->require($prior->count() <= 100);
+            foreach ($prior as $operation) {
+                $frozen = $operation->payload['provider_context'] ?? [];
+                $this->require($operation->kind === 'provider_refund' && ($frozen['conversion_fingerprint'] ?? null) === $quote['fingerprint'] &&
+                    ($frozen['provider_currency'] ?? null) === $quote['provider_currency'] && ($frozen['attempt_id'] ?? null) === $context['attempt_id'] &&
+                    ($frozen['order'] ?? null) === $orderId && $operation->gateway_id === $context['gateway_id'] && $operation->invoice_id === $context['invoice_id']);
+                $history = $operation->outcome_evidence ?? [];
+                $last = end($history);
+                $this->require(is_array($last) && ($last['state'] ?? null) === 'succeeded');
+                (new OperationResult('succeeded', $operation->provider_reference, $last['evidence'] ?? []))->assertVerified($operation);
+                $child = $this->api('/ordermanagement/v1/orders/' . $this->id($orderId) . '/refunds/' . $this->id($operation->provider_reference));
+                $this->require(($child['refund_id'] ?? null) === $operation->provider_reference && ($child['reference'] ?? null) === $operation->request_key &&
+                    $this->minor($child['refunded_amount'] ?? null) === $frozen['provider_amount'] &&
+                    is_string($child['refunded_at'] ?? null) && strtotime($child['refunded_at']) !== false && !isset($expectedIds[$operation->provider_reference]));
+                $expectedIds[$operation->provider_reference] = $operation->request_key;
+                $previous += $this->units($operation->amount);
+                $providerPrevious += $this->units($frozen['provider_amount']);
+            }
+        }
+        $converter = new ConversionQuote;
+        $this->require($providerPrevious === $converter->providerRefunded($quote, $previous));
+        $providerAmount = $capture ? $quote['allocation']['order_amount'] : $converter->refund($quote, $previous, $this->units($context['amount']));
+        if (isset($context['provider_amount'])) {
+            $this->require($context['already_refunded'] === $this->minor($previous) && $context['provider_amount'] === $this->minor($providerAmount));
+        }
+        $this->require(is_int($order['refunded_amount'] ?? null) && $order['refunded_amount'] === $providerPrevious + ((!$eligible && !$capture) ? $providerAmount : 0));
+        if (!$capture) {
+            $remote = $order['refunds'] ?? null;
+            $this->require(is_array($remote) && count($remote) === count($expectedIds) + ($eligible ? 0 : 1));
+            $seen = [];
+            $active = 0;
+            foreach ($remote as $child) {
+                $id = $this->id($child['refund_id'] ?? null);
+                $this->require(!isset($seen[$id]));
+                $seen[$id] = true;
+                if (isset($expectedIds[$id])) {
+                    $this->require(($child['reference'] ?? null) === $expectedIds[$id]);
+                } else {
+                    $this->require(!$eligible && $this->readRequestKey !== null && ($child['reference'] ?? null) === $this->readRequestKey);
+                    $active++;
+                }
+            }
+            $this->require($active === ($eligible ? 0 : 1));
+        }
+
+        return ['provider_currency' => $quote['provider_currency'], 'provider_amount' => $this->minor($providerAmount),
+            'provider_original_amount' => $this->minor($quote['allocation']['order_amount']), 'conversion_fingerprint' => $quote['fingerprint'],
+            'already_refunded' => $this->minor($previous)];
     }
 
     private function captureAncestry(array $context, GatewayPaymentAttempt $attempt, InvoiceTransaction $receipt): PaymentOperation
@@ -117,7 +185,7 @@ final class Klarna extends ProviderAdapter
     {
         $capture = $context['kind'] === 'provider_capture';
         $path = '/ordermanagement/v1/orders/' . $context['order'] . ($capture ? '/captures' : '/refunds');
-        $data = [$capture ? 'captured_amount' : 'refunded_amount' => $this->units($context['amount']), 'reference' => $operation->request_key];
+        $data = [$capture ? 'captured_amount' : 'refunded_amount' => $this->units($context['provider_amount'] ?? $context['amount']), 'reference' => $operation->request_key];
         if ($capture || $context['amount'] === $context['original_amount']) {
             $data['order_lines'] = $context['order_lines'];
         }
@@ -141,6 +209,7 @@ final class Klarna extends ProviderAdapter
 
     protected function read(PaymentOperation $operation, ?string $reference): OperationResult
     {
+        $this->readRequestKey = $operation->request_key;
         $context = $this->current($operation, false);
         $capture = $context['kind'] === 'provider_capture';
         $collection = $capture ? 'captures' : 'refunds';
@@ -157,7 +226,7 @@ final class Klarna extends ProviderAdapter
         }
         $child = $this->api($path . '/' . $collection . '/' . $this->id($reference));
         $this->require(($child[$idField] ?? null) === $reference && ($child['reference'] ?? null) === $operation->request_key &&
-            $this->minor($child[$amountField] ?? null) === $context['amount'] && is_string($child[$dateField] ?? null) && strtotime($child[$dateField]) !== false);
+            $this->minor($child[$amountField] ?? null) === ($context['provider_amount'] ?? $context['amount']) && is_string($child[$dateField] ?? null) && strtotime($child[$dateField]) !== false);
 
         return $this->verified($operation, $context, $reference, 'succeeded');
     }

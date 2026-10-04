@@ -46,6 +46,8 @@ class Klarna extends Gateway
                 'description' => 'Enable only after Klarna confirms Consumer FX, USD settlement and each purchase country for this merchant.'],
             ['name' => 'enabled_purchase_countries', 'label' => 'Enabled customer countries (comma-separated ISO codes)', 'type' => 'text', 'default' => '',
                 'description' => 'Only countries accepted for this merchant. Local billing currency is linked to country; Paymenter invoices stay in USD.'],
+            ['name' => 'local_currency_enabled', 'label' => 'Local-currency checkout against USD invoices', 'type' => 'checkbox', 'default' => false,
+                'description' => 'Merchant-approved countries only. Uses ECB reference pricing with no extra currency markup; actual bank settlement can differ. Mutually exclusive with Consumer FX for new checkouts.'],
             ['name' => 'collection_enabled', 'label' => 'Enable payment collection after handover approval', 'type' => 'checkbox', 'default' => false],
         ];
     }
@@ -99,9 +101,20 @@ class Klarna extends Gateway
         $claimedMarket = GatewayPaymentAttempt::where('gateway_id', $this->gatewayRecord?->id)
             ->where('invoice_id', $invoice->id)->whereIn('state', ['open', 'initializing', 'paid'])
             ->whereNotNull('provider_payload')->exists();
-        $countries = $this->consumerFx() && !$claimedMarket ? $this->countries() : [];
+        if (!$claimedMarket && $this->consumerFx() && $this->localCurrency()) {
+            throw new RuntimeException('Choose either local-currency checkout or Consumer FX.');
+        }
+        $countries = ($this->consumerFx() || $this->localCurrency()) && !$claimedMarket ? $this->countries() : [];
         $a = $this->beginInvoice($invoice);
-        if ($a->provider_payload === null && $this->consumerFx()) {
+        if (isset($a->provider_payload['conversion_quote']) && !isset($a->provider_payload['redirect_url'])) {
+            $q = (new ConversionQuote)->validate($a);
+            if ($a->state !== 'open' || $q['confirm_before'] <= now()->timestamp) {
+                throw new RuntimeException('Conversion quote expired or requires reconciliation.');
+            }
+
+            return $this->quoteView($invoice, $a);
+        }
+        if ($a->provider_payload === null && ($this->consumerFx() || $this->localCurrency())) {
             $countries = $countries ?: $this->countries();
             if ($a->state !== 'open') {
                 throw new RuntimeException('Checkout initialization requires reconciliation');
@@ -109,13 +122,26 @@ class Klarna extends Gateway
             View::addNamespace('gateways.klarna', __DIR__ . '/resources/views');
 
             return view('gateways.klarna::pay', ['redirectUrl' => null, 'attempt' => $a,
-                'countries' => $countries, 'invoice' => $invoice, 'gatewayId' => $this->gatewayRecord->id]);
+                'countries' => $countries, 'invoice' => $invoice, 'gatewayId' => $this->gatewayRecord->id, 'localCurrency' => $this->localCurrency()]);
         }
 
         $a = $this->initialize($invoice, $a, ['purchase_country' => $this->config('purchase_country'), 'locale' => $this->config('locale')]);
 
         return view('gateways.klarna::pay', ['redirectUrl' => $a->provider_payload['redirect_url'], 'attempt' => $a,
             'countries' => [], 'invoice' => $invoice, 'gatewayId' => $this->gatewayRecord->id]);
+    }
+
+    private function localCurrency(): bool
+    {
+        return filter_var($this->config('local_currency_enabled'), FILTER_VALIDATE_BOOLEAN);
+    }
+
+    private function quoteView(Invoice $invoice, GatewayPaymentAttempt $attempt)
+    {
+        View::addNamespace('gateways.klarna', __DIR__ . '/resources/views');
+
+        return view('gateways.klarna::selection', ['redirectUrl' => null, 'attempt' => $attempt,
+            'countries' => [], 'invoice' => $invoice, 'gatewayId' => $this->gatewayRecord->id, 'localCurrency' => true]);
     }
 
     private function consumerFx(): bool
@@ -151,7 +177,8 @@ class Klarna extends Gateway
         try {
             $a = $e->beginInvoice($invoice, $reference);
             $request->validate(['purchase_country' => ['required', 'string', 'regex:/^[A-Z]{2}$/D']]);
-            if (array_diff(array_keys($request->except('_token')), ['purchase_country']) !== []) {
+            $local = $e->localCurrency() || isset($a->provider_payload['conversion_quote']);
+            if (array_diff(array_keys($request->except('_token')), $local ? ['purchase_country', 'quote_fingerprint'] : ['purchase_country']) !== []) {
                 throw ValidationException::withMessages(['purchase_country' => __('Only the country can be selected for this checkout.')]);
             }
             $country = $request->input('purchase_country');
@@ -162,7 +189,7 @@ class Klarna extends Gateway
                 }
                 $market = $payload;
             } else {
-                if (!$e->consumerFx()) {
+                if (!$e->consumerFx() && !$e->localCurrency()) {
                     throw ValidationException::withMessages(['purchase_country' => __('Customer country selection is unavailable.')]);
                 }
                 $countries = $e->countries();
@@ -170,6 +197,32 @@ class Klarna extends Gateway
                     throw ValidationException::withMessages(['purchase_country' => __('Choose an enabled country of your Klarna account.')]);
                 }
                 $market = array_merge($countries[$country], ['purchase_country' => $country]);
+            }
+            if ($local && !isset($payload['redirect_url'])) {
+                if ($payload === null) {
+                    if ($request->has('quote_fingerprint') || ($e->consumerFx() && $e->localCurrency())) {
+                        throw new RuntimeException('Conversion selection requires reconciliation.');
+                    }
+                    $quote = (new ConversionQuote)->create($a, $market, (new ReferenceRates)->get($market['billing_currency']));
+                    $a->provider_payload = ['conversion_quote' => $quote, 'purchase_country' => $country, 'locale' => $market['locale'],
+                        'billing_currency' => $market['billing_currency'], 'order_allocation' => $quote['allocation']];
+                    if (!GatewayPaymentAttempt::whereKey($a->id)->where('state', 'open')->whereNull('provider_payload')
+                        ->update(['provider_payload' => $a->getAttributes()['provider_payload']])) {
+                        throw new RuntimeException('Conversion quote requires reconciliation.');
+                    }
+
+                    return response($e->quoteView($invoice, $a->fresh())->render());
+                }
+                $quote = (new ConversionQuote)->validate($a);
+                if ($quote['confirm_before'] <= now()->timestamp || $a->state !== 'open') {
+                    throw new RuntimeException('Conversion quote expired or requires reconciliation.');
+                }
+                if (!$request->has('quote_fingerprint')) {
+                    return response($e->quoteView($invoice, $a)->render());
+                }
+                if (!is_string($request->input('quote_fingerprint')) || !hash_equals($quote['fingerprint'], $request->input('quote_fingerprint'))) {
+                    throw new RuntimeException('Conversion confirmation changed.');
+                }
             }
             $a = $e->initialize($invoice, $a, $market);
 
@@ -179,14 +232,14 @@ class Klarna extends Gateway
                 throw $error;
             }
             try {
-                if ($a->provider_payload !== null || !$e->consumerFx()) {
+                if ($a->provider_payload !== null || (!$e->consumerFx() && !$e->localCurrency())) {
                     throw new RuntimeException('Country selection is unavailable.');
                 }
                 View::addNamespace('gateways.klarna', __DIR__ . '/resources/views');
 
                 return response()->view('gateways.klarna::selection', ['redirectUrl' => null, 'attempt' => $a,
                     'countries' => $e->countries(), 'invoice' => $invoice, 'gatewayId' => $gateway->id,
-                    'errors' => (new ViewErrorBag)->put('default', $error->validator->errors())], 422);
+                    'localCurrency' => $e->localCurrency(), 'errors' => (new ViewErrorBag)->put('default', $error->validator->errors())], 422);
             } catch (RuntimeException) {
                 return response('Klarna country selection is unavailable. Return to your invoice.', 409);
             }
@@ -201,19 +254,22 @@ class Klarna extends Gateway
     {
         $payload = $a->provider_payload;
         if (!$payload || !isset($payload['redirect_url'])) {
-            $allocation = (new OrderLines)->build($a, $market['purchase_country']);
-            if (!GatewayPaymentAttempt::whereKey($a->id)->where('state', 'open')->whereNull('provider_payload')->update(['state' => 'initializing'])) {
+            $quote = isset($payload['conversion_quote']) ? (new ConversionQuote)->validate($a) : null;
+            $allocation = $quote ? $quote['allocation'] : (new OrderLines)->build($a, $market['purchase_country']);
+            $claim = GatewayPaymentAttempt::whereKey($a->id)->where('state', 'open');
+            $claim = $payload === null ? $claim->whereNull('provider_payload') : $claim->where('provider_payload', $a->getRawOriginal('provider_payload'));
+            if (!$claim->update(['state' => 'initializing'])) {
                 throw new RuntimeException('Checkout initialization requires reconciliation');
             }
             $a->refresh();
-            $payload = ['callback_token' => bin2hex(random_bytes(32)), 'purchase_country' => $market['purchase_country'],
-                'locale' => $market['locale'], 'order_allocation' => $allocation];
+            $payload = array_merge($payload ?? [], ['callback_token' => bin2hex(random_bytes(32)), 'purchase_country' => $market['purchase_country'],
+                'locale' => $market['locale'], 'order_allocation' => $allocation]);
             if (isset($market['billing_currency'])) {
                 $payload['billing_currency'] = $market['billing_currency'];
             }
             $a->update(['provider_payload' => $payload]);
             $session = $this->api('POST', $this->base() . '/payments/v1/sessions', array_merge($allocation, [
-                'purchase_country' => $payload['purchase_country'], 'purchase_currency' => $a->currency_code,
+                'purchase_country' => $payload['purchase_country'], 'purchase_currency' => $quote ? $quote['provider_currency'] : $a->currency_code,
                 'locale' => $payload['locale'], 'merchant_reference1' => $a->reference,
             ]));
             if (!is_string($session['session_id'] ?? null) || !preg_match('/^[A-Za-z0-9-]{1,100}$/D', $session['session_id'])) {
@@ -291,8 +347,10 @@ class Klarna extends Gateway
             throw new RuntimeException('Invalid order identity');
         }
         $order = $this->api('GET', $this->base() . '/ordermanagement/v1/orders/' . $id);
-        $minor = BigDecimal::of($a->amount)->multipliedBy(100)->toInt();
-        if (($order['order_id'] ?? null) !== $id || ($order['merchant_reference1'] ?? null) !== $reference || ($order['purchase_currency'] ?? null) !== $a->currency_code || ($order['status'] ?? null) !== 'CAPTURED' || ($order['fraud_status'] ?? null) !== 'ACCEPTED' || ($order['order_amount'] ?? null) !== $minor || ($order['captured_amount'] ?? null) !== $minor || ($order['refunded_amount'] ?? null) !== 0) {
+        $quote = isset($a->provider_payload['conversion_quote']) ? (new ConversionQuote)->validate($a) : null;
+        $minor = $quote ? $quote['allocation']['order_amount'] : BigDecimal::of($a->amount)->multipliedBy(100)->toInt();
+        $providerCurrency = $quote ? $quote['provider_currency'] : $a->currency_code;
+        if (($order['order_id'] ?? null) !== $id || ($order['merchant_reference1'] ?? null) !== $reference || ($order['purchase_currency'] ?? null) !== $providerCurrency || ($order['status'] ?? null) !== 'CAPTURED' || ($order['fraud_status'] ?? null) !== 'ACCEPTED' || ($order['order_amount'] ?? null) !== $minor || ($order['captured_amount'] ?? null) !== $minor || ($order['refunded_amount'] ?? null) !== 0) {
             throw new RuntimeException('Order identity, amount or captured state does not match');
         }
         (new OrderLines)->assertCaptured($a, $order);

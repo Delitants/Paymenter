@@ -2,23 +2,32 @@
 
 namespace Tests\Feature\BillmanagerMigration;
 
+use App\Admin\Actions\PaymentActions;
+use App\Admin\Resources\InvoiceResource\Pages\EditInvoice;
+use App\Admin\Resources\InvoiceResource\RelationManagers\TransactionsRelationManager;
 use App\Enums\InvoiceTransactionStatus;
 use App\Models\Gateway;
 use App\Models\GatewayPaymentAttempt;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
+use App\Models\PaymentOperation;
+use App\Models\Role;
 use App\Models\User;
 use App\Services\Billing\InvoicePricing;
+use App\Services\Gateways\Operations\ProviderOperations;
 use App\Services\Gateways\PaymentAttempts;
+use Filament\Facades\Filament;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Factory;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\View;
 use Illuminate\Support\ViewErrorBag;
+use Livewire\Livewire;
 use Paymenter\Extensions\Gateways\Klarna\Klarna;
 use Paymenter\Extensions\Gateways\Klarna\OrderLines;
 use Tests\Concerns\UsesCommittedDatabase;
@@ -32,6 +41,16 @@ class KlarnaTest extends TestCase
     private bool $taxed = false;
 
     private bool $omitAggregateTax = false;
+
+    private bool $localReadback = false;
+
+    private array $localRefunds = [];
+
+    private bool $refundReadFailure = false;
+
+    private bool $localAuthorization = false;
+
+    private ?string $localCaptureKey = null;
 
     private string $providerCountry = 'US';
 
@@ -57,14 +76,255 @@ class KlarnaTest extends TestCase
         return [$i->fresh(), $g, $e];
     }
 
+    public function test_local_currency_selection_prepares_a_quote_before_any_klarna_session(): void
+    {
+        [$invoice, $gateway] = $this->fixture();
+        $gateway->settings()->create(['key' => 'local_currency_enabled', 'value' => '1']);
+        $gateway->settings()->create(['key' => 'enabled_purchase_countries', 'value' => 'US,DE,GB']);
+        $this->fakeApi();
+        $extension = (new Klarna($gateway->fresh()->settings->pluck('value', 'key')->all()))->bindRecord($gateway);
+        $html = $extension->pay($invoice, '12.34')->render();
+        $this->assertStringContainsString('name="purchase_country"', $html);
+        Http::assertNothingSent();
+    }
+
+    private function localCheckout(Invoice $invoice, Gateway $gateway): Klarna
+    {
+        Cache::flush();
+        foreach (['local_currency_enabled' => '1', 'enabled_purchase_countries' => 'US,DE,GB'] as $key => $value) {
+            $gateway->settings()->updateOrCreate(['key' => $key], ['value' => $value]);
+        }
+        $extension = (new Klarna($gateway->fresh()->settings->pluck('value', 'key')->all()))->bindRecord($gateway);
+        $extension->pay($invoice, '12.34');
+
+        return $extension;
+    }
+
+    public function test_local_quote_confirmation_charges_eur_and_settles_usd_once(): void
+    {
+        [$invoice, $gateway] = $this->fixture();
+        $this->fakeApi();
+        $this->localCheckout($invoice, $gateway);
+        $url = $this->checkoutUrl($invoice, $gateway);
+        $this->post($url, ['purchase_country' => 'DE'])->assertOk()->assertSee('11.22 EUR');
+        Http::assertNotSent(fn ($r) => $r->method() === 'POST');
+        $attempt = GatewayPaymentAttempt::sole();
+        $fingerprint = $attempt->provider_payload['conversion_quote']['fingerprint'];
+        $this->assertSame('12.34', $attempt->amount);
+        $this->post($url, ['purchase_country' => 'DE', 'quote_fingerprint' => $fingerprint])->assertRedirect();
+        Http::assertSent(fn ($r) => str_ends_with($r->url(), '/payments/v1/sessions') && $r['purchase_currency'] === 'EUR' && $r['order_amount'] === 1122);
+        $this->localReadback = true;
+        $this->notify($gateway)->assertOk();
+        $this->notify($gateway)->assertOk();
+        $this->assertSame('12.34', $invoice->transactions()->sole()->amount);
+        $this->assertSame('paid', $invoice->fresh()->status);
+        $this->assertCount(2, Http::recorded(fn ($r) => $r->method() === 'POST'));
+    }
+
+    public function test_local_gbp_quote_is_fixed_and_expired_or_altered_confirmation_cannot_initialize(): void
+    {
+        [$invoice, $gateway] = $this->fixture();
+        $this->fakeApi();
+        $this->localCheckout($invoice, $gateway);
+        $url = $this->checkoutUrl($invoice, $gateway);
+        $this->post($url, ['purchase_country' => 'GB'])->assertOk()->assertSee('9.54 GBP');
+        $q = GatewayPaymentAttempt::sole()->provider_payload['conversion_quote'];
+        $this->post($url, ['purchase_country' => 'DE', 'quote_fingerprint' => $q['fingerprint']])->assertStatus(409);
+        $this->post($url, ['purchase_country' => 'GB', 'quote_fingerprint' => 'altered'])->assertStatus(409);
+        $this->travel(31)->minutes();
+        $this->post($url, ['purchase_country' => 'GB', 'quote_fingerprint' => $q['fingerprint']])->assertStatus(409);
+        Http::assertNotSent(fn ($r) => $r->method() === 'POST');
+        $this->assertSame('open', GatewayPaymentAttempt::sole()->state);
+    }
+
+    public function test_local_capture_currency_or_amount_mismatch_cannot_settle_the_usd_invoice(): void
+    {
+        [$invoice, $gateway] = $this->fixture();
+        $this->fakeApi();
+        $this->localCheckout($invoice, $gateway);
+        $url = $this->checkoutUrl($invoice, $gateway);
+        $this->post($url, ['purchase_country' => 'DE'])->assertOk();
+        $q = GatewayPaymentAttempt::sole()->provider_payload['conversion_quote'];
+        $this->post($url, ['purchase_country' => 'DE', 'quote_fingerprint' => $q['fingerprint']])->assertRedirect();
+        $this->localReadback = true;
+        foreach ([['purchase_currency' => 'USD'], ['captured_amount' => 1234], ['order_amount' => 1121]] as $changes) {
+            Http::swap(new Factory);
+            $this->fakeApi($changes);
+            $this->notify($gateway)->assertStatus(422);
+        }
+        $this->assertSame(0, $invoice->transactions()->count());
+    }
+
+    private function localPaidReceipt(bool $authorized = false): array
+    {
+        [$invoice, $gateway] = $this->fixture();
+        $this->fakeApi();
+        $this->localCheckout($invoice, $gateway);
+        $url = $this->checkoutUrl($invoice, $gateway);
+        $this->post($url, ['purchase_country' => 'DE'])->assertOk();
+        $q = GatewayPaymentAttempt::sole()->provider_payload['conversion_quote'];
+        $this->post($url, ['purchase_country' => 'DE', 'quote_fingerprint' => $q['fingerprint']])->assertRedirect();
+        $this->localReadback = true;
+        $this->localAuthorization = $authorized;
+        $this->notify($gateway)->assertStatus($authorized ? 422 : 200);
+        $role = Role::create(['name' => 'Synthetic currency admin', 'permissions' => ['*']]);
+        $admin = $invoice->user;
+        $admin->update(['role_id' => $role->id]);
+        $this->actingAs($admin->fresh());
+        $gateway->settings()->create(['key' => 'admin_payment_operations_enabled', 'value' => '1']);
+
+        return [$admin->fresh(), $invoice->fresh(), $gateway->fresh(), $authorized ? null : $invoice->transactions()->sole()];
+    }
+
+    public function test_local_native_admin_partial_and_remaining_refunds_preserve_both_currencies_and_replay_once(): void
+    {
+        [$admin, $invoice, $gateway, $receipt] = $this->localPaidReceipt();
+        $ops = new ProviderOperations;
+        $key = 'dd244ea3-356b-4c8b-aaed-2800e74cd9bd';
+        $first = $ops->refund($admin, $receipt, '5.00', false, 'Synthetic partial refund', $key);
+        $this->assertSame('succeeded', $first->state);
+        $this->assertSame('USD', $first->currency_code);
+        $this->assertSame('5.00', $first->amount);
+        $this->assertSame('EUR', $first->payload['provider_context']['provider_currency']);
+        $this->assertSame('4.55', $first->payload['provider_context']['provider_amount']);
+        $last = $first->outcome_evidence;
+        $this->assertSame('4.55', end($last)['evidence']['provider_amount']);
+        $this->assertSame($first->id, $ops->refund($admin, $receipt->fresh(), '5.00', false, 'Synthetic partial refund', $key)->id);
+        $remaining = $ops->refund($admin, $receipt->fresh(), '7.34', false, 'Synthetic remaining refund', 'b77f446b-4070-4a29-8d20-4daec24e5072');
+        $this->assertSame('succeeded', $remaining->state);
+        $this->assertSame('6.67', $remaining->payload['provider_context']['provider_amount']);
+        $this->assertSame('12.34', $receipt->fresh()->refunded_amount);
+        $this->assertSame(1122, array_sum(array_column($this->localRefunds, 'refunded_amount')));
+        $this->assertCount(2, Http::recorded(fn ($r) => $r->method() === 'POST' && str_ends_with($r->url(), '/refunds')));
+    }
+
+    public function test_local_unknown_refund_readback_reconciles_without_another_money_write(): void
+    {
+        [$admin, $invoice, $gateway, $receipt] = $this->localPaidReceipt();
+        $ops = new ProviderOperations;
+        $this->refundReadFailure = true;
+        $op = $ops->refund($admin, $receipt, '5.00', false, 'Synthetic refund pending readback', '9980c10f-7a8d-4569-89b3-9f39689aa76e');
+        $this->assertSame('uncertain', $op->state);
+        $this->assertSame('0.00', $receipt->fresh()->refunded_amount);
+        $this->refundReadFailure = false;
+        $this->assertSame('succeeded', $ops->reconcile($admin, $op)->state);
+        $this->assertSame('5.00', $receipt->fresh()->refunded_amount);
+        $this->assertCount(1, Http::recorded(fn ($r) => $r->method() === 'POST' && str_ends_with($r->url(), '/refunds')));
+    }
+
+    public function test_unexplained_local_provider_refund_blocks_a_new_native_refund(): void
+    {
+        [$admin, $invoice, $gateway, $receipt] = $this->localPaidReceipt();
+        $this->localRefunds['synthetic-refund-outside'] = ['refund_id' => 'synthetic-refund-outside', 'reference' => 'outside', 'refunded_amount' => 1, 'refunded_at' => now()->toIso8601String()];
+        $rejected = false;
+        try {
+            (new ProviderOperations)->refund($admin, $receipt, '5.00', false, 'Synthetic refund', 'd1355159-ec88-46fc-96f3-2d05d27ebd46');
+        } catch (\RuntimeException) {
+            $rejected = true;
+        }
+        $this->assertTrue($rejected, 'Unexplained provider refund was accepted');
+        $this->assertSame(0, PaymentOperation::count());
+        Http::assertNotSent(fn ($r) => $r->method() === 'POST' && str_ends_with($r->url(), '/refunds'));
+    }
+
+    public function test_local_native_admin_capture_then_refund_preserves_capture_ancestry_and_usd_receipt(): void
+    {
+        [$admin, $invoice, $gateway] = $this->localPaidReceipt(true);
+        $ops = new ProviderOperations;
+        $preview = $ops->capturePreview($admin, $invoice);
+        $this->assertSame('12.34', $preview['amount']);
+        $this->assertSame('USD', $preview['currency']);
+        $capture = $ops->capture($admin, $invoice, $gateway, $preview['reference'], 'Synthetic converted capture', '021e25be-2f27-4d02-a857-3b09173c3e55');
+        $this->assertSame('succeeded', $capture->state);
+        $this->assertSame('11.22', $capture->payload['provider_context']['provider_amount']);
+        $receipt = $invoice->transactions()->sole();
+        $this->assertSame('12.34', $receipt->amount);
+        $this->assertSame('manual_capture', $receipt->settlement_origin);
+        $refund = $ops->refund($admin, $receipt, '5.00', false, 'Synthetic refund of captured currency payment', '68d79b04-ebc4-4d23-bc58-4c55c1c38c87');
+        $this->assertSame('succeeded', $refund->state);
+        $this->assertSame('capture', $refund->payload['provider_context']['provider_object_type']);
+        $this->assertSame('4.55', $refund->payload['provider_context']['provider_amount']);
+        Http::assertSent(fn ($r) => $r->method() === 'POST' && str_ends_with($r->url(), '/captures') && $r['captured_amount'] === 1122);
+        $this->assertCount(1, Http::recorded(fn ($r) => $r->method() === 'POST' && str_ends_with($r->url(), '/captures')));
+    }
+
+    public function test_local_admin_refund_preview_shows_the_exact_klarna_amount_beside_native_usd(): void
+    {
+        [$admin, $invoice, $gateway, $receipt] = $this->localPaidReceipt();
+        $preview = PaymentActions::refundPreview($admin, $receipt, 'partial', '5.00', false, true);
+        $this->assertSame('USD', $preview['currency']);
+        $this->assertSame('5.00', $preview['amount']);
+        $this->assertSame('EUR', $preview['provider_currency'] ?? null);
+        $this->assertSame('4.55', $preview['provider_amount'] ?? null);
+    }
+
+    public function test_local_admin_zero_provider_unit_refuses_a_write_before_claim(): void
+    {
+        [$admin, $invoice, $gateway, $receipt] = $this->localPaidReceipt();
+        (new ProviderOperations)->refund($admin, $receipt, '0.05', false, 'Synthetic prior refund', '0f495844-8b8f-4160-8ef1-c44882d41ca5');
+        Http::swap(new Factory);
+        Http::preventStrayRequests();
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        Livewire::test(TransactionsRelationManager::class, ['ownerRecord' => $invoice->fresh(), 'pageClass' => EditInvoice::class])
+            ->callTableAction('provider_refund', $receipt->fresh(), data: ['refund_mode' => 'partial', 'amount' => '0.01', 'include_fee' => false,
+                'reason' => 'Synthetic zero-unit refund', 'request_key' => '3596829c-f2ec-4c62-9f0d-79db2fe24c25'])
+            ->assertHasTableActionErrors(['reason']);
+        $this->assertSame(1, PaymentOperation::count());
+        $this->assertSame('0.05', $receipt->fresh()->refunded_amount);
+        Http::assertNothingSent();
+    }
+
+    public function test_local_admin_zero_provider_unit_allows_external_refund_record_without_http(): void
+    {
+        [$admin, $invoice, $gateway, $receipt] = $this->localPaidReceipt();
+        (new ProviderOperations)->refund($admin, $receipt, '0.05', false, 'Synthetic prior refund', '0f495844-8b8f-4160-8ef1-c44882d41ca5');
+        Http::swap(new Factory);
+        Http::preventStrayRequests();
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+        Livewire::test(TransactionsRelationManager::class, ['ownerRecord' => $invoice->fresh(), 'pageClass' => EditInvoice::class])
+            ->callTableAction('external_refund', $receipt->fresh(), data: ['refund_mode' => 'partial', 'amount' => '0.01', 'include_fee' => false,
+                'reference' => 'synthetic-external-refund', 'reason' => 'External refund confirmed', 'effective_at' => '2026-10-03 12:00:00',
+                'request_key' => '74e957dd-e0cf-4b09-a909-11d2e24fcefb'])
+            ->assertHasNoTableActionErrors();
+        $this->assertSame('succeeded', PaymentOperation::where('kind', 'external_refund')->sole()->state);
+        $this->assertSame('0.06', $receipt->fresh()->refunded_amount);
+        Http::assertNothingSent();
+    }
+
     private function fakeApi(array $changes = [], string $status = 'COMPLETED'): void
     {
         Http::fake(function ($r) use ($changes, $status) {
+            if (str_starts_with($r->url(), 'https://www.ecb.europa.eu/')) {
+                return Http::response('<gesmes:Envelope xmlns:gesmes="http://www.gesmes.org/xml/2002-08-01" xmlns="http://www.ecb.int/vocabulary/2002-08-01/eurofxref"><Cube><Cube time="' . now()->utc()->format('Y-m-d') . '"><Cube currency="USD" rate="1.1"/><Cube currency="GBP" rate="0.85"/></Cube></Cube></gesmes:Envelope>');
+            }
             if ($r->method() === 'POST' && str_ends_with($r->url(), '/payments/v1/sessions')) {
                 return Http::response(['session_id' => 'synthetic-kp'], 200);
             }
             if ($r->method() === 'POST' && str_ends_with($r->url(), '/hpp/v1/sessions')) {
                 return Http::response(['session_id' => 'synthetic-hpp', 'session_url' => 'https://api.playground.klarna.com/hpp/v1/sessions/synthetic-hpp', 'redirect_url' => 'https://pay.playground.klarna.com/eu/hpp/payments/synthetic-hpp', 'expires_at' => now()->addHour()->toIso8601String()], 201);
+            }
+            if ($r->method() === 'POST' && str_ends_with($r->url(), '/captures')) {
+                $this->localAuthorization = false;
+                $this->localCaptureKey = $r['reference'];
+
+                return Http::response(['capture_id' => 'synthetic-manual-capture'], 201);
+            }
+            if (str_ends_with($r->url(), '/captures/synthetic-manual-capture')) {
+                return Http::response(['capture_id' => 'synthetic-manual-capture', 'reference' => $this->localCaptureKey,
+                    'captured_amount' => 1122, 'captured_at' => now()->toIso8601String()]);
+            }
+            if ($r->method() === 'POST' && str_ends_with($r->url(), '/refunds')) {
+                $id = 'synthetic-refund-' . (count($this->localRefunds) + 1);
+                $this->localRefunds[$id] = ['refund_id' => $id, 'reference' => $r['reference'], 'refunded_amount' => $r['refunded_amount'], 'refunded_at' => now()->toIso8601String()];
+
+                return Http::response(['refund_id' => $id], 201);
+            }
+            if (str_contains($r->url(), '/refunds/synthetic-refund-')) {
+                if ($this->refundReadFailure) {
+                    throw new ConnectionException('synthetic failed read');
+                }
+
+                return Http::response($this->localRefunds[basename($r->url())]);
             }
             if (str_ends_with($r->url(), '/hpp/v1/sessions/synthetic-hpp')) {
                 return Http::response(['session_id' => 'synthetic-hpp', 'status' => $status, 'order_id' => 'synthetic-order']);
@@ -74,6 +334,16 @@ class KlarnaTest extends TestCase
                     'purchase_country' => $this->providerCountry, 'purchase_currency' => 'USD', 'order_amount' => $this->taxed ? 10988 : 1234,
                     'order_tax_amount' => $this->taxed ? 713 : 0, 'order_lines' => $this->providerLines(),
                     'captured_amount' => $this->taxed ? 10988 : 1234, 'refunded_amount' => 0, 'merchant_reference1' => GatewayPaymentAttempt::sole()->reference], $changes);
+                if ($this->localReadback) {
+                    $q = GatewayPaymentAttempt::sole()->provider_payload['conversion_quote'];
+                    $order = array_replace($order, ['purchase_currency' => $q['provider_currency'], 'purchase_country' => $q['purchase_country'],
+                        'order_amount' => $q['allocation']['order_amount'], 'captured_amount' => $this->localAuthorization ? 0 : $q['allocation']['order_amount'],
+                        'status' => $this->localAuthorization ? 'AUTHORIZED' : 'CAPTURED',
+                        'expires_at' => now()->addHour()->toIso8601String(), 'remaining_authorized_amount' => $this->localAuthorization ? $q['allocation']['order_amount'] : 0,
+                        'order_tax_amount' => $q['allocation']['order_tax_amount'], 'order_lines' => $q['allocation']['order_lines'],
+                        'original_order_amount' => $q['allocation']['order_amount'], 'refunded_amount' => array_sum(array_column($this->localRefunds, 'refunded_amount')),
+                        'refunds' => array_values($this->localRefunds), 'captures' => $this->localAuthorization ? [] : ($this->localCaptureKey ? [['capture_id' => 'synthetic-manual-capture', 'reference' => $this->localCaptureKey]] : [['capture_id' => 'synthetic-auto-capture']])], $changes);
+                }
                 if ($this->omitAggregateTax) {
                     unset($order['order_tax_amount']);
                 }

@@ -41,6 +41,22 @@ final class OperationResult
                 throw new RuntimeException('Provider readback money does not match the frozen operation.');
             }
         }
+        $converted = ['provider_currency', 'provider_amount', 'provider_original_amount', 'conversion_fingerprint'];
+        if (array_intersect($converted, array_keys($context)) || array_intersect($converted, array_keys($this->evidence))) {
+            foreach ($converted as $key) {
+                if (!is_string($context[$key] ?? null) || !is_string($this->evidence[$key] ?? null) || $context[$key] !== $this->evidence[$key]) {
+                    throw new RuntimeException('Provider conversion proof does not match the frozen operation.');
+                }
+            }
+            if (!preg_match('/^[A-Z]{3}$/D', $context['provider_currency']) || !preg_match('/^[a-f0-9]{64}$/D', $context['conversion_fingerprint'])) {
+                throw new RuntimeException('Invalid provider conversion identity.');
+            }
+            foreach (['provider_amount', 'provider_original_amount'] as $field) {
+                if (!preg_match('/^[0-9]+\.[0-9]{2}$/D', $context[$field]) || !BigDecimal::of($context[$field])->isPositive()) {
+                    throw new RuntimeException('Invalid provider conversion money.');
+                }
+            }
+        }
         if ($operation->provider_reference && $this->providerReference && $operation->provider_reference !== $this->providerReference) {
             throw new RuntimeException('Provider operation reference changed during readback.');
         }
@@ -50,6 +66,6 @@ final class OperationResult
     {
         return array_intersect_key($this->evidence, array_flip(['authenticated', 'request_key', 'merchant', 'environment', 'provider_object_type',
             'original_reference', 'currency', 'amount', 'original_amount', 'invoice_id', 'gateway_id', 'transaction_id', 'attempt_id',
-            'attempt_reference', 'merchant_fingerprint', 'failure_proven', 'provider_reference']));
+            'attempt_reference', 'merchant_fingerprint', 'failure_proven', 'provider_reference', 'provider_currency', 'provider_amount', 'provider_original_amount', 'conversion_fingerprint']));
     }
 }
