@@ -169,6 +169,13 @@ class WebMoney extends Gateway
         $ledger->assertCollection($this->gatewayRecord);
         $merchant = $this->merchant();
         $p = $request->post();
+        // Merchant also sends an empty availability check when prerequest parameters are disabled.
+        // This acknowledges endpoint availability only; settlement still requires a signed notification.
+        if ($p === [] && $request->getContent() === '' && $request->query->count() === 0 &&
+            $request->files->count() === 0 && (int) $request->header('Content-Length', 0) === 0 &&
+            !str_starts_with(strtolower(trim((string) $request->header('Content-Type', ''))), 'multipart/')) {
+            return response('YES');
+        }
         foreach (['LMI_PAYEE_PURSE', 'LMI_PAYMENT_AMOUNT', 'LMI_PAYMENT_NO', 'LMI_MODE'] as $key) {
             if (!isset($p[$key]) || !is_string($p[$key])) {
                 throw new RuntimeException('Missing payment field');

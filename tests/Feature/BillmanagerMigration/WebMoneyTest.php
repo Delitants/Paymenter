@@ -13,6 +13,7 @@ use App\Models\User;
 use App\Services\BillmanagerMigration\MigrationHeldException;
 use Carbon\Carbon;
 use Illuminate\Auth\Access\AuthorizationException;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -68,6 +69,37 @@ class WebMoneyTest extends TestCase
     {
         Cache::flush();
         Http::fake(['www.ecb.europa.eu/*' => Http::response('<Envelope><Cube><Cube time="2026-10-01"><Cube currency="USD" rate="1.25"/></Cube></Cube></Envelope>')]);
+    }
+
+    public function test_empty_merchant_availability_probe_does_not_settle_an_invoice(): void
+    {
+        foreach ([['Z123456789012', 'USD'], ['E123456789012', 'EUR']] as [$purse, $currency]) {
+            [$invoice, $service, $gateway] = $this->fixture(['purse' => $purse, 'currency' => $currency]);
+            $expiry = $service->expires_at;
+            $this->post('/extensions/webmoney/' . $gateway->id . '/notify')->assertOk()->assertSee('YES');
+            $this->assertSame('pending', $invoice->fresh()->status);
+            $this->assertSame(0, $invoice->transactions()->count());
+            $this->assertEquals($expiry, $service->fresh()->expires_at);
+            $this->assertSame(0, GatewayPaymentAttempt::count());
+        }
+        Http::assertNothingSent();
+    }
+
+    public function test_incomplete_notifications_cannot_be_treated_as_availability_probes(): void
+    {
+        [$invoice, , $gateway] = $this->fixture();
+        $path = '/extensions/webmoney/' . $gateway->id . '/notify';
+        foreach ([['LMI_PREREQUEST' => '1'], ['LMI_MODE' => '1'], ['LMI_HASH' => 'invalid'], ['unknown' => 'field']] as $body) {
+            $this->post($path, $body)->assertStatus(422);
+        }
+        $this->post($path, ['attachment' => UploadedFile::fake()->create('notification.txt', 1)])->assertStatus(422);
+        $this->post($path . '?LMI_MODE=1')->assertStatus(422);
+        $this->call('POST', $path, [], [], [], ['CONTENT_TYPE' => 'text/plain'], 'invalid')->assertStatus(422);
+        $this->call('POST', $path, [], [], [], ['CONTENT_TYPE' => 'multipart/form-data; boundary=test', 'CONTENT_LENGTH' => '9'], '')->assertStatus(422);
+        $this->call('POST', $path, [], [], [], ['CONTENT_TYPE' => 'multipart/form-data; boundary=test', 'HTTP_TRANSFER_ENCODING' => 'chunked'], '')->assertStatus(422);
+        $this->assertSame('pending', $invoice->fresh()->status);
+        $this->assertSame(0, $invoice->transactions()->count());
+        $this->assertSame(0, GatewayPaymentAttempt::count());
     }
 
     public function test_wme_checkout_collects_euro_and_settles_the_original_usd_once(): void
@@ -258,6 +290,7 @@ class WebMoneyTest extends TestCase
         $a = GatewayPaymentAttempt::sole();
         $g->settings()->where('key', 'collection_enabled')->update(['value' => '0']);
         $this->post('/extensions/webmoney/' . $g->id . '/notify', $this->notification($a))->assertStatus(409);
+        $this->post('/extensions/webmoney/' . $g->id . '/notify')->assertStatus(409);
         $g->settings()->where('key', 'collection_enabled')->update(['value' => '1']);
         $invoice->items()->update(['price' => '11.00']);
         $this->post('/extensions/webmoney/' . $g->id . '/notify', $this->notification($a))->assertStatus(422);
