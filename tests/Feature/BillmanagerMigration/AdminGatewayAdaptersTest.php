@@ -21,6 +21,7 @@ use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Schema;
 use Paymenter\Extensions\Gateways\Klarna\Klarna;
+use Paymenter\Extensions\Gateways\WebMoney\ConversionQuote;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Concerns\UsesCommittedDatabase;
 use Tests\TestCase;
@@ -556,8 +557,13 @@ class AdminGatewayAdaptersTest extends TestCase
     }
 
     #[DataProvider('webmoneyOutcomes')]
-    public function test_configured_webmoney_x14_is_durable_and_never_replays_unknown_partial_write(bool $lost): void
+    public function test_configured_webmoney_x14_is_durable_and_never_replays_unknown_partial_write(bool $lost, bool $euro): void
     {
+        $merchantPurse = $euro ? 'E123456789012' : 'Z123456789012';
+        $payerPurse = $euro ? 'E999999999999' : 'Z999999999999';
+        $providerTotal = $euro ? '87.90' : '109.88';
+        $providerRefund = $euro ? '20.00' : '25.00';
+        $this->webmoneyChildAmount = $providerRefund;
         $this->assertTrue(Schema::hasTable('gateway_operation_sequences'));
         $this->assertTrue(Schema::hasTable('gateway_operation_requests'));
         $key = openssl_pkey_new(['private_key_bits' => 2048]);
@@ -565,9 +571,13 @@ class AdminGatewayAdaptersTest extends TestCase
         $certificate = openssl_csr_sign($csr, null, $key, 1);
         openssl_x509_export($certificate, $pem);
         openssl_pkey_export($key, $private);
-        [$invoice, $gateway, $transaction, $adapter] = $this->fixture('WebMoney', ['purse' => 'Z123456789012', 'secret' => 'synthetic-secret', 'currency' => 'USD', 'test_mode' => '0',
+        [$invoice, $gateway, $transaction, $adapter] = $this->fixture('WebMoney', ['purse' => $merchantPurse, 'secret' => 'synthetic-secret', 'currency' => $euro ? 'EUR' : 'USD', 'test_mode' => '0',
             'wm_wmid' => '123456789012', 'wm_certificate' => $pem, 'wm_private_key' => $private, 'wm_key_passphrase' => '', 'wm_sequence_floor' => '100', 'wm_exclusive_sequence' => '1'], '1234567');
-        $this->nativeAttempt($invoice, $gateway, $transaction, '1234567', hash('sha256', 'Z123456789012:live'));
+        $attempt = $this->nativeAttempt($invoice, $gateway, $transaction, '1234567', hash('sha256', $merchantPurse . ':live'));
+        if ($euro) {
+            $quote = (new ConversionQuote)->create($attempt, ['source' => 'ECB', 'date' => now()->utc()->format('Y-m-d'), 'numerator' => '1', 'denominator' => '1.25']);
+            $attempt->update(['provider_payload' => ['webmoney_conversion_quote' => $quote]]);
+        }
         $this->assertSame($pem, $gateway->settings()->where('key', 'wm_certificate')->firstOrFail()->value);
         $this->assertSame($private, $gateway->settings()->where('key', 'wm_private_key')->firstOrFail()->value);
         $this->assertTrue($adapter->capabilities()['refund']);
@@ -579,42 +589,99 @@ class AdminGatewayAdaptersTest extends TestCase
         $writerId = (int) $connection->selectOne('SELECT CONNECTION_ID() AS connection_id', [], false)->connection_id;
         $lock = 'paymenter-wm-' . substr(hash('sha256', $connection->getDatabaseName()), 0, 48);
         $numbers = [];
-        Http::fake(function ($request) use (&$numbers, $lost, $writerId, $lock) {
+        $refundSubmitted = false;
+        $secondRefund = false;
+        $secondSubmitted = false;
+        Http::fake(function ($request) use (&$numbers, &$refundSubmitted, &$secondRefund, &$secondSubmitted, $lost, $writerId, $lock, $merchantPurse, $payerPurse, $providerTotal, $providerRefund) {
+            $respond = fn ($body) => Http::response(strtr($body, ['Z123456789012' => $merchantPurse, 'Z999999999999' => $payerPurse, '109.88' => $providerTotal, '25.00' => $providerRefund]));
             $xml = simplexml_load_string($request->body());
             if (str_contains($request->url(), 'XMLTransGet.asp')) {
-                return Http::response('<merchant.response><retval>0</retval><operation wmtransid="1234567"><amount>109.88</amount><pursefrom>Z999999999999</pursefrom><wmidfrom>999999999999</wmidfrom><hold_period>0</hold_period><hold_state>0</hold_state><capitallerflag>0</capitallerflag><paymer_number></paymer_number><sdp_type>0</sdp_type></operation></merchant.response>');
+                return $respond('<merchant.response><retval>0</retval><operation wmtransid="1234567"><amount>109.88</amount><pursefrom>Z999999999999</pursefrom><wmidfrom>999999999999</wmidfrom><hold_period>0</hold_period><hold_state>0</hold_state><capitallerflag>0</capitallerflag><paymer_number></paymer_number><sdp_type>0</sdp_type></operation></merchant.response>');
             }
             $this->assertSame($writerId, (int) DB::connection()->selectOne('SELECT IS_USED_LOCK(?) AS holder', [$lock], false)->holder);
             $this->assertSame(0, DB::transactionLevel());
             $number = (string) $xml->reqn;
             $numbers[] = (int) $number;
             if (str_contains($request->url(), 'XMLPursesCert.asp')) {
-                return Http::response('<w3s.response><reqn>' . $number . '</reqn><retval>0</retval><purses cnt="1"><purse id="1"><pursename>Z123456789012</pursename></purse></purses></w3s.response>');
+                return $respond('<w3s.response><reqn>' . $number . '</reqn><retval>0</retval><purses cnt="1"><purse id="1"><pursename>Z123456789012</pursename></purse></purses></w3s.response>');
             }
             if (str_contains($request->url(), 'XMLTransMoneybackCert.asp')) {
                 $this->assertSame('1234567', (string) $xml->trans->inwmtranid);
-                $this->assertSame('25.00', (string) $xml->trans->amount);
+                $this->assertSame($secondRefund ? '67.90' : $providerRefund, (string) $xml->trans->amount);
+                $refundSubmitted = true;
 
-                return $lost ? Http::failedConnection() : Http::response('<w3s.response><reqn>' . $number . '</reqn><retval>0</retval><operation id="7654321"><inwmtranid>1234567</inwmtranid><pursesrc>Z123456789012</pursesrc><pursedest>Z999999999999</pursedest><amount>25.00</amount><comiss>0.00</comiss></operation></w3s.response>');
+                if ($secondRefund) {
+                    $secondSubmitted = true;
+
+                    return $respond('<w3s.response><reqn>' . $number . '</reqn><retval>0</retval><operation id="7654322"><inwmtranid>1234567</inwmtranid><pursesrc>Z123456789012</pursesrc><pursedest>Z999999999999</pursedest><amount>67.90</amount><comiss>0.00</comiss></operation></w3s.response>');
+                }
+
+                return $lost ? Http::failedConnection() : $respond('<w3s.response><reqn>' . $number . '</reqn><retval>0</retval><operation id="7654321"><inwmtranid>1234567</inwmtranid><pursesrc>Z123456789012</pursesrc><pursedest>Z999999999999</pursedest><amount>25.00</amount><comiss>0.00</comiss></operation></w3s.response>');
+            }
+            if ((string) $xml->getoperations->wmtranid === '7654322' && $secondSubmitted) {
+                return $respond('<w3s.response><reqn>' . $number . '</reqn><retval>0</retval><operations cnt="1"><operation id="7654322"><pursesrc>Z123456789012</pursesrc><pursedest>Z999999999999</pursedest><amount>67.90</amount><opertype>0</opertype><desc>Moneyback transaction WMTranId: 1234567. (Synthetic original)</desc></operation></operations></w3s.response>');
             }
             if ((string) $xml->getoperations->wmtranid === '7654321') {
-                return Http::response('<w3s.response><reqn>' . $number . '</reqn><retval>0</retval><operations cnt="1"><operation id="7654321"><pursesrc>Z123456789012</pursesrc><pursedest>Z999999999999</pursedest><amount>' . $this->webmoneyChildAmount . '</amount><opertype>0</opertype><desc>Moneyback transaction WMTranId: 1234567. (Synthetic original)</desc></operation></operations></w3s.response>');
+                return $respond('<w3s.response><reqn>' . $number . '</reqn><retval>0</retval><operations cnt="1"><operation id="7654321"><pursesrc>Z123456789012</pursesrc><pursedest>Z999999999999</pursedest><amount>' . $this->webmoneyChildAmount . '</amount><opertype>0</opertype><desc>Moneyback transaction WMTranId: 1234567. (Synthetic original)</desc></operation></operations></w3s.response>');
             }
 
-            return Http::response('<w3s.response><reqn>' . $number . '</reqn><retval>0</retval><operations cnt="1"><operation id="1234567"><pursesrc>Z999999999999</pursesrc><pursedest>Z123456789012</pursedest><amount>109.88</amount><opertype>0</opertype><period>0</period><orderid>123456789012345</orderid><desc>Synthetic original</desc><datecrt>' . now()->subDays(1)->format('Ymd H:i:s') . '</datecrt></operation></operations></w3s.response>');
+            $body = '<w3s.response><reqn>' . $number . '</reqn><retval>0</retval><operations cnt="1"><operation id="1234567"><pursesrc>Z999999999999</pursesrc><pursedest>Z123456789012</pursedest><amount>109.88</amount><opertype>0</opertype><period>0</period><orderid>123456789012345</orderid><desc>Synthetic original</desc><datecrt>' . now()->subDays(1)->format('Ymd H:i:s') . '</datecrt></operation></operations></w3s.response>';
+            if ((string) $xml->getoperations->wmtranid === '0' && $refundSubmitted) {
+                $body = str_replace('cnt="1"', 'cnt="2"', $body);
+                $body = str_replace('</operations>', '<operation id="7654321"><pursesrc>Z123456789012</pursesrc><pursedest>Z999999999999</pursedest><amount>' . $this->webmoneyChildAmount . '</amount><opertype>0</opertype><desc>Moneyback transaction WMTranId: 1234567. (Synthetic original)</desc></operation></operations>', $body);
+            }
+
+            if ((string) $xml->getoperations->wmtranid === '0' && $secondSubmitted) {
+                $body = str_replace('cnt="2"', 'cnt="3"', $body);
+                $body = str_replace('</operations>', '<operation id="7654322"><pursesrc>Z123456789012</pursesrc><pursedest>Z999999999999</pursedest><amount>67.90</amount><opertype>0</opertype><desc>Moneyback transaction WMTranId: 1234567. (Synthetic original)</desc></operation></operations>', $body);
+            }
+
+            return $respond($body);
         });
-        $operation = $this->persistOperation($this->operation($adapter->prepare($invoice, $transaction->fresh(), 'provider_refund', '1234567', '25.00', 'USD')));
+        try {
+            $context = $adapter->prepare($invoice, $transaction->fresh(), 'provider_refund', '1234567', '25.00', 'USD');
+        } catch (\RuntimeException $exception) {
+            $this->fail('The configured purse must refund using its captured currency: ' . $exception->getMessage());
+        }
+        $this->assertSame('109.88', $context['original_amount']);
+        if ($euro) {
+            $this->assertSame('20.00', $context['provider_amount']);
+            $this->assertSame('EUR', $context['provider_currency']);
+        }
+        $operation = $this->persistOperation($this->operation($context));
+        $this->assertSame('25.00', $operation->amount);
+        $this->assertSame('USD', $operation->currency_code);
         $result = $adapter->execute($operation);
         $this->assertSame($lost ? 'uncertain' : 'succeeded', $result->state);
         if (!$lost) {
             $result->assertVerified($operation);
-            $this->webmoneyChildAmount = '24.99';
+            if ($euro) {
+                DB::transaction(fn () => $operation->recordProviderResult($result, $invoice->user));
+                $this->assertSame('succeeded', $adapter->reconcile($operation)->state);
+                $remaining = $adapter->prepare($invoice, $transaction->fresh(), 'provider_refund', '1234567', '84.88', 'USD');
+                $this->assertSame('25.00', $remaining['already_refunded']);
+                $this->assertSame('67.90', $remaining['provider_amount']);
+            }
+            $this->webmoneyChildAmount = $euro ? '19.99' : '24.99';
             $this->assertSame('uncertain', $adapter->reconcile($operation)->state);
-            $this->webmoneyChildAmount = '25.00';
+            $this->webmoneyChildAmount = $providerRefund;
         }
         $this->assertSame($lost ? 'uncertain' : 'succeeded', $adapter->reconcile($operation)->state);
         $this->assertSame('uncertain', $adapter->execute($operation)->state);
-        $this->assertCount(1, Http::recorded(fn ($request) => str_contains($request->url(), 'XMLTransMoneybackCert.asp')));
+        if ($euro && !$lost) {
+            $second = $this->operation($remaining);
+            $second->request_key = '00000000-0000-4000-8000-000000000002';
+            $second = $this->persistOperation($second);
+            $secondRefund = true;
+            $secondResult = $adapter->execute($second);
+            $this->assertSame('succeeded', $secondResult->state);
+            DB::transaction(fn () => $second->recordProviderResult($secondResult, $invoice->user));
+            $this->assertSame('succeeded', $adapter->reconcile($operation)->state, 'Later refunds must not change the original refund quote.');
+            $this->assertSame('succeeded', $adapter->reconcile($second)->state);
+            $this->assertSame('84.88', $second->amount);
+            $this->assertSame('USD', $second->currency_code);
+        }
+        $this->assertCount($euro && !$lost ? 2 : 1, Http::recorded(fn ($request) => str_contains($request->url(), 'XMLTransMoneybackCert.asp')));
         $sorted = $numbers;
         sort($sorted);
         $this->assertSame($sorted, $numbers);
@@ -799,7 +866,7 @@ class AdminGatewayAdaptersTest extends TestCase
 
     public static function webmoneyOutcomes(): array
     {
-        return [[true], [false]];
+        return [[true, false], [false, false], [true, true], [false, true]];
     }
 
     public function test_credential_rotation_can_reconcile_but_merchant_drift_and_outside_refund_block_writes(): void

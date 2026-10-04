@@ -5,11 +5,15 @@ namespace Paymenter\Extensions\Gateways\WebMoney;
 use App\Attributes\ExtensionMeta;
 use App\Classes\Extension\Gateway;
 use App\Models\Gateway as GatewayRecord;
+use App\Models\GatewayPaymentAttempt;
 use App\Models\Invoice;
 use App\Services\BillmanagerMigration\MigrationHeldException;
 use App\Services\Gateways\CollectionDisabledException;
 use App\Services\Gateways\PaymentAttempts;
+use App\Services\Gateways\ReferenceRates;
+use Brick\Math\BigDecimal;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\View;
 use RuntimeException;
 
@@ -30,9 +34,10 @@ class WebMoney extends Gateway
     public function getConfig($values = []): array
     {
         return [
-            ['name' => 'purse', 'label' => 'Merchant WMZ purse', 'type' => 'text', 'required' => true],
+            ['name' => 'purse', 'label' => 'Merchant WMZ or WME purse', 'type' => 'text', 'required' => true],
             ['name' => 'secret', 'label' => 'Merchant secret key', 'type' => 'password', 'encrypted' => true, 'required' => true],
-            ['name' => 'currency', 'label' => 'Settlement currency', 'type' => 'select', 'options' => ['USD' => 'USD'], 'default' => 'USD', 'required' => true],
+            ['name' => 'currency', 'label' => 'Purse currency', 'type' => 'select', 'options' => ['USD' => 'USD (WMZ)', 'EUR' => 'EUR (WME)'], 'default' => 'USD', 'required' => true,
+                'description' => 'Invoices remain in USD. WME checkout uses a saved EUR conversion quote.'],
             ['name' => 'test_mode', 'label' => 'Merchant is in test mode', 'type' => 'checkbox', 'default' => true],
             ['name' => 'wm_wmid', 'label' => 'Certificate-authorized merchant WMID', 'type' => 'text', 'required' => false],
             ['name' => 'wm_certificate', 'label' => 'WebPro client certificate (PEM)', 'type' => 'textarea', 'encrypted' => true, 'required' => false],
@@ -54,7 +59,10 @@ class WebMoney extends Gateway
 
     private function merchant(): string
     {
-        if (!preg_match('/^Z[0-9]{12}$/D', (string) $this->config('purse')) || !$this->config('secret') || $this->config('currency') !== 'USD') {
+        $purse = (string) $this->config('purse');
+        $valid = (preg_match('/^Z[0-9]{12}$/D', $purse) && $this->config('currency') === 'USD') ||
+            (preg_match('/^E[0-9]{12}$/D', $purse) && $this->config('currency') === 'EUR');
+        if (!$valid || !$this->config('secret')) {
             throw new RuntimeException('WebMoney merchant configuration is incomplete or currency is unsupported');
         }
 
@@ -66,13 +74,78 @@ class WebMoney extends Gateway
         if (!$this->gatewayRecord) {
             throw new RuntimeException('Explicit gateway record binding is required');
         }
-        if ($invoice->currency_code !== $this->config('currency')) {
+        if ($invoice->currency_code !== 'USD') {
             throw new RuntimeException('Invoice currency does not match the merchant currency');
         }
-        $attempt = (new PaymentAttempts)->begin($this->gatewayRecord, $invoice, $this->merchant(), (string) $this->config('currency'));
+        $attempt = (new PaymentAttempts)->begin($this->gatewayRecord, $invoice, $this->merchant(), 'USD');
+        View::addNamespace('gateways.webmoney', __DIR__ . '/resources/views');
+        if ($this->config('currency') === 'EUR') {
+            $rates = isset($attempt->provider_payload['webmoney_conversion_quote']) ? null : (new ReferenceRates)->get('EUR');
+            $attempt = DB::transaction(function () use ($attempt, $rates) {
+                $locked = GatewayPaymentAttempt::whereKey($attempt->id)->lockForUpdate()->firstOrFail();
+                (new PaymentAttempts)->validate($this->gatewayRecord, $locked->reference, $this->merchant(), $locked->amount, 'USD');
+                if (!isset($locked->provider_payload['webmoney_conversion_quote'])) {
+                    if ($locked->state !== 'open' || $locked->provider_payload !== null || $rates === null) {
+                        throw new RuntimeException('WebMoney checkout requires reconciliation.');
+                    }
+                    $locked->provider_payload = ['webmoney_conversion_quote' => (new ConversionQuote)->create($locked, $rates)];
+                    $locked->save();
+                }
+
+                return $locked;
+            });
+            $quote = (new ConversionQuote)->validate($attempt);
+            if ($quote['confirm_before'] <= now()->timestamp) {
+                throw new RuntimeException('The conversion quote expired; reconcile before starting another payment.');
+            }
+
+            return view('gateways.webmoney::quote', ['quote' => $quote, 'attempt' => $attempt, 'invoice' => $invoice, 'gateway' => $this->gatewayRecord]);
+        }
+
+        return $this->paymentView($invoice, $attempt, $attempt->amount, 'USD');
+    }
+
+    private function paymentView(Invoice $invoice, GatewayPaymentAttempt $attempt, string $amount, string $currency)
+    {
         View::addNamespace('gateways.webmoney', __DIR__ . '/resources/views');
 
-        return view('gateways.webmoney::pay', ['purse' => $this->config('purse'), 'attempt' => $attempt, 'gateway' => $this->gatewayRecord, 'invoice' => $invoice, 'testMode' => filter_var($this->config('test_mode'), FILTER_VALIDATE_BOOLEAN)]);
+        return view('gateways.webmoney::pay', ['purse' => $this->config('purse'), 'attempt' => $attempt, 'gateway' => $this->gatewayRecord, 'invoice' => $invoice,
+            'amount' => $amount, 'currency' => $currency, 'testMode' => filter_var($this->config('test_mode'), FILTER_VALIDATE_BOOLEAN)]);
+    }
+
+    public function checkout(Request $request, GatewayRecord $gateway, Invoice $invoice, string $reference)
+    {
+        if ($gateway->extension !== 'WebMoney') {
+            abort(404);
+        }
+        $extension = (new self($gateway->settings->pluck('value', 'key')->all()))->bindRecord($gateway);
+        try {
+            if ($extension->config('currency') !== 'EUR' || array_diff(array_keys($request->except('_token')), ['quote_fingerprint']) !== []) {
+                throw new RuntimeException('Unexpected WebMoney checkout fields.');
+            }
+            $attempt = (new PaymentAttempts)->begin($gateway, $invoice, $extension->merchant(), 'USD', $reference);
+            $attempt = DB::transaction(function () use ($attempt, $request) {
+                $locked = GatewayPaymentAttempt::whereKey($attempt->id)->lockForUpdate()->firstOrFail();
+                $quote = (new ConversionQuote)->validate($locked);
+                if ($locked->state !== 'open' || $quote['confirm_before'] <= now()->timestamp ||
+                    !is_string($request->input('quote_fingerprint')) || !hash_equals($quote['fingerprint'], $request->input('quote_fingerprint'))) {
+                    throw new RuntimeException('The conversion quote expired or changed.');
+                }
+                $payload = $locked->provider_payload;
+                $payload['webmoney_confirmed_at'] ??= now()->timestamp;
+                $locked->provider_payload = $payload;
+                $locked->save();
+
+                return $locked;
+            });
+            $quote = (new ConversionQuote)->validate($attempt);
+
+            return response($extension->paymentView($invoice, $attempt, $quote['provider_amount'], 'EUR')->render());
+        } catch (MigrationHeldException|CollectionDisabledException) {
+            return response('Payment processing is held', 409);
+        } catch (RuntimeException|\InvalidArgumentException) {
+            return response('The conversion quote could not be confirmed. Please return to your invoice.', 422);
+        }
     }
 
     public function notify(Request $request, GatewayRecord $gateway)
@@ -104,8 +177,20 @@ class WebMoney extends Gateway
         if (isset($p['LMI_HOLD']) || $p['LMI_PAYEE_PURSE'] !== $this->config('purse') || !preg_match('/^[0-9]{1,15}$/D', $p['LMI_PAYMENT_NO']) || !preg_match('/^[0-9]+(?:\.[0-9]{1,2})?$/D', $p['LMI_PAYMENT_AMOUNT']) || $p['LMI_MODE'] !== (filter_var($this->config('test_mode'), FILTER_VALIDATE_BOOLEAN) ? '1' : '0')) {
             throw new RuntimeException('Unexpected merchant, amount or payment mode');
         }
+        $attempt = GatewayPaymentAttempt::where('gateway_id', $this->gatewayRecord->id)->where('reference', $p['LMI_PAYMENT_NO'])->firstOrFail();
+        $quote = $this->config('currency') === 'EUR' ? (new ConversionQuote)->validate($attempt) : null;
+        if ($quote) {
+            $confirmed = $attempt->provider_payload['webmoney_confirmed_at'] ?? null;
+            if (!is_int($confirmed) || $confirmed < $quote['created_at'] || $confirmed >= $quote['confirm_before'] ||
+                !BigDecimal::of($p['LMI_PAYMENT_AMOUNT'])->isEqualTo($quote['provider_amount'])) {
+                throw new RuntimeException('The EUR payment does not match its confirmed quote.');
+            }
+        } elseif (isset($attempt->provider_payload['webmoney_conversion_quote'])) {
+            throw new RuntimeException('The purse currency changed.');
+        }
+        $nativeAmount = $quote ? $quote['native_amount'] : $p['LMI_PAYMENT_AMOUNT'];
         if (($p['LMI_PREREQUEST'] ?? null) === '1') {
-            $ledger->validate($this->gatewayRecord, $p['LMI_PAYMENT_NO'], $merchant, $p['LMI_PAYMENT_AMOUNT'], 'USD');
+            $ledger->validate($this->gatewayRecord, $p['LMI_PAYMENT_NO'], $merchant, $nativeAmount, 'USD');
 
             return response('YES');
         }
@@ -121,7 +206,7 @@ class WebMoney extends Gateway
         if (!hash_equals(strtoupper(hash('sha256', $signed)), strtoupper($p['LMI_HASH']))) {
             throw new RuntimeException('Invalid payment signature');
         }
-        $ledger->settle($this->gatewayRecord, $p['LMI_PAYMENT_NO'], $merchant, $p['LMI_PAYMENT_AMOUNT'], 'USD', $p['LMI_SYS_TRANS_NO']);
+        $ledger->settle($this->gatewayRecord, $p['LMI_PAYMENT_NO'], $merchant, $nativeAmount, 'USD', $p['LMI_SYS_TRANS_NO']);
 
         return response('OK');
     }

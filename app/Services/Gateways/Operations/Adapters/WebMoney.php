@@ -10,12 +10,15 @@ use Brick\Math\BigDecimal;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Paymenter\Extensions\Gateways\WebMoney\ConversionQuote;
 use RuntimeException;
 use SimpleXMLElement;
 use Throwable;
 
 final class WebMoney extends ProviderAdapter
 {
+    private ?int $readingOperationId = null;
+
     public function capabilities(): array
     {
         $configured = !filter_var($this->config('test_mode'), FILTER_VALIDATE_BOOLEAN) &&
@@ -120,7 +123,8 @@ final class WebMoney extends ProviderAdapter
 
     private function owner(): void
     {
-        $this->require(preg_match('/^Z[0-9]{12}$/D', $this->config('purse')) === 1 && $this->config('currency') === 'USD');
+        $this->require((preg_match('/^Z[0-9]{12}$/D', $this->config('purse')) === 1 && $this->config('currency') === 'USD') ||
+            (preg_match('/^E[0-9]{12}$/D', $this->config('purse')) === 1 && $this->config('currency') === 'EUR'));
         $xml = $this->certificateRequest('XMLPursesCert.asp', '<getpurses><wmid>' . $this->config('wm_wmid') . '</wmid></getpurses>');
         $purses = $xml->purses->purse;
         $this->require((int) $xml->purses['cnt'] === count($purses));
@@ -160,18 +164,22 @@ final class WebMoney extends ProviderAdapter
     {
         $this->require($this->capabilities()['refund'] && $context['kind'] === 'provider_refund' && $attempt !== null && $context['currency'] === 'USD' &&
             $attempt->merchant_fingerprint === hash('sha256', $this->config('purse') . ':live'));
+        $quote = isset($attempt->provider_payload['webmoney_conversion_quote']) ? (new ConversionQuote)->validate($attempt) : null;
+        $this->require(($this->config('currency') === 'EUR') === ($quote !== null));
         $this->owner();
         $mapping = $this->mapping($context['original_reference']);
         $operations = $this->history($context['original_reference']);
         $this->require(count($operations->operation) === 1);
         $original = $operations->operation;
         $this->require((string) $original['id'] === $context['original_reference'] && (string) $original->pursedest === $this->config('purse') &&
-            (string) $original->pursesrc === (string) $mapping->pursefrom && preg_match('/^Z[0-9]{12}$/D', (string) $original->pursesrc) === 1 &&
+            (string) $original->pursesrc === (string) $mapping->pursefrom && preg_match('/^' . ($quote ? 'E' : 'Z') . '[0-9]{12}$/D', (string) $original->pursesrc) === 1 &&
             (string) $original->opertype === '0' && (string) $original->period === '0' && (string) $original->orderid === $attempt->reference &&
-            $this->money((string) $original->amount) === $this->money((string) $mapping->amount));
+            $this->money((string) $original->amount) === $this->money((string) $mapping->amount) &&
+            $this->money((string) $original->amount) === ($quote ? $quote['provider_amount'] : $attempt->amount));
         $date = CarbonImmutable::createFromFormat('!Ymd H:i:s', (string) $original->datecrt, 'Europe/Moscow');
         $this->require($date !== false && $date->greaterThan(now()->subDays(89)) && $date->lessThanOrEqualTo(now()));
         $refunded = BigDecimal::zero();
+        $refundIds = [];
         if ($eligible) {
             $seen = [];
             foreach ($this->history()->operation as $entry) {
@@ -181,23 +189,76 @@ final class WebMoney extends ProviderAdapter
                 if (str_starts_with((string) $entry->desc, 'Moneyback transaction WMTranId: ' . $context['original_reference'] . '. (')) {
                     $this->require((string) $entry->pursesrc === $this->config('purse') && (string) $entry->pursedest === (string) $original->pursesrc && (string) $entry->opertype === '0');
                     $refunded = $refunded->plus($this->money((string) $entry->amount));
+                    $refundIds[] = $id;
                 }
             }
         }
 
+        $converted = $quote ? $this->convertedContext($context, $quote, $refunded, $refundIds, $eligible, (string) $original->pursesrc) : [];
+
         return ['merchant' => $this->config('wm_wmid') . ':' . $this->config('purse'), 'environment' => 'live', 'provider_object_type' => 'wm_transaction',
-            'original_amount' => $this->money((string) $original->amount), 'already_refunded' => $eligible ? (string) $refunded->toScale(2) : $context['already_refunded'],
-            'payer_purse' => (string) $original->pursesrc];
+            'original_amount' => $quote ? $quote['native_amount'] : $this->money((string) $original->amount),
+            'already_refunded' => $converted['already_refunded'] ?? ($eligible ? (string) $refunded->toScale(2) : $context['already_refunded']),
+            'payer_purse' => (string) $original->pursesrc] + $converted;
+    }
+
+    private function convertedContext(array $context, array $quote, BigDecimal $remoteRefunded, array $refundIds, bool $eligible, string $payer): array
+    {
+        $previous = $providerPrevious = 0;
+        $expectedIds = [];
+        $prior = PaymentOperation::where('original_transaction_id', $context['transaction_id'])->whereIn('kind', ['provider_refund', 'external_refund'])
+            ->when(!$eligible && $this->readingOperationId !== null, fn ($query) => $query->where('id', '<', $this->readingOperationId))
+            ->where('state', 'succeeded')->orderBy('id')->get();
+        $this->require($prior->count() <= 100);
+        foreach ($prior as $operation) {
+            $frozen = $operation->payload['provider_context'] ?? [];
+            $this->require($operation->kind === 'provider_refund' && ($frozen['conversion_fingerprint'] ?? null) === $quote['fingerprint'] &&
+                ($frozen['provider_currency'] ?? null) === 'EUR' && ($frozen['attempt_id'] ?? null) === $context['attempt_id'] &&
+                ($frozen['original_reference'] ?? null) === $context['original_reference'] &&
+                $operation->gateway_id === $context['gateway_id'] && $operation->invoice_id === $context['invoice_id'] && $operation->currency_code === 'USD');
+            $history = $operation->outcome_evidence ?? [];
+            $last = end($history);
+            $this->require(is_array($last) && ($last['state'] ?? null) === 'succeeded');
+            (new OperationResult('succeeded', $operation->provider_reference, $last['evidence'] ?? []))->assertVerified($operation);
+            $child = $this->history($this->id($operation->provider_reference));
+            $this->require(count($child->operation) === 1);
+            $child = $child->operation;
+            $this->require((string) $child['id'] === $operation->provider_reference && (string) $child->pursesrc === $this->config('purse') &&
+                (string) $child->pursedest === $payer && (string) $child->opertype === '0' &&
+                str_starts_with((string) $child->desc, 'Moneyback transaction WMTranId: ' . $context['original_reference'] . '. (') &&
+                $this->money((string) $child->amount) === ($frozen['provider_amount'] ?? null) && !isset($expectedIds[$operation->provider_reference]));
+            $expectedIds[$operation->provider_reference] = true;
+            $this->require($this->units($frozen['provider_amount']) === (new ConversionQuote)->refund($quote, $previous, $this->units($operation->amount)));
+            $previous += $this->units($operation->amount);
+            $providerPrevious += $this->units($frozen['provider_amount']);
+        }
+        $converter = new ConversionQuote;
+        $this->require($providerPrevious === $converter->providerRefunded($quote, $previous));
+        $providerAmount = $converter->refund($quote, $previous, $this->units($context['amount']));
+        if ($eligible) {
+            $this->require($this->units((string) $remoteRefunded->toScale(2)) === $providerPrevious && count($refundIds) === count($expectedIds));
+            foreach ($refundIds as $id) {
+                $this->require(isset($expectedIds[$id]));
+            }
+        }
+        if (isset($context['provider_amount'])) {
+            $this->require($context['provider_amount'] === $this->minor($providerAmount) && $context['already_refunded'] === $this->minor($previous));
+        }
+
+        return ['provider_amount' => $this->minor($providerAmount), 'provider_currency' => 'EUR',
+            'provider_original_amount' => $quote['provider_amount'], 'conversion_fingerprint' => $quote['fingerprint'],
+            'already_refunded' => $this->minor($previous)];
     }
 
     protected function write(PaymentOperation $operation, array $context): string
     {
-        $xml = $this->certificateRequest('XMLTransMoneybackCert.asp', '<trans><inwmtranid>' . $context['original_reference'] . '</inwmtranid><amount>' . $context['amount'] . '</amount></trans>', $operation);
+        $amount = $context['provider_amount'] ?? $context['amount'];
+        $xml = $this->certificateRequest('XMLTransMoneybackCert.asp', '<trans><inwmtranid>' . $context['original_reference'] . '</inwmtranid><amount>' . $amount . '</amount></trans>', $operation);
         $this->require(count($xml->operation) === 1);
         $child = $xml->operation;
         $id = $this->id((string) $child['id']);
         $this->require((string) $child->inwmtranid === $context['original_reference'] && (string) $child->pursesrc === $this->config('purse') &&
-            (string) $child->pursedest === $context['payer_purse'] && $this->money((string) $child->amount) === $context['amount'] &&
+            (string) $child->pursedest === $context['payer_purse'] && $this->money((string) $child->amount) === $amount &&
             $this->money((string) $child->comiss) === '0.00');
         (new AcceptedRequest)->accept($operation, 'WebMoney', 'x14_refund', ['reference' => $id, 'original' => $context['original_reference'],
             'request_key' => $operation->request_key, 'reqn' => (string) $xml->reqn]);
@@ -210,13 +271,14 @@ final class WebMoney extends ProviderAdapter
         $proof = (new AcceptedRequest)->proof($operation, 'WebMoney', 'x14_refund');
         $this->require($proof !== null && ($proof['request_key'] ?? null) === $operation->request_key &&
             ($proof['original'] ?? null) === $operation->payload['provider_context']['original_reference'] && ($reference === null || $reference === $proof['reference']));
+        $this->readingOperationId = $operation->id;
         $context = $this->current($operation, false);
         $reference = $this->id($proof['reference']);
         $operations = $this->history($reference);
         $this->require(count($operations->operation) === 1);
         $child = $operations->operation;
         $this->require((string) $child['id'] === $reference && (string) $child->pursesrc === $this->config('purse') && (string) $child->pursedest === $context['payer_purse'] &&
-            $this->money((string) $child->amount) === $context['amount'] && (string) $child->opertype === '0' &&
+            $this->money((string) $child->amount) === ($context['provider_amount'] ?? $context['amount']) && (string) $child->opertype === '0' &&
             str_starts_with((string) $child->desc, 'Moneyback transaction WMTranId: ' . $context['original_reference'] . '. ('));
 
         return $this->verified($operation, $context, $reference, 'succeeded');
