@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Services\BillmanagerMigration\CustomerImporter;
 use App\Services\BillmanagerMigration\ImportContext;
 use App\Services\BillmanagerMigration\MigrationHold;
+use App\Services\BillmanagerMigration\PriceReconciler;
 use App\Services\BillmanagerMigration\RegistrarAttacher;
 use App\Services\BillmanagerMigration\ServiceImporter;
 use App\Services\BillmanagerMigration\Snapshot;
@@ -402,5 +403,96 @@ class RegistrarAttachmentTest extends TestCase
     public static function concurrentNativeChanges(): array
     {
         return array_map(fn ($s) => [$s], ['enabled', 'hold', 'metadata', 'account']);
+    }
+
+    private function refreshedFixture(): array
+    {
+        [$snapshot, $original, $map, $path] = $this->fixture();
+        $this->provider();
+        (new RegistrarAttacher)->attach($snapshot, $original, $map);
+        $document = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $document['captured_at_utc'] = '2026-01-02T00:00:00Z';
+        $document['tables']['items'][0]['costdate'] = '2026-01-02';
+        $freshPath = $this->file($document);
+        file_put_contents($freshPath . '.sha256', hash_file('sha256', $freshPath));
+        $this->temporary[] = $freshPath . '.sha256';
+        $fresh = Snapshot::load($freshPath, '192.0.2.10', '2024-01-01 00:00:00');
+        $id = DB::table('billmanager_imports')->insertGetId(['source_host' => '192.0.2.10', 'snapshot_sha256' => $fresh->checksum(), 'status' => 'running']);
+        $context = new ImportContext($id, '192.0.2.10');
+        $metadata = BillmanagerServiceDetail::where('source_id', '40')->sole();
+        $details = $metadata->details;
+        $details['original'] = $document['tables']['items'][0];
+        $details['price'] = (new PriceReconciler)->resolve($document['tables']['items'][0], $fresh);
+        $metadata->details = $details;
+        $metadata->import_id = $id;
+        $metadata->save();
+        (new CustomerImporter)->import($fresh, $context);
+        (new ServiceImporter)->import($fresh, $context);
+
+        return [$fresh, $context, $map, $original];
+    }
+
+    public function test_reconciled_source_refresh_preserves_mapping_ids_and_replays_existing_registrar_bindings(): void
+    {
+        [$snapshot, $context, $map, $original] = $this->refreshedFixture();
+        $mappings = DB::table('billmanager_mappings')->orderBy('id')->get()->toJson();
+        $properties = DB::table('properties')->orderBy('id')->get()->toJson();
+        $before = $this->unchanged();
+        $this->provider();
+        foreach ([true, false, false] as $dryRun) {
+            $report = (new RegistrarAttacher)->attach($snapshot, $context, $map, $dryRun);
+            $this->assertSame(2, $report->counts['attached']);
+            $this->assertSame(0, $report->counts['review_required']);
+            $this->assertSame($mappings, DB::table('billmanager_mappings')->orderBy('id')->get()->toJson());
+            $this->assertSame($properties, DB::table('properties')->orderBy('id')->get()->toJson());
+            $this->assertSame($before, $this->unchanged());
+        }
+        $this->assertSame($original->importId, BillmanagerServiceDetail::where('source_id', '41')->value('import_id'));
+        $this->assertSame($context->importId, BillmanagerServiceDetail::where('source_id', '40')->value('import_id'));
+        $this->assertSame(2, DB::table('billmanager_records')->where('import_id', $context->importId)->where('source_table', 'provider_bindings')->count());
+        $this->assertSame(0, DB::table('jobs')->count());
+        Http::assertNotSent(fn ($r) => $r->method() !== 'GET' || !str_contains($r->url(), '/domains/details-by-name.json'));
+    }
+
+    #[DataProvider('invalidRefreshLineage')]
+    public function test_refreshed_attachment_rejects_invalid_original_or_current_provenance(string $change): void
+    {
+        $foreign = DB::table('billmanager_imports')->insertGetId(['source_host' => '192.0.2.20', 'snapshot_sha256' => str_repeat('b', 64), 'status' => 'running']);
+        [$snapshot, $context, $map, $original] = $this->refreshedFixture();
+        $later = DB::table('billmanager_imports')->insertGetId(['source_host' => '192.0.2.10', 'snapshot_sha256' => str_repeat('a', 64), 'status' => 'running']);
+        $invalidBatch = str_starts_with($change, 'foreign_') ? $foreign : $later;
+        if (in_array($change, ['foreign_mapping', 'future_mapping'], true)) {
+            DB::table('billmanager_mappings')->where('source_table', 'provider_servers')->update(['import_id' => $invalidBatch]);
+        } elseif (in_array($change, ['foreign_metadata', 'future_metadata'], true)) {
+            DB::table('billmanager_service_details')->where('source_id', '40')->update(['import_id' => $invalidBatch]);
+        } elseif ($change === 'missing_current_archive') {
+            DB::table('billmanager_records')->where(['import_id' => $context->importId, 'source_table' => 'items', 'source_id' => '40'])->delete();
+        } elseif ($change === 'corrupt_current_archive') {
+            DB::table('billmanager_records')->where(['import_id' => $context->importId, 'source_table' => 'items', 'source_id' => '40'])->update(['payload_sha256' => str_repeat('0', 64)]);
+        } elseif ($change === 'changed_origin_archive') {
+            $row = $snapshot->rows('items')[1];
+            $row['cost'] = '99.0000';
+            $payload = json_encode($row, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+            DB::table('billmanager_records')->where(['import_id' => $original->importId, 'source_table' => 'items', 'source_id' => '41'])->update(['payload' => Crypt::encryptString($payload), 'payload_sha256' => hash('sha256', $payload)]);
+        } elseif ($change === 'corrupt_historical_binding') {
+            DB::table('billmanager_records')->where(['import_id' => $original->importId, 'source_table' => 'provider_bindings', 'source_id' => '40'])->update(['payload' => 'not-valid-ciphertext']);
+        } elseif ($change === 'conflicting_historical_binding') {
+            $payload = json_encode(['server_id' => $map['2'], 'extension' => 'ResellerClub', 'domain' => 'example.test', 'order_id' => '999', 'customer_id' => '789'], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+            DB::table('billmanager_records')->where(['import_id' => $original->importId, 'source_table' => 'provider_bindings', 'source_id' => '40'])->update(['payload' => Crypt::encryptString($payload), 'payload_sha256' => hash('sha256', $payload)]);
+        }
+        $this->provider();
+        $before = $this->unchanged();
+        $properties = DB::table('properties')->orderBy('id')->get()->toJson();
+        $this->reject(fn () => (new RegistrarAttacher)->attach($snapshot, $context, $map));
+        $this->assertSame($before, $this->unchanged());
+        $this->assertSame($properties, DB::table('properties')->orderBy('id')->get()->toJson());
+        if (!str_contains($change, 'binding')) {
+            Http::assertNothingSent();
+        }
+    }
+
+    public static function invalidRefreshLineage(): array
+    {
+        return array_map(fn ($s) => [$s], ['foreign_mapping', 'future_mapping', 'foreign_metadata', 'future_metadata', 'missing_current_archive', 'corrupt_current_archive', 'changed_origin_archive', 'corrupt_historical_binding', 'conflicting_historical_binding']);
     }
 }

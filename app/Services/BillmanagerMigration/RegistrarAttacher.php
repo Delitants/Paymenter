@@ -151,11 +151,21 @@ final class RegistrarAttacher
     {
         $query = DB::table('billmanager_mappings')->where(['source_host' => $context->sourceHost, 'source_table' => $table, 'source_id' => $id]);
         $row = ($lock ? $query->lockForUpdate() : $query)->first();
-        if (!$row || $row->import_id != $context->importId || $row->target_table !== $target) {
+        if (!$row || !$this->sourceImport((int) $row->import_id, $context, $lock) || $row->target_table !== $target) {
             throw new RuntimeException('Registrar source mapping is missing or conflicts');
         }
 
         return (int) $row->target_id;
+    }
+
+    private function sourceImport(int $importId, ImportContext $context, bool $lock): bool
+    {
+        // Stable mappings retain their original batch across reconciled snapshots.
+        // Never borrow a different source's batch or use a snapshot older than it.
+        $query = DB::table('billmanager_imports')->where('id', $importId)
+            ->where('source_host', $context->sourceHost)->where('id', '<=', $context->importId);
+
+        return ($lock ? $query->lockForUpdate() : $query)->first() !== null;
     }
 
     private function servers(ImportContext $context, array $mapping, bool $lock = false): array
@@ -205,8 +215,21 @@ final class RegistrarAttacher
         $metadataQuery = BillmanagerServiceDetail::where('service_id', $serviceId);
         $metadata = ($lock ? $metadataQuery->lockForUpdate() : $metadataQuery)->first();
         $details = $metadata?->details;
-        if (!$metadata || $metadata->import_id != $context->importId || $metadata->source_id !== (string) $row['id'] || $metadata->source_status !== $status || ($details['original'] ?? null) !== $row || ($details['parameters'] ?? null) !== $entry['parameters']) {
+        if (!$metadata || $this->sourceImport((int) $metadata->import_id, $context, $lock) === false || $metadata->source_id !== (string) $row['id'] || $metadata->source_status !== $status || ($details['original'] ?? null) !== $row || ($details['parameters'] ?? null) !== $entry['parameters']) {
             throw new RuntimeException('Registrar source service metadata changed');
+        }
+        $payload = json_encode($row, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+        foreach (array_unique([$context->importId, (int) $metadata->import_id]) as $importId) {
+            $query = DB::table('billmanager_records')->where(['import_id' => $importId, 'source_table' => 'items', 'source_id' => (string) $row['id']]);
+            $record = ($lock ? $query->lockForUpdate() : $query)->first();
+            try {
+                $original = $record ? Crypt::decryptString($record->payload) : null;
+            } catch (\Throwable) {
+                throw new RuntimeException('Registrar source service archive is corrupt');
+            }
+            if (!$record || $record->source_account_id != $row['account'] || $original !== $payload || !hash_equals($record->payload_sha256, hash('sha256', $payload))) {
+                throw new RuntimeException('Registrar source service archive is missing or conflicts');
+            }
         }
         $timezone = $snapshot->sourceTimezone() ?? config('billmanager-migration.source_timezone');
         if (!$timezone || !in_array($timezone, timezone_identifiers_list(), true)) {
@@ -266,18 +289,20 @@ final class RegistrarAttacher
 
     private function assertProvenance(ImportContext $context, array $entry): void
     {
-        $record = DB::table('billmanager_records')->where(['import_id' => $context->importId, 'source_table' => 'provider_bindings', 'source_id' => (string) $entry['row']['id']])->lockForUpdate()->first();
-        if (!$record) {
-            return;
-        }
+        $records = DB::table('billmanager_records')->join('billmanager_imports', 'billmanager_imports.id', '=', 'billmanager_records.import_id')
+            ->where('billmanager_imports.source_host', $context->sourceHost)
+            ->where('billmanager_records.source_table', 'provider_bindings')->where('billmanager_records.source_id', (string) $entry['row']['id'])
+            ->select('billmanager_records.*')->orderBy('billmanager_records.id')->lockForUpdate()->get();
         $payload = json_encode($entry['binding'], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
-        try {
-            $original = Crypt::decryptString($record->payload);
-        } catch (\Throwable) {
-            throw new RuntimeException('Existing registrar binding provenance is corrupt');
-        }
-        if ($record->source_account_id != $entry['row']['account'] || !hash_equals($record->payload_sha256, hash('sha256', $payload)) || $original !== $payload) {
-            throw new RuntimeException('Existing registrar binding provenance conflicts');
+        foreach ($records as $record) {
+            try {
+                $original = Crypt::decryptString($record->payload);
+            } catch (\Throwable) {
+                throw new RuntimeException('Existing registrar binding provenance is corrupt');
+            }
+            if ($record->import_id > $context->importId || $record->source_account_id != $entry['row']['account'] || !hash_equals($record->payload_sha256, hash('sha256', $payload)) || $original !== $payload) {
+                throw new RuntimeException('Existing registrar binding provenance conflicts');
+            }
         }
     }
 
