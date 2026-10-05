@@ -11,8 +11,11 @@ use RuntimeException;
 
 final class BalancePreview
 {
-    public function prepare(Snapshot $snapshot, ImportContext $context, string $activationCutoff): array
+    public function prepare(Snapshot $snapshot, ImportContext $context, string $activationCutoff, ?string $creditLimitPolicy = null): array
     {
+        if ($creditLimitPolicy !== null && $creditLimitPolicy !== 'preserve') {
+            throw new RuntimeException('Unsupported credit limit policy');
+        }
         (new FinancialReconciler)->compare($snapshot, $context);
         $owners = [];
         $members = [];
@@ -42,7 +45,7 @@ final class BalancePreview
                     throw new RuntimeException('Mapped customer identity requires reconciliation');
                 }
                 $this->verifyCustomerArchive($userMapping, $user, 'users');
-                if (! MigrationHold::isHeld($native)) {
+                if (!MigrationHold::isHeld($native)) {
                     throw new RuntimeException('Balance preview requires held source members');
                 }
                 $expected[(int) $user['id']] = (int) $id;
@@ -53,7 +56,7 @@ final class BalancePreview
             $actual = DB::table('billmanager_members')->where('account_id', $account->id)->pluck('user_id', 'source_user_id')->map(fn ($id) => (int) $id)->all();
             ksort($expected);
             ksort($actual);
-            if (! $expected || $expected !== $actual || ! in_array((int) $account->owner_user_id, $expected, true)) {
+            if (!$expected || $expected !== $actual || !in_array((int) $account->owner_user_id, $expected, true)) {
                 throw new RuntimeException('Account owner or membership requires reconciliation');
             }
             if (in_array((int) $account->owner_user_id, $owners, true)) {
@@ -69,11 +72,11 @@ final class BalancePreview
         $counts = ['entries' => 0, 'eligible' => 0, 'positive' => 0, 'zero' => 0, 'debt' => 0, 'excluded' => 0, 'review_required' => 0];
         foreach ($snapshot->rows('subaccounts') as $row) {
             $account = $row['account'];
-            if (! isset($owners[$account])) {
+            if (!isset($owners[$account])) {
                 throw new RuntimeException('Balance account has no verified owner');
             }
             $currency = $currencies[$row['currency']] ?? throw new RuntimeException('Unknown balance currency');
-            $identity = $account.':'.$currency;
+            $identity = $account . ':' . $currency;
             if (isset($identities[$identity])) {
                 throw new RuntimeException('Multiple balances for one source account and currency');
             }
@@ -83,20 +86,20 @@ final class BalancePreview
             $creditLimit = FinancialRows::decimal($row['creditlimit']);
             $isEligible = isset($eligible[$account]);
             $reasons = [];
-            if (! DB::table('currencies')->where('code', $currency)->exists()) {
+            if (!DB::table('currencies')->where('code', $currency)->exists()) {
                 $reasons[] = 'native_currency_unavailable';
             }
             if ($rounded->abs()->isGreaterThan('999999999999999.99')) {
                 $reasons[] = 'native_amount_out_of_range';
             }
-            if (! $exact->isNegative() && $exact->isPositive() && $rounded->isZero()) {
+            if (!$exact->isNegative() && $exact->isPositive() && $rounded->isZero()) {
                 $reasons[] = 'below_native_precision';
             }
             if ($exact->isNegative()) {
                 $reasons[] = 'debt';
             }
-            if (! BigDecimal::of($creditLimit)->isZero()) {
-                $reasons[] = 'credit_limit_policy';
+            if (!BigDecimal::of($creditLimit)->isZero()) {
+                $reasons[] = $creditLimitPolicy === 'preserve' ? 'credit_limit_activation' : 'credit_limit_policy';
             }
             if (($row['allowpostpaid'] ?? null) !== 'off') {
                 $reasons[] = 'postpaid_policy';
@@ -110,7 +113,7 @@ final class BalancePreview
             $provisional = [];
             foreach ($snapshot->rows('payments') as $payment) {
                 if ((string) $payment['subaccount'] === (string) $row['id'] && (int) $payment['status'] === 3
-                    && (! isset($payment['usedamount']) || BigDecimal::of(FinancialRows::decimal($payment['subaccountamount']))
+                    && (!isset($payment['usedamount']) || BigDecimal::of(FinancialRows::decimal($payment['subaccountamount']))
                         ->minus(FinancialRows::decimal($payment['usedamount']))->isPositive())) {
                     $provisional[] = (string) $payment['id'];
                 }
@@ -120,13 +123,29 @@ final class BalancePreview
             }
             sort($reasons);
             sort($provisional, SORT_NATURAL);
-            $disposition = ! $isEligible ? 'excluded' : ($exact->isNegative() ? 'debt_review' : ($exact->isZero() ? 'zero' : 'credit_proposal'));
+            $disposition = !$isEligible ? 'excluded' : ($exact->isNegative() ? 'debt_review' : ($exact->isZero() ? 'zero' : 'credit_proposal'));
             $entries[] = ['source_account_id' => (string) $account, 'source_subaccount_id' => (string) $row['id'],
                 'currency' => $currency, 'owner_user_id' => $owners[$account], 'member_user_ids' => $members[$account],
                 'exact_amount' => (string) $exact, 'rounded_amount' => (string) $rounded,
                 'rounding_delta' => (string) $rounded->minus($exact), 'credit_limit' => $creditLimit,
                 'disposition' => $disposition, 'proposed_credit' => $isEligible && $exact->isPositive() ? (string) $rounded : '0.00',
                 'review_reasons' => $reasons, 'provisional_payment_ids' => $provisional];
+            if ($creditLimitPolicy === 'preserve') {
+                $limit = BigDecimal::of($creditLimit);
+                if ($limit->isNegative()) {
+                    throw new RuntimeException('Negative source credit limit requires reconciliation');
+                }
+                $zero = BigDecimal::of('0.0000');
+                $debt = $exact->isNegative() ? $exact->abs() : $zero;
+                $remaining = $limit->minus($debt);
+                $excess = $remaining->isNegative() ? $remaining->abs() : $zero;
+                $remaining = $remaining->isNegative() ? $zero : $remaining;
+                $entries[array_key_last($entries)]['credit_facility'] = [
+                    'source_limit' => $creditLimit, 'opening_debt' => (string) $debt,
+                    'remaining_limit' => (string) $remaining, 'cent_headroom' => (string) $remaining->toScale(2, RoundingMode::FLOOR),
+                    'excess_debt' => (string) $excess, 'activation_authorized' => false,
+                ];
+            }
             $counts['entries']++;
             $counts[$isEligible ? 'eligible' : 'excluded']++;
             if ($isEligible) {
@@ -138,15 +157,20 @@ final class BalancePreview
         }
         usort($entries, fn ($a, $b) => [(int) $a['source_account_id'], $a['currency']] <=> [(int) $b['source_account_id'], $b['currency']]);
 
-        return ['schema_version' => 1, 'status' => 'balance_preview', 'application_authorized' => false,
+        $plan = ['schema_version' => 1, 'status' => 'balance_preview', 'application_authorized' => false,
             'source_host' => $snapshot->sourceHost(), 'snapshot_sha256' => $snapshot->checksum(),
             'captured_at_utc' => $snapshot->capturedAt(), 'source_timezone' => $snapshot->sourceTimezone(),
             'activation_cutoff' => $activationCutoff, 'counts' => $counts, 'entries' => $entries];
+        if ($creditLimitPolicy !== null) {
+            $plan['credit_limit_policy'] = $creditLimitPolicy;
+        }
+
+        return $plan;
     }
 
     private function verifyCustomerArchive(object $mapping, array $source, string $table): void
     {
-        if (! DB::table('billmanager_imports')->where(['id' => $mapping->import_id, 'source_host' => $mapping->source_host])->exists()) {
+        if (!DB::table('billmanager_imports')->where(['id' => $mapping->import_id, 'source_host' => $mapping->source_host])->exists()) {
             throw new RuntimeException('Customer mapping source lineage requires reconciliation');
         }
         $record = BillmanagerRecord::where(['import_id' => $mapping->import_id, 'source_table' => $table, 'source_id' => (string) $source['id']])->sole();
@@ -154,7 +178,7 @@ final class BalancePreview
         $account = $table === 'accounts' ? $source['id'] : $source['account'];
         if ((string) $record->source_account_id !== (string) $account
             || (string) ($payload['id'] ?? '') !== (string) $source['id']
-            || ! hash_equals($record->payload_sha256, hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)))
+            || !hash_equals($record->payload_sha256, hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)))
             || ($table === 'users' && ((string) ($payload['account'] ?? '') !== (string) $account
                 || mb_strtolower(trim($payload['email'] ?? '')) !== mb_strtolower(trim($source['email']))))) {
             throw new RuntimeException('Archived customer identity requires reconciliation');

@@ -4,6 +4,7 @@ namespace Tests\Feature\BillmanagerMigration;
 
 use App\Models\BillmanagerRecord;
 use App\Models\Credit;
+use App\Services\BillmanagerMigration\BalancePreview;
 use App\Services\BillmanagerMigration\CustomerImporter;
 use App\Services\BillmanagerMigration\FinancialImporter;
 use App\Services\BillmanagerMigration\ImportContext;
@@ -12,6 +13,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class BalancePreviewTest extends TestCase
@@ -41,11 +43,11 @@ class BalancePreviewTest extends TestCase
                 'creditlimit' => '0.0000', 'allowpostpaid' => 'off', 'active' => 'on']],
         ], $overrides);
         $path = tempnam(sys_get_temp_dir(), 'balance-snapshot-');
-        $this->files = array_merge($this->files, [$path, $path.'.sha256', $path.'.report']);
+        $this->files = array_merge($this->files, [$path, $path . '.sha256', $path . '.report']);
         file_put_contents($path, json_encode(['schema_version' => 1, 'source_host' => '192.0.2.10',
             'login_cutoff' => '2024-01-01 00:00:00', 'captured_at_utc' => '2026-01-01T00:00:00Z',
             'source_timezone' => 'UTC', 'tables' => $tables]));
-        file_put_contents($path.'.sha256', hash_file('sha256', $path));
+        file_put_contents($path . '.sha256', hash_file('sha256', $path));
         $snapshot = Snapshot::load($path, '192.0.2.10', '2024-01-01 00:00:00');
         $id = DB::table('billmanager_imports')->insertGetId(['source_host' => '192.0.2.10', 'snapshot_sha256' => $snapshot->checksum(), 'status' => 'prepared_partial']);
         $context = new ImportContext($id, '192.0.2.10');
@@ -58,7 +60,7 @@ class BalancePreviewTest extends TestCase
     private function preview(string $path, array $options = [])
     {
         return $this->artisan('billmanager:balances:preview', $options + ['snapshot' => $path,
-            '--source' => '192.0.2.10', '--login-cutoff' => '2024-01-01 00:00:00', '--report' => $path.'.report']);
+            '--source' => '192.0.2.10', '--login-cutoff' => '2024-01-01 00:00:00', '--report' => $path . '.report']);
     }
 
     public function test_native_balance_preview_is_registered(): void
@@ -66,13 +68,112 @@ class BalancePreviewTest extends TestCase
         $this->assertArrayHasKey('billmanager:balances:preview', Artisan::all());
     }
 
+    public function test_preserved_credit_limit_option_is_registered(): void
+    {
+        $this->assertTrue(Artisan::all()['billmanager:balances:preview']->getDefinition()->hasOption('credit-limit-policy'));
+    }
+
+    public static function preservedLimitCases(): array
+    {
+        return [
+            'cash is not borrowed money' => ['25.0000', '100.0000', '0.0000', '100.0000', '100.00', '0.0000'],
+            'fractional debt reduces capacity exactly' => ['-40.0050', '100.0000', '40.0050', '59.9950', '59.99', '0.0000'],
+            'fractional limit is never rounded up' => ['0.0000', '100.0050', '0.0000', '100.0050', '100.00', '0.0000'],
+            'over-limit debt remains debt' => ['-120.0000', '100.0000', '120.0000', '0.0000', '0.00', '20.0000'],
+            'sub-cent debt remains part of capacity' => ['-0.0040', '100.0000', '0.0040', '99.9960', '99.99', '0.0000'],
+            'no facility is invented' => ['12.3450', '0.0000', '0.0000', '0.0000', '0.00', '0.0000'],
+            'debt exactly at limit' => ['-100.0000', '100.0000', '100.0000', '0.0000', '0.00', '0.0000'],
+            'debt without any limit' => ['-12.3450', '0.0000', '12.3450', '0.0000', '0.00', '12.3450'],
+        ];
+    }
+
+    #[DataProvider('preservedLimitCases')]
+    public function test_preserved_credit_limit_plan_keeps_exact_debt_and_never_increases_capacity(
+        string $balance, string $limit, string $debt, string $remaining, string $cents, string $excess
+    ): void {
+        [$path, $context] = $this->fixture(['subaccounts' => [['id' => '31', 'account' => '10', 'currency' => '1',
+            'balance' => $balance, 'creditlimit' => $limit, 'allowpostpaid' => 'off', 'active' => 'on']]]);
+        $snapshot = Snapshot::load($path, '192.0.2.10', '2024-01-01 00:00:00');
+        $plan = (new BalancePreview)->prepare($snapshot, $context, '2024-01-01 00:00:00', 'preserve');
+        $this->assertArrayHasKey('credit_limit_policy', $plan);
+        $this->assertSame('preserve', $plan['credit_limit_policy']);
+        $this->assertSame(['source_limit' => $limit, 'opening_debt' => $debt, 'remaining_limit' => $remaining,
+            'cent_headroom' => $cents, 'excess_debt' => $excess, 'activation_authorized' => false], $plan['entries'][0]['credit_facility']);
+        $this->assertFalse($plan['application_authorized']);
+        $this->assertSame(0, Credit::count());
+        $this->assertSame(0, DB::table('jobs')->count());
+        $this->assertSame(1, DB::table('billmanager_holds')->whereNull('released_at')->count());
+    }
+
+    public function test_preserved_credit_limit_policy_does_not_clear_other_reviews_or_expand_eligibility(): void
+    {
+        [$path, $context] = $this->fixture([
+            'users' => array_map(fn ($id) => ['id' => (string) $id, 'account' => '10', 'enabled' => 'on', 'level' => '16',
+                'email' => 'balance' . $id . '@example.test', 'realname' => 'Synthetic Balance', 'last_login' => '2025-01-01 00:00:00'], [11, 12]),
+            'subaccounts' => [['id' => '31', 'account' => '10', 'currency' => '1', 'balance' => '12.3450',
+                'creditlimit' => '100.0000', 'allowpostpaid' => 'off', 'active' => 'on']],
+            'payments' => [['id' => '41', 'subaccount' => '31', 'status' => '3', 'subaccountamount' => '5.0000', 'usedamount' => '1.0000']],
+        ]);
+        $plan = (new BalancePreview)->prepare(Snapshot::load($path, '192.0.2.10', '2024-01-01 00:00:00'), $context, '2025-02-01 00:00:00', 'preserve');
+        $this->assertArrayHasKey('credit_limit_policy', $plan);
+        $row = $plan['entries'][0];
+        $this->assertEqualsCanonicalizing(['shared_account', 'credit_limit_activation', 'provisional_funds'], $row['review_reasons']);
+        $this->assertSame('excluded', $row['disposition']);
+        $this->assertSame('0.00', $row['proposed_credit']);
+        $this->assertFalse($row['credit_facility']['activation_authorized']);
+        $this->assertSame(0, Credit::count());
+    }
+
+    public function test_preserved_credit_limit_policy_rejects_unrecognized_policy(): void
+    {
+        [$path, $context] = $this->fixture();
+        $this->expectException(\RuntimeException::class);
+        (new BalancePreview)->prepare(Snapshot::load($path, '192.0.2.10', '2024-01-01 00:00:00'), $context, '2024-01-01 00:00:00', 'invent-policy');
+    }
+
+    public function test_preserved_credit_limit_policy_rejects_negative_source_limit(): void
+    {
+        [$path, $context] = $this->fixture(['subaccounts' => [['id' => '31', 'account' => '10', 'currency' => '1',
+            'balance' => '12.3450', 'creditlimit' => '-100.0000', 'allowpostpaid' => 'off', 'active' => 'on']]]);
+        $this->expectException(\RuntimeException::class);
+        (new BalancePreview)->prepare(Snapshot::load($path, '192.0.2.10', '2024-01-01 00:00:00'), $context, '2024-01-01 00:00:00', 'preserve');
+    }
+
+    public function test_preserved_credit_limit_policy_is_available_through_native_command(): void
+    {
+        $this->assertTrue(Artisan::all()['billmanager:balances:preview']->getDefinition()->hasOption('credit-limit-policy'));
+        [$path] = $this->fixture();
+        $this->preview($path, ['--credit-limit-policy' => 'invent-policy'])->assertFailed();
+        $this->assertFileDoesNotExist($path . '.report');
+        $this->preview($path, ['--credit-limit-policy' => 'preserve'])->assertSuccessful();
+        $plan = json_decode(file_get_contents($path . '.report'), true);
+        $this->assertSame('preserve', $plan['credit_limit_policy']);
+        $this->assertFalse($plan['entries'][0]['credit_facility']['activation_authorized']);
+    }
+
+    public function test_preserved_credit_limit_option_without_value_is_not_silently_omitted(): void
+    {
+        [$path] = $this->fixture();
+        $this->artisan('billmanager:balances:preview ' . $path . ' --source=192.0.2.10 --login-cutoff="2024-01-01 00:00:00" --credit-limit-policy --report=' . $path . '.report')->assertFailed();
+        $this->assertFileDoesNotExist($path . '.report');
+    }
+
+    public function test_preserved_credit_limit_empty_policy_is_rejected(): void
+    {
+        [$path, $context] = $this->fixture();
+        $this->expectException(\RuntimeException::class);
+        (new BalancePreview)->prepare(Snapshot::load($path, '192.0.2.10', '2024-01-01 00:00:00'), $context, '2024-01-01 00:00:00', '');
+    }
+
     public function test_preview_preserves_exact_rounding_and_owner_without_writing_or_replaying_credits(): void
     {
         [$path, $context] = $this->fixture();
         $before = DB::table('billmanager_imports')->first();
         $this->preview($path)->assertSuccessful();
-        $plan = json_decode(file_get_contents($path.'.report'), true);
+        $plan = json_decode(file_get_contents($path . '.report'), true);
         $this->assertFalse($plan['application_authorized']);
+        $this->assertArrayNotHasKey('credit_limit_policy', $plan);
+        $this->assertArrayNotHasKey('credit_facility', $plan['entries'][0]);
         $this->assertSame(hash_file('sha256', $path), $plan['snapshot_sha256']);
         $row = $plan['entries'][0];
         $this->assertSame('12.3450', $row['exact_amount']);
@@ -85,23 +186,23 @@ class BalancePreviewTest extends TestCase
         $this->assertSame(0, Credit::count());
         $this->assertSame(0, DB::table('jobs')->count());
         $this->assertSame(1, DB::table('billmanager_holds')->whereNull('released_at')->count());
-        $this->assertSame(0600, fileperms($path.'.report') & 0777);
-        unlink($path.'.report');
+        $this->assertSame(0600, fileperms($path . '.report') & 0777);
+        unlink($path . '.report');
         $this->preview($path)->assertSuccessful();
-        $this->assertSame($plan, json_decode(file_get_contents($path.'.report'), true));
+        $this->assertSame($plan, json_decode(file_get_contents($path . '.report'), true));
     }
 
     public function test_shared_credit_limits_and_unspent_provisional_money_require_review_and_are_not_added(): void
     {
         [$path] = $this->fixture([
             'users' => array_map(fn ($id) => ['id' => (string) $id, 'account' => '10', 'enabled' => 'on', 'level' => '16',
-                'email' => 'balance'.$id.'@example.test', 'realname' => 'Synthetic Balance', 'last_login' => '2025-01-01 00:00:00'], [11, 12]),
+                'email' => 'balance' . $id . '@example.test', 'realname' => 'Synthetic Balance', 'last_login' => '2025-01-01 00:00:00'], [11, 12]),
             'subaccounts' => [['id' => '31', 'account' => '10', 'currency' => '1', 'balance' => '12.3450',
                 'creditlimit' => '100.0000', 'allowpostpaid' => 'off', 'active' => 'on']],
             'payments' => [['id' => '41', 'subaccount' => '31', 'status' => '3', 'subaccountamount' => '5.0000', 'usedamount' => '1.0000']],
         ]);
         $this->preview($path)->assertSuccessful();
-        $row = json_decode(file_get_contents($path.'.report'), true)['entries'][0];
+        $row = json_decode(file_get_contents($path . '.report'), true)['entries'][0];
         $this->assertSame('12.35', $row['proposed_credit']);
         $this->assertEqualsCanonicalizing(['shared_account', 'credit_limit_policy', 'provisional_funds'], $row['review_reasons']);
         $this->assertSame(['41'], $row['provisional_payment_ids']);
@@ -114,7 +215,7 @@ class BalancePreviewTest extends TestCase
         [$path] = $this->fixture(['subaccounts' => [['id' => '31', 'account' => '10', 'currency' => '1',
             'balance' => '-0.0040', 'creditlimit' => '0.0000', 'allowpostpaid' => 'off', 'active' => 'on']]]);
         $this->preview($path)->assertSuccessful();
-        $row = json_decode(file_get_contents($path.'.report'), true)['entries'][0];
+        $row = json_decode(file_get_contents($path . '.report'), true)['entries'][0];
         $this->assertSame('debt_review', $row['disposition']);
         $this->assertSame('-0.0040', $row['exact_amount']);
         $this->assertSame('0.00', $row['proposed_credit']);
@@ -125,7 +226,7 @@ class BalancePreviewTest extends TestCase
     {
         [$path] = $this->fixture();
         $this->preview($path, ['--activation-cutoff' => '2025-02-01 00:00:00'])->assertSuccessful();
-        $row = json_decode(file_get_contents($path.'.report'), true)['entries'][0];
+        $row = json_decode(file_get_contents($path . '.report'), true)['entries'][0];
         $this->assertSame('excluded', $row['disposition']);
         $this->assertSame('0.00', $row['proposed_credit']);
         $this->assertSame('12.3450', $row['exact_amount']);
@@ -136,7 +237,7 @@ class BalancePreviewTest extends TestCase
         [$path] = $this->fixture();
         DB::table('billmanager_financial_records')->where('source_table', 'subaccounts')->update(['amount' => '13.3450']);
         $this->preview($path)->assertFailed();
-        $this->assertFileDoesNotExist($path.'.report');
+        $this->assertFileDoesNotExist($path . '.report');
         $this->assertSame(0, Credit::count());
     }
 
@@ -145,7 +246,7 @@ class BalancePreviewTest extends TestCase
         [$path] = $this->fixture();
         DB::table('billmanager_members')->delete();
         $this->preview($path)->assertFailed();
-        $this->assertFileDoesNotExist($path.'.report');
+        $this->assertFileDoesNotExist($path . '.report');
     }
 
     public function test_duplicate_account_currency_balances_require_explicit_reconciliation(): void
@@ -153,7 +254,7 @@ class BalancePreviewTest extends TestCase
         [$path] = $this->fixture(['subaccounts' => array_map(fn ($id) => ['id' => (string) $id, 'account' => '10', 'currency' => '1',
             'balance' => '12.3450', 'creditlimit' => '0.0000', 'allowpostpaid' => 'off', 'active' => 'on'], [31, 32])]);
         $this->preview($path)->assertFailed();
-        $this->assertFileDoesNotExist($path.'.report');
+        $this->assertFileDoesNotExist($path . '.report');
     }
 
     public function test_native_currency_and_credit_storage_limits_are_flagged(): void
@@ -165,7 +266,7 @@ class BalancePreviewTest extends TestCase
         ]);
         DB::table('currencies')->where('code', 'EUR')->delete();
         $this->preview($path)->assertSuccessful();
-        $row = json_decode(file_get_contents($path.'.report'), true)['entries'][0];
+        $row = json_decode(file_get_contents($path . '.report'), true)['entries'][0];
         $this->assertContains('native_currency_unavailable', $row['review_reasons']);
         $this->assertContains('native_amount_out_of_range', $row['review_reasons']);
         $this->assertSame('1000000000000000.0000', $row['exact_amount']);
@@ -176,7 +277,7 @@ class BalancePreviewTest extends TestCase
         [$path] = $this->fixture();
         DB::table('users')->update(['email' => 'other-person@example.test']);
         $this->preview($path)->assertFailed();
-        $this->assertFileDoesNotExist($path.'.report');
+        $this->assertFileDoesNotExist($path . '.report');
     }
 
     public function test_archived_customer_identity_drift_requires_reconciliation(): void
@@ -190,7 +291,7 @@ class BalancePreviewTest extends TestCase
             'payload' => Crypt::encryptString($json), 'payload_sha256' => hash('sha256', $json),
         ]);
         $this->preview($path)->assertFailed();
-        $this->assertFileDoesNotExist($path.'.report');
+        $this->assertFileDoesNotExist($path . '.report');
     }
 
     public function test_framework_failures_do_not_print_mapped_private_identifiers(): void
@@ -219,14 +320,14 @@ class BalancePreviewTest extends TestCase
         }
         $this->assertSame(1, $exit);
         $this->assertStringNotContainsString('exact_amount', $output);
-        $this->assertFileDoesNotExist($path.'.report');
+        $this->assertFileDoesNotExist($path . '.report');
     }
 
     public function test_report_never_overwrites_an_existing_file_or_follows_a_symlink(): void
     {
         [$path] = $this->fixture();
-        file_put_contents($path.'.report', 'preserve this evidence');
+        file_put_contents($path . '.report', 'preserve this evidence');
         $this->preview($path)->assertFailed();
-        $this->assertSame('preserve this evidence', file_get_contents($path.'.report'));
+        $this->assertSame('preserve this evidence', file_get_contents($path . '.report'));
     }
 }

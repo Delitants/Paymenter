@@ -12,20 +12,23 @@ use RuntimeException;
 
 class PreviewBillmanagerBalances extends Command
 {
-    protected $signature = 'billmanager:balances:preview {snapshot} {--source=} {--login-cutoff=} {--activation-cutoff=} {--report=}';
+    protected $signature = 'billmanager:balances:preview {snapshot} {--source=} {--login-cutoff=} {--activation-cutoff=} {--credit-limit-policy=} {--report=}';
 
     protected $description = 'Preview held BILLmanager balances without creating spendable credits';
 
     public function handle(): int
     {
         try {
-            if (! $this->option('source') || ! $this->option('login-cutoff')) {
+            if (!$this->option('source') || !$this->option('login-cutoff')) {
                 throw new RuntimeException('Expected source identity and login cutoff are required');
+            }
+            if ($this->option('credit-limit-policy') === null && $this->input->hasParameterOption('--credit-limit-policy')) {
+                throw new RuntimeException('An explicit credit limit policy requires a value');
             }
             $cutoff = $this->option('activation-cutoff') ?: $this->option('login-cutoff');
             foreach ([$this->option('login-cutoff'), $cutoff] as $date) {
                 $parsed = DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $date);
-                if (! $parsed || $parsed->format('Y-m-d H:i:s') !== $date) {
+                if (!$parsed || $parsed->format('Y-m-d H:i:s') !== $date) {
                     throw new RuntimeException('Cutoffs must be valid source-local dates in Y-m-d H:i:s format');
                 }
             }
@@ -36,13 +39,13 @@ class PreviewBillmanagerBalances extends Command
             $plan = DB::transaction(function () use ($snapshot, $cutoff) {
                 $row = DB::table('billmanager_imports')->where(['source_host' => $snapshot->sourceHost(), 'snapshot_sha256' => $snapshot->checksum()])->sole();
 
-                return (new BalancePreview)->prepare($snapshot, new ImportContext($row->id, $snapshot->sourceHost()), $cutoff);
+                return (new BalancePreview)->prepare($snapshot, new ImportContext($row->id, $snapshot->sourceHost()), $cutoff, $this->option('credit-limit-policy'));
             });
             if ($path = $this->option('report')) {
-                if (str_contains($path, '://') || ! stream_is_local($path) || ! is_dir(dirname($path))) {
+                if (str_contains($path, '://') || !stream_is_local($path) || !is_dir(dirname($path))) {
                     throw new RuntimeException('Report destination must be an ordinary local file');
                 }
-                $json = json_encode($plan, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT).PHP_EOL;
+                $json = json_encode($plan, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT) . PHP_EOL;
                 $mask = umask(0077);
                 try {
                     $file = @fopen($path, 'x');
@@ -53,7 +56,7 @@ class PreviewBillmanagerBalances extends Command
                     throw new RuntimeException('Report must be a new file in an existing private directory');
                 }
                 try {
-                    if (fwrite($file, $json) !== strlen($json) || ! fflush($file)) {
+                    if (fwrite($file, $json) !== strlen($json) || !fflush($file)) {
                         throw new RuntimeException('Cannot write complete balance report');
                     }
                 } finally {
