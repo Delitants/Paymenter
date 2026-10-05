@@ -257,3 +257,22 @@ Synthetic PHPUnit/Livewire acceptance does not prove provider ordering. A separa
 ## Registrar verification after reconciled source refreshes
 
 An explicitly reconciled newer snapshot can retain stable native mapping IDs and unchanged service metadata from earlier import batches. Registrar attachment validates that each referenced batch belongs to the same source and does not postdate the requested import. It verifies both the current and metadata-origin encrypted service archives, plus all prior source-bound registrar binding provenance, before reusing those identities. Corrupt, missing, conflicting or foreign provenance is rejected; owners, billing fields, hidden products, disabled registrar settings and migration holds must still agree. Neither native IDs nor earlier immutable archive rows are rewritten to make a refreshed import pass.
+
+### Read-only opening balance preview
+
+After customer and financial history stages have been imported under holds, use the native command to prepare a private balance report:
+
+```sh
+php artisan billmanager:balances:preview /private/snapshot.json \
+  --source=192.0.2.10 --login-cutoff='2024-01-01 00:00:00' \
+  --activation-cutoff='2024-02-01 00:00:00' \
+  --report=/private/new-balance-preview.json
+```
+
+The example source and dates are synthetic. Use the exact source identity and original snapshot cutoff from your own approved import. The optional activation cutoff uses the snapshot's source-local login timestamps and can narrow, never expand, its cohort. It is a planning filter against that capture, not proof of current login eligibility. Capture fresh balances and eligibility at an approved handover.
+
+The command verifies the existing checksum-bound import, exact financial ledger, source mappings, owner membership and active user holds. Duplicate balances for one account/currency and drift fail. Each source account/currency has one entry, preserving its exact amount, HALF_UP two-decimal rounding and delta. Proposed credits belong to the resolved owner, never every member login. Credit limits are retained separately and are not added to deposited funds. Signed debt remains a review case even if it rounds to zero. Shared accounts, credit limits, provisional funds and unknown/inactive or postpaid states are flagged for review.
+
+Only aggregate counts are printed. `--report` is optional and creates a new file with mode 0600; existing files and symlinks are refused. Protect and retain the report as financial evidence. It contains exact amounts and mapped user identities.
+
+This command performs no database writes, creates no spendable credits or debt invoices, releases no holds, contacts no provider, and has no apply option. Repeated previews do not replay historical payments. A report is not an opening-credit receipt or authority to activate billing; atomic carryover application and unresolved financial policies remain separate handover work.
