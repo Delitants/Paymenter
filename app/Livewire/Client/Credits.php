@@ -6,10 +6,17 @@ use App\Attributes\DisabledIf;
 use App\Exceptions\DisplayException;
 use App\Helpers\ExtensionHelper;
 use App\Livewire\Component;
+use App\Models\AccountWallet;
 use App\Models\Credit;
 use App\Models\Gateway;
 use App\Models\Invoice;
+use App\Models\User;
+use App\Services\Accounts\AccountAmount;
+use App\Services\Accounts\WalletLedger;
 use App\Services\Billing\MoneyCalculator;
+use App\Services\BillmanagerMigration\AccountAccess;
+use App\Services\BillmanagerMigration\MigrationHold;
+use Brick\Math\BigDecimal;
 use Exception;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
@@ -32,7 +39,7 @@ class Credits extends Component
 
     public function mount()
     {
-        $this->amount = config('settings.credits_minimum_deposit');
+        $this->amount = (string) config('settings.credits_minimum_deposit');
         $this->currency = session('currency', config('settings.default_currency'));
         $this->gateways = ExtensionHelper::getCheckoutGateways($this->amount, $this->currency, 'credits');
         if (count($this->gateways) > 0 && !array_search($this->gateway, array_column($this->gateways, 'id')) !== false) {
@@ -62,18 +69,26 @@ class Credits extends Component
         DB::beginTransaction();
 
         try {
-            // Lock the user's invoices and credits
-            Auth::user()->invoices()->lockForUpdate()->get();
-            $credits = Auth::user()->credits()->where('currency_code', $this->currency)->lockForUpdate()->get();
-
-            // Check if user has credits in this currency
-            if ($credits->isNotEmpty()) {
-                // Check if the current credits + the new credits exceed the maximum credits allowed
-                if ($credits->sum('amount') + $this->amount > config('settings.credits_maximum_credit')) {
-                    $this->notify('You cannot exceed the maximum credits allowed.', 'error');
-
-                    return;
+            // Only new private deposit rows are created here. Serialize creation
+            // on the current owner; existing invoice rows are never mutated.
+            $owner = User::whereKey(Auth::id())->lockForUpdate()->firstOrFail();
+            MigrationHold::assertAllowed($owner, 'create deposit invoice', true);
+            $wallet = AccountWallet::where('user_id', $owner->id)->where('currency_code', $this->currency)->lockForUpdate()->first();
+            if ($wallet) {
+                $quote = (new WalletLedger)->quote($owner, $this->currency);
+                if ($quote->blocked) {
+                    throw new DisplayException('Your account needs review before adding funds. Please contact support.');
                 }
+                $principal = AccountAmount::positiveCents($this->amount);
+                $after = AccountAmount::parse($wallet->balance)->add($principal);
+                $cashAfter = $after->compare(AccountAmount::parse('0')) > 0 ? $after->floorCents() : '0.00';
+            } else {
+                $principal = (new MoneyCalculator)->money((string) $this->amount);
+                $cash = $owner->credits()->where('currency_code', $this->currency)->orderBy('id')->lockForUpdate()->get();
+                $cashAfter = (string) $cash->reduce(fn ($total, $row) => $total->plus($row->getRawOriginal('amount')), BigDecimal::of('0.00'))->plus($principal)->toScale(2);
+            }
+            if (BigDecimal::of($cashAfter)->isGreaterThan((string) config('settings.credits_maximum_credit'))) {
+                throw new DisplayException('This deposit would exceed the maximum account cash balance.');
             }
 
             // Check if the user has any unpaid invoice items referencing credits
@@ -123,7 +138,11 @@ class Credits extends Component
 
     public function render()
     {
-        return view('client.account.credits')->layoutData([
+        $statements = AccountWallet::whereIn('user_id', AccountAccess::visibleOwnerIds(Auth::user()))
+            ->orderBy('user_id')->orderBy('currency_code')->get();
+        $fundingBlocked = (new WalletLedger)->quote(Auth::user(), $this->currency)?->blocked ?? false;
+
+        return view('client.account.credits', ['statements' => $statements, 'fundingBlocked' => $fundingBlocked])->layoutData([
             'sidebar' => true,
             'title' => 'Add Credits',
         ]);

@@ -5,6 +5,7 @@ namespace App\Services\Gateways\Operations;
 use App\Models\Credit;
 use App\Models\Gateway;
 use App\Models\Invoice;
+use App\Models\PaymentOperation;
 use App\Models\Service;
 use App\Models\ServiceUpgrade;
 use App\Models\User;
@@ -20,6 +21,47 @@ use RuntimeException;
 final class OperationPolicy
 {
     public function authorize(User $actor, string $permission, Invoice $invoice, Gateway $gateway): void
+    {
+        $this->authorizeStaff($actor, $permission, $gateway);
+        (new PaymentAttempts)->assertInvoice($invoice, currentRead: true);
+        foreach ($invoice->items as $item) {
+            if (!in_array($item->reference_type, [Service::class, ServiceUpgrade::class, Credit::class], true)) {
+                continue;
+            }
+            // New wallet top-ups may intentionally have no existing wallet ID.
+            if ($item->reference_type === Credit::class && !$item->reference_id) {
+                continue;
+            }
+            $reference = $item->reference;
+            if ($reference instanceof ServiceUpgrade) {
+                $service = $reference->service();
+                if (DB::transactionLevel() > 0) {
+                    $service->lockForUpdate();
+                }
+                $reference = $service->first();
+            }
+            if (!$reference || (int) $reference->user_id !== (int) $invoice->user_id || $reference->currency_code !== $invoice->currency_code) {
+                throw new RuntimeException('Invoice item ownership or currency does not match the payment invoice.');
+            }
+        }
+    }
+
+    public function authorizeVerifiedResult(User $actor, string $permission, PaymentOperation $operation, OperationResult $result): void
+    {
+        if ($operation->kind !== 'provider_refund' || !in_array($permission, ['refund', 'reconcile'], true) || !in_array($result->state, ['succeeded', 'failed'], true)) {
+            throw new RuntimeException('Only a verified original refund result can bypass current invoice evidence holds.');
+        }
+        $result->assertVerified($operation);
+        // This private finalization path follows an authorized provider query.
+        // Retain its verified truth if authority changed during that query;
+        // current monetary authorization is checked separately before posting.
+        $current = User::whereKey($actor->id)->lockForUpdate()->first();
+        if (!$current || (Auth::check() && Auth::id() !== $current->id)) {
+            throw new AuthorizationException('The authenticated provider result reader changed.');
+        }
+    }
+
+    private function authorizeStaff(User $actor, string $permission, Gateway $gateway): void
     {
         $query = User::whereKey($actor->id);
         if (DB::transactionLevel() > 0) {
@@ -43,27 +85,6 @@ final class OperationPolicy
         }
         if (!filter_var($enabled->first()?->value, FILTER_VALIDATE_BOOLEAN)) {
             throw new RuntimeException('Admin payment operations are disabled for this gateway.');
-        }
-        (new PaymentAttempts)->assertInvoice($invoice, currentRead: true);
-        foreach ($invoice->items as $item) {
-            if (!in_array($item->reference_type, [Service::class, ServiceUpgrade::class, Credit::class], true)) {
-                continue;
-            }
-            // New wallet top-ups may intentionally have no existing wallet ID.
-            if ($item->reference_type === Credit::class && !$item->reference_id) {
-                continue;
-            }
-            $reference = $item->reference;
-            if ($reference instanceof ServiceUpgrade) {
-                $service = $reference->service();
-                if (DB::transactionLevel() > 0) {
-                    $service->lockForUpdate();
-                }
-                $reference = $service->first();
-            }
-            if (!$reference || (int) $reference->user_id !== (int) $invoice->user_id || $reference->currency_code !== $invoice->currency_code) {
-                throw new RuntimeException('Invoice item ownership or currency does not match the payment invoice.');
-            }
         }
     }
 

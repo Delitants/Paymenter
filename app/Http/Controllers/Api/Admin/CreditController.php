@@ -10,6 +10,7 @@ use App\Http\Requests\Api\Admin\Credits\GetCreditsRequest;
 use App\Http\Requests\Api\Admin\Credits\UpdateCreditRequest;
 use App\Http\Resources\CreditResource;
 use App\Models\Credit;
+use App\Services\Accounts\AccountFundingPolicy;
 use Dedoc\Scramble\Attributes\Group;
 use Dedoc\Scramble\Attributes\QueryParameter;
 use Spatie\QueryBuilder\QueryBuilder;
@@ -45,10 +46,9 @@ class CreditController extends ApiController
     public function store(CreateCreditRequest $request)
     {
         // Validate and create the credit
-        $credit = Credit::create($request->validated());
+        $attributes = $request->validated();
 
-        // Return the created credit as a JSON response
-        return new CreditResource($credit);
+        return AccountFundingPolicy::mutateCredit(new Credit($attributes), $attributes, fn () => new CreditResource(Credit::create($attributes)));
     }
 
     /**
@@ -70,10 +70,13 @@ class CreditController extends ApiController
     public function update(UpdateCreditRequest $request, Credit $credit)
     {
         // Validate and update the credit
-        $credit->update($request->validated());
+        $attributes = $request->validated();
 
-        // Return the updated credit as a JSON response
-        return new CreditResource($credit);
+        return AccountFundingPolicy::mutateCredit($credit, $attributes, function () use ($credit, $attributes) {
+            $credit->update($attributes);
+
+            return new CreditResource($credit);
+        });
     }
 
     /**
@@ -82,8 +85,10 @@ class CreditController extends ApiController
     public function destroy(DeleteCreditRequest $request, Credit $credit)
     {
         // Delete the credit
-        $credit->delete();
+        return AccountFundingPolicy::mutateCredit($credit, [], function () use ($credit) {
+            $credit->delete();
 
-        return $this->returnNoContent();
+            return $this->returnNoContent();
+        });
     }
 }

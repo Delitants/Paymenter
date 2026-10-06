@@ -1,5 +1,5 @@
 @props(['summary', 'formatter', 'taxName' => 'Tax', 'taxRate' => '0', 'paidLabel' => 'Paid'])
-<dl class="space-y-3 text-sm" aria-live="polite">
+<dl class="space-y-3 text-sm [&_dd]:whitespace-nowrap" aria-live="polite">
     <div class="flex justify-between gap-4">
         <dt class="text-base/70">{{ __('invoices.subtotal') }}</dt>
         <dd class="font-medium tabular-nums">{{ $formatter->format($summary->productNet) }}</dd>

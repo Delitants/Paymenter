@@ -3,8 +3,9 @@
 namespace App\Services\Gateways;
 
 use App\Enums\InvoiceTransactionStatus;
+use App\Models\AccountFundingAllocation;
+use App\Models\AccountWallet;
 use App\Models\Extension;
-use App\Models\Gateway;
 use App\Models\GatewayPaymentAttempt;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
@@ -12,6 +13,10 @@ use App\Models\InvoicePaidProcessing;
 use App\Models\InvoiceTransaction;
 use App\Models\PaymentOperation;
 use App\Models\User;
+use App\Services\Accounts\AccountFundingReversals;
+use App\Services\Accounts\AccountPaymentLocks;
+use App\Services\Accounts\AccountRecollection;
+use App\Services\Accounts\AccountWriteGuard;
 use App\Services\BillmanagerMigration\MigrationHold;
 use App\Services\Gateways\Operations\OperationResult;
 use Brick\Math\BigDecimal;
@@ -32,16 +37,16 @@ final class PaymentWriteGuard
     public function withPaymentLock(InvoiceTransaction $record, callable $write): mixed
     {
         return DB::transaction(function () use ($record, $write) {
-            $ids = array_values(array_unique(array_filter([$record->gateway_id, $record->getRawOriginal('gateway_id')])));
-            sort($ids, SORT_NUMERIC);
-            foreach ($ids as $id) {
-                $gateway = Gateway::withTrashed()->whereKey($id)->lockForUpdate()->first();
-                if (!$gateway || $gateway->trashed()) {
-                    throw new RuntimeException('Native payment gateway identity was deleted; reload before writing a payment.');
-                }
+            $invoiceIds = array_values(array_unique(array_filter([$record->invoice_id, $record->getRawOriginal('invoice_id')])));
+            $gatewayIds = array_values(array_unique(array_filter([$record->gateway_id, $record->getRawOriginal('gateway_id')])));
+            if (AccountPaymentLocks::active()) {
+                AccountPaymentLocks::currentInvoices($invoiceIds);
+                AccountPaymentLocks::assertGateways($gatewayIds);
+
+                return $write();
             }
 
-            return $this->withInvoiceLock($record, $write);
+            return (new AccountPaymentLocks)->during($invoiceIds, fn () => $write(), $gatewayIds);
         });
     }
 
@@ -64,6 +69,9 @@ final class PaymentWriteGuard
                     throw new RuntimeException('Gateway payment identity and reconciliation history cannot be deleted.');
                 }
             } elseif ($record instanceof User) {
+                if (AccountWallet::where('user_id', $record->id)->exists()) {
+                    throw new RuntimeException('User account opening and journal history cannot be deleted.');
+                }
                 $ids = Invoice::where('user_id', $record->id)->pluck('id')->all();
                 $locked = (new InvoicePaymentDependencies)->lock($ids);
                 // Lock the owner range as a current read after dependency locks.
@@ -84,6 +92,13 @@ final class PaymentWriteGuard
     public function hasParentPaymentHistory(Model $record, bool $currentRead = false): bool
     {
         if ($record instanceof User) {
+            $wallet = AccountWallet::where('user_id', $record->id);
+            if ($currentRead) {
+                $wallet->lockForUpdate();
+            }
+            if ($wallet->first(['id'])) {
+                return true;
+            }
             $query = Invoice::where('user_id', $record->id);
             if ($currentRead) {
                 $query->lockForUpdate();
@@ -200,9 +215,13 @@ final class PaymentWriteGuard
         }
 
         return DB::transaction(function () use ($ids, $write) {
-            (new InvoicePaymentDependencies)->lock($ids);
+            if (AccountPaymentLocks::active()) {
+                AccountPaymentLocks::currentInvoices($ids);
 
-            return $write();
+                return $write();
+            }
+
+            return (new AccountPaymentLocks)->during($ids, fn () => $write());
         });
     }
 
@@ -222,6 +241,42 @@ final class PaymentWriteGuard
 
     public function assertMutation(Model $record, bool $deleting = false): void
     {
+        if (!$deleting && AccountRecollection::allowsFee($record)) {
+            return;
+        }
+        if ($record instanceof InvoiceTransaction && ($record->settlement_origin === 'account_funding' || $record->getRawOriginal('settlement_origin') === 'account_funding')) {
+            if (!$deleting && !$record->exists) {
+                (new AccountWriteGuard)->authorizeInternalTransaction($record);
+
+                return;
+            }
+            throw new RuntimeException('Internal account payment identity and settlement history are immutable.');
+        }
+        if ($record instanceof InvoiceTransaction && $record->is_credit_transaction && $record->invoice_id) {
+            $invoice = Invoice::whereKey($record->invoice_id)->lockForUpdate()->firstOrFail();
+            User::whereKey($invoice->user_id)->lockForUpdate()->firstOrFail();
+            if (AccountWallet::where('user_id', $invoice->user_id)->where('currency_code', $invoice->currency_code)->lockForUpdate()->first() !== null) {
+                throw new RuntimeException('Managed account payments require a proven internal allocation rather than a legacy credit marker.');
+            }
+        }
+        if ($record instanceof InvoiceTransaction && !$deleting && $record->status === InvoiceTransactionStatus::Succeeded &&
+            (!$record->exists || $record->getRawOriginal('status') !== InvoiceTransactionStatus::Succeeded->value) && !$record->is_credit_transaction) {
+            $invoice = Invoice::whereKey($record->invoice_id)->lockForUpdate()->firstOrFail();
+            if ($invoice->items()->where('kind', 'credit_allocation')->exists()) {
+                User::whereKey($invoice->user_id)->lockForUpdate()->firstOrFail();
+                if (AccountWallet::where('user_id', $invoice->user_id)->where('currency_code', $invoice->currency_code)->lockForUpdate()->first() &&
+                    !$this->isSettlementWrite($record) && !$this->isOperationWrite($record)) {
+                    throw new RuntimeException('Managed deposits require a verified settlement or authorized manual receipt.');
+                }
+            }
+        }
+        $invoiceId = $record instanceof Invoice ? $record->id : $record->invoice_id;
+        if ($invoiceId && AccountFundingAllocation::where('invoice_id', $invoiceId)->lockForUpdate()->first() !== null &&
+            (($record instanceof InvoiceItem && ($deleting || $record->isDirty(['invoice_id', 'price', 'quantity', 'tax_amount', 'kind', 'gateway_id', 'reference_id', 'reference_type'])) &&
+                (($record->getRawOriginal('kind') ?? $record->kind) !== 'gateway_fee' || $record->kind !== 'gateway_fee')) ||
+            ($record instanceof Invoice && ($deleting || $record->isDirty(['user_id', 'currency_code', 'pricing_tax_rate', 'pricing_tax_name', 'pricing_tax_country', 'pricing_tax_inclusive']))))) {
+            throw new RuntimeException('Internally funded invoice pricing and financial identity are immutable.');
+        }
         $fields = match (true) {
             $record instanceof Invoice => ['user_id', 'currency_code', 'status', 'pricing_tax_rate', 'pricing_tax_name', 'pricing_tax_country', 'pricing_tax_inclusive'],
             $record instanceof InvoiceItem => ['invoice_id', 'price', 'quantity', 'tax_amount', 'kind', 'gateway_id', 'reference_id', 'reference_type'],
@@ -246,13 +301,27 @@ final class PaymentWriteGuard
                 InvoiceTransaction::where('invoice_id', $record->id)->whereNotNull('original_allocation')->lockForUpdate()->first(['id']) !== null)) {
             throw new RuntimeException('A managed payment invoice identity is immutable.');
         }
-        if (!$deleting && ($this->isOperationWrite($record) || $this->isSettlementWrite($record) || $this->isProcessorFeeWrite($record))) {
+        if (!$deleting && ($this->isOperationWrite($record) || $this->isSettlementWrite($record) || $this->isProcessorFeeWrite($record) || AccountFundingReversals::allowsInvoiceWrite($record))) {
             return;
         }
         $ids = $record instanceof Invoice ? ($record->exists ? [$record->id] : []) : [$record->invoice_id, $record->getRawOriginal('invoice_id')];
         foreach (array_unique(array_filter($ids)) as $id) {
             $this->assertEditable(Invoice::findOrFail($id));
         }
+    }
+
+    public function defersIncomingProcessing(Invoice $invoice): bool
+    {
+        return self::$operation !== null && in_array(self::$operation->kind, ['manual_receipt', 'provider_capture'], true) && $this->isOperationWrite($invoice);
+    }
+
+    public function incomingOperation(InvoiceTransaction $record): ?PaymentOperation
+    {
+        if (self::$operation && $this->isOperationWrite($record) && in_array(self::$operation->kind, ['manual_receipt', 'provider_capture'], true)) {
+            return self::$operation;
+        }
+
+        return PaymentOperation::where('result_transaction_id', $record->id)->whereIn('kind', ['manual_receipt', 'provider_capture'])->where('state', 'succeeded')->lockForUpdate()->first();
     }
 
     private function isSettlementWrite(Model $record): bool

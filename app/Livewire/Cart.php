@@ -7,10 +7,15 @@ use App\Classes\Price;
 use App\Exceptions\DisplayException;
 use App\Helpers\ExtensionHelper;
 use App\Jobs\Server\CreateJob;
+use App\Models\AccountWallet;
 use App\Models\Invoice;
 use App\Models\Order;
 use App\Models\Service;
 use App\Models\User;
+use App\Services\Accounts\AccountPaymentLocks;
+use App\Services\Accounts\InvoiceFunding;
+use App\Services\Accounts\WalletLedger;
+use App\Services\Accounts\WalletQuote;
 use App\Services\Billing\InvoicePricing;
 use App\Services\Billing\MoneyCalculator;
 use App\Services\Billing\PaymentSummary;
@@ -60,6 +65,12 @@ class Cart extends Component
     }
 
     #[Computed]
+    public function fundingQuote(): ?WalletQuote
+    {
+        return Auth::check() ? (new WalletLedger)->quote(Auth::user(), ClassesCart::get()->currency_code) : null;
+    }
+
+    #[Computed]
     public function baseSummary(): PaymentSummary
     {
         $gross = $tax = BigDecimal::of('0.00');
@@ -71,7 +82,8 @@ class Cart extends Component
         $paid = BigDecimal::of('0.00');
         if ($this->use_credits && config('settings.credits_enabled') && Auth::check()) {
             $credit = Auth::user()->credits()->where('currency_code', ClassesCart::get()->currency_code)->first();
-            $available = BigDecimal::of((string) ($credit?->getRawOriginal('amount') ?? '0.00'));
+            $quote = $this->fundingQuote();
+            $available = BigDecimal::of($quote?->fundingAvailable ?? (string) ($credit?->getRawOriginal('amount') ?? '0.00'));
             $paid = $available->isGreaterThan($gross) ? $gross : $available;
         }
         $net = $gross->minus($tax);
@@ -220,7 +232,7 @@ class Cart extends Component
 
             // Create the product invoice even when account credits cover it in full.
             $invoice = null;
-            if (BigDecimal::of($this->baseSummary()->productGross)->isPositive()) {
+            if ($cart->items->contains(fn ($item) => BigDecimal::of($item->price->total)->isPositive())) {
                 $invoice = new Invoice([
                     'user_id' => $user->id,
                     'due_at' => now()->addDays(7),
@@ -300,15 +312,22 @@ class Cart extends Component
             }
 
             if ($invoice && $this->use_credits && config('settings.credits_enabled')) {
-                Invoice::whereKey($invoice->id)->lockForUpdate()->firstOrFail();
-                $credit = $user->credits()->where('currency_code', $invoice->currency_code)->lockForUpdate()->first();
-                $due = BigDecimal::of((new InvoicePricing)->summary($invoice)->payable);
-                $available = BigDecimal::of((string) ($credit?->getRawOriginal('amount') ?? '0.00'));
-                $spend = $available->isGreaterThan($due) ? $due : $available;
-                if ($spend->isPositive()) {
-                    $credit->update(['amount' => (string) $available->minus($spend)->toScale(2)]);
-                    ExtensionHelper::addPayment($invoice, null, (string) $spend->toScale(2), isCreditTransaction: true);
-                }
+                (new AccountPaymentLocks)->during([$invoice->id], function () use ($invoice, $user, $cart) {
+                    if (AccountWallet::where('user_id', $user->id)->where('currency_code', $invoice->currency_code)->lockForUpdate()->first()) {
+                        (new InvoiceFunding)->fundAvailable($user, $invoice, 'cart-funding:' . $cart->ulid);
+
+                        return;
+                    }
+                    Invoice::whereKey($invoice->id)->lockForUpdate()->firstOrFail();
+                    $credit = $user->credits()->where('currency_code', $invoice->currency_code)->lockForUpdate()->first();
+                    $due = BigDecimal::of((new InvoicePricing)->summary($invoice)->payable);
+                    $available = BigDecimal::of((string) ($credit?->getRawOriginal('amount') ?? '0.00'));
+                    $spend = $available->isGreaterThan($due) ? $due : $available;
+                    if ($spend->isPositive()) {
+                        $credit->update(['amount' => (string) $available->minus($spend)->toScale(2)]);
+                        ExtensionHelper::addPayment($invoice, null, (string) $spend->toScale(2), isCreditTransaction: true);
+                    }
+                });
             }
 
             // Commit the transaction

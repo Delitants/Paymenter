@@ -656,7 +656,11 @@ class AdminGatewayAdaptersTest extends TestCase
         if (!$lost) {
             $result->assertVerified($operation);
             if ($euro) {
-                DB::transaction(fn () => $operation->recordProviderResult($result, $invoice->user));
+                try {
+                    DB::transaction(fn () => $operation->recordProviderResult($result, $invoice->user));
+                } catch (\RuntimeException $exception) {
+                    $this->fail('Unmanaged native refund outcome was routed through account posting: ' . $exception->getMessage());
+                }
                 $this->assertSame('succeeded', $adapter->reconcile($operation)->state);
                 $remaining = $adapter->prepare($invoice, $transaction->fresh(), 'provider_refund', '1234567', '84.88', 'USD');
                 $this->assertSame('25.00', $remaining['already_refunded']);

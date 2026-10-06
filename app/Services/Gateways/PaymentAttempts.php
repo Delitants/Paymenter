@@ -7,6 +7,8 @@ use App\Helpers\ExtensionHelper;
 use App\Models\Gateway;
 use App\Models\GatewayPaymentAttempt;
 use App\Models\Invoice;
+use App\Services\Accounts\AccountPaymentLocks;
+use App\Services\Accounts\AccountRecollection;
 use App\Services\Billing\InvoicePricing;
 use App\Services\Billing\PaymentSummary;
 use App\Services\BillmanagerMigration\MigrationHold;
@@ -58,55 +60,80 @@ final class PaymentAttempts
         Gate::authorize('update', $invoice);
 
         return DB::transaction(function () use ($gateway, $invoice, $merchantFingerprint, $expectedCurrency, $expectedReference) {
-            $gateway = Gateway::whereKey($gateway->id)->lockForUpdate()->firstOrFail();
-            $this->assertCollection($gateway);
-            $dependencies = new InvoicePaymentDependencies;
-            $locked = $dependencies->lock([$invoice->id]);
-            $invoice = $locked->firstWhere('id', $invoice->id);
-            $dependencies->assertCollectable($invoice, $locked);
-            Gate::authorize('update', $invoice);
-            $this->assertInvoice($invoice);
-            if ($expectedCurrency !== null && $invoice->currency_code !== $expectedCurrency) {
-                throw new RuntimeException('Invoice currency does not match the merchant currency');
-            }
-            $amount = $this->remaining($invoice);
-            if ($invoice->status !== 'pending' || !BigDecimal::of($amount)->isPositive()) {
-                throw new RuntimeException('Invoice is not payable');
-            }
-            $attempts = GatewayPaymentAttempt::where('invoice_id', $invoice->id)->whereIn('state', ['open', 'initializing', 'paid'])->orderBy('id')->lockForUpdate()->get();
-            if ($attempts->isNotEmpty()) {
-                if ($attempts->count() !== 1 || $attempts->first()->gateway_id !== $gateway->id || $attempts->first()->state === 'paid') {
+            $run = function () use ($gateway, $invoice, $merchantFingerprint, $expectedCurrency, $expectedReference) {
+                $gateway = Gateway::whereKey($gateway->id)->lockForUpdate()->firstOrFail();
+                $this->assertCollection($gateway);
+                $dependencies = new InvoicePaymentDependencies;
+                $locked = $dependencies->lock([$invoice->id]);
+                $invoice = $locked->firstWhere('id', $invoice->id);
+                $dependencies->assertCollectable($invoice, $locked);
+                Gate::authorize('update', $invoice);
+                $this->assertInvoice($invoice);
+                if ($expectedCurrency !== null && $invoice->currency_code !== $expectedCurrency) {
+                    throw new RuntimeException('Invoice currency does not match the merchant currency');
+                }
+                $amount = $this->remaining($invoice);
+                if ($invoice->status !== 'pending' || !BigDecimal::of($amount)->isPositive()) {
+                    throw new RuntimeException('Invoice is not payable');
+                }
+                $attempts = GatewayPaymentAttempt::where('invoice_id', $invoice->id)->whereIn('state', ['open', 'initializing', 'paid'])->orderBy('id')->lockForUpdate()->get();
+                $recollection = AccountRecollection::exists($invoice);
+                if ($recollection) {
+                    AccountRecollection::assertHistory($invoice);
+                }
+                $active = $attempts->reject(fn ($attempt) => $attempt->state === 'paid');
+                if ($attempts->where('state', 'paid')->isNotEmpty() && !$recollection) {
                     throw new RuntimeException('Existing payment attempt requires reconciliation before switching gateways.');
                 }
-                $attempt = $attempts->first();
-                if ($expectedReference !== null && $attempt->reference !== $expectedReference) {
+                if ($active->isNotEmpty()) {
+                    if ($active->count() !== 1 || $active->first()->gateway_id !== $gateway->id) {
+                        throw new RuntimeException('Existing payment attempt requires reconciliation before switching gateways.');
+                    }
+                    $attempt = $active->first();
+                    if ($expectedReference !== null && $attempt->reference !== $expectedReference) {
+                        throw new RuntimeException('Checkout reference is no longer active.');
+                    }
+
+                    return $this->validate($gateway, $attempt->reference, $merchantFingerprint, $amount, $invoice->currency_code);
+                }
+                if ($expectedReference !== null) {
                     throw new RuntimeException('Checkout reference is no longer active.');
                 }
+                $policy = new GatewayFeePolicy;
+                $policy->assertSupported($gateway, $invoice->currency_code);
+                $pricing = new InvoicePricing;
+                $pricing->freezeLegacy($invoice);
+                $create = function (PaymentSummary $quote) use ($gateway, $invoice, $merchantFingerprint, $pricing, $policy) {
+                    $invoice->refresh();
 
-                return $this->validate($gateway, $attempt->reference, $merchantFingerprint, $amount, $invoice->currency_code);
-            }
-            if ($expectedReference !== null) {
-                throw new RuntimeException('Checkout reference is no longer active.');
-            }
-            $policy = new GatewayFeePolicy;
-            $policy->assertSupported($gateway, $invoice->currency_code);
-            $pricing = new InvoicePricing;
-            $pricing->freezeLegacy($invoice);
-            $quote = $policy->quote($pricing->summary($invoice), $gateway);
-            $invoice->items()->where('kind', 'gateway_fee')->get()->each->delete();
-            if (BigDecimal::of($quote->gatewayFee)->isPositive()) {
-                $invoice->items()->create(['kind' => 'gateway_fee', 'description' => 'Payment gateway fee', 'gateway_id' => $gateway->id, 'price' => $quote->gatewayFee, 'quantity' => 1, 'tax_amount' => '0.00', 'reference_type' => null, 'reference_id' => null]);
-            }
-            $invoice->refresh();
+                    return GatewayPaymentAttempt::create([
+                        'gateway_id' => $gateway->id, 'invoice_id' => $invoice->id, 'user_id' => $invoice->user_id,
+                        'reference' => (string) random_int(100000000000000, 999999999999998),
+                        'merchant_fingerprint' => $merchantFingerprint, 'amount' => $quote->payable,
+                        'currency_code' => $invoice->currency_code, 'state' => 'open',
+                        'pricing_payload' => $this->pricingPayload($invoice, $quote, $policy->values($gateway, $invoice->currency_code)),
+                        'pricing_fingerprint' => $pricing->fingerprint($invoice),
+                    ]);
+                };
+                if ($recollection) {
+                    return AccountRecollection::withNewFee($invoice, $gateway, function ($quote, $attributes) use ($invoice, $create) {
+                        if (BigDecimal::of($attributes['price'])->isPositive()) {
+                            $invoice->items()->create($attributes);
+                        }
 
-            return GatewayPaymentAttempt::create([
-                'gateway_id' => $gateway->id, 'invoice_id' => $invoice->id, 'user_id' => $invoice->user_id,
-                'reference' => (string) random_int(100000000000000, 999999999999998),
-                'merchant_fingerprint' => $merchantFingerprint, 'amount' => $quote->payable,
-                'currency_code' => $invoice->currency_code, 'state' => 'open',
-                'pricing_payload' => $this->pricingPayload($invoice, $quote, $policy->values($gateway, $invoice->currency_code)),
-                'pricing_fingerprint' => $pricing->fingerprint($invoice),
-            ]);
+                        return $create($quote);
+                    });
+                }
+                $quote = $policy->quote($pricing->summary($invoice), $gateway);
+                $invoice->items()->where('kind', 'gateway_fee')->get()->each->delete();
+                if (BigDecimal::of($quote->gatewayFee)->isPositive()) {
+                    $invoice->items()->create(['kind' => 'gateway_fee', 'description' => 'Payment gateway fee', 'gateway_id' => $gateway->id, 'price' => $quote->gatewayFee, 'quantity' => 1, 'tax_amount' => '0.00', 'reference_type' => null, 'reference_id' => null]);
+                }
+
+                return $create($quote);
+            };
+
+            return AccountRecollection::exists($invoice) ? (new AccountPaymentLocks)->during([$invoice->id], fn () => $run(), [$gateway->id]) : $run();
         });
     }
 
@@ -125,7 +152,7 @@ final class PaymentAttempts
         return ['schema_version' => 1, 'currency' => $summary->currency, 'product_net' => $summary->productNet,
             'product_tax' => $summary->productTax, 'product_gross' => $summary->productGross,
             'unpaid_net' => $summary->unpaidNet, 'unpaid_tax' => $summary->unpaidTax,
-            'gateway_fee' => $summary->gatewayFee, 'total' => $summary->total, 'paid' => $summary->paid,
+            'gateway_fee' => (string) BigDecimal::of($summary->gatewayFee)->minus($summary->retainedGatewayFee)->toScale(2), 'retained_gateway_fee' => $summary->retainedGatewayFee, 'total' => $summary->total, 'paid' => $summary->paid,
             'payable' => $summary->payable, 'tax_context' => $pricing->context($invoice),
             'fee_policy' => $policy, 'lines' => $lines];
     }
@@ -142,21 +169,32 @@ final class PaymentAttempts
         if ($invoice->user_id !== $attempt->user_id || $invoice->currency_code !== $currency) {
             throw new RuntimeException('Invoice identity changed');
         }
-        if ($attempt->pricing_payload !== null) {
+        $recollection = AccountRecollection::exists($invoice);
+        if ($recollection) {
+            AccountRecollection::assertHistory($invoice);
+        }
+        if ($attempt->pricing_payload !== null && !($recollection && $attempt->state === 'paid')) {
             $payload = $attempt->pricing_payload;
             if (!$attempt->pricing_fingerprint || !hash_equals($attempt->pricing_fingerprint, (new InvoicePricing)->fingerprint($invoice))) {
                 throw new RuntimeException('Invoice pricing changed and requires reconciliation.');
             }
             $fees = $invoice->items()->where('kind', 'gateway_fee')->get();
-            $expectedFee = $payload['gateway_fee'];
-            if (BigDecimal::of($expectedFee)->isZero() ? $fees->isNotEmpty() :
-                ($fees->count() !== 1 || $fees->first()->price !== $expectedFee || $fees->first()->quantity !== 1 ||
-                    $fees->first()->tax_amount !== '0.00' || $fees->first()->gateway_id !== $gateway->id ||
-                    $fees->first()->reference_type !== null || $fees->first()->reference_id !== null)) {
-                throw new RuntimeException('Invoice fee identity changed and requires reconciliation.');
+            if ($recollection) {
+                $expectedFee = BigDecimal::of($payload['gateway_fee'])->plus($payload['retained_gateway_fee'] ?? '0.00');
+                if (!$expectedFee->isEqualTo(array_reduce($fees->all(), fn ($sum, $fee) => $sum->plus($fee->total()), BigDecimal::of('0.00')))) {
+                    throw new RuntimeException('Invoice fee identity changed and requires reconciliation.');
+                }
+            } else {
+                $expectedFee = $payload['gateway_fee'];
+                if (BigDecimal::of($expectedFee)->isZero() ? $fees->isNotEmpty() :
+                    ($fees->count() !== 1 || $fees->first()->price !== $expectedFee || $fees->first()->quantity !== 1 ||
+                        $fees->first()->tax_amount !== '0.00' || $fees->first()->gateway_id !== $gateway->id ||
+                        $fees->first()->reference_type !== null || $fees->first()->reference_id !== null)) {
+                    throw new RuntimeException('Invoice fee identity changed and requires reconciliation.');
+                }
             }
         }
-        if ($attempt->state === 'paid' && ($invoice->status !== 'paid' || !$attempt->provider_transaction_id || !$invoice->transactions()
+        if ($attempt->state === 'paid' && ((!$recollection && $invoice->status !== 'paid') || !$attempt->provider_transaction_id || !$invoice->transactions()
             ->where('gateway_id', $gateway->id)->where('transaction_id', 'gateway:' . $gateway->id . ':' . $attempt->provider_transaction_id)
             ->where('amount', $attempt->amount)->where('status', InvoiceTransactionStatus::Succeeded)
             ->where('is_credit_transaction', false)->exists())) {

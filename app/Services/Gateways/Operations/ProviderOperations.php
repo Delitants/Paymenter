@@ -3,17 +3,23 @@
 namespace App\Services\Gateways\Operations;
 
 use App\Enums\InvoiceTransactionStatus;
+use App\Models\AccountMovement;
+use App\Models\AccountReversalReservation;
 use App\Models\Gateway;
 use App\Models\GatewayPaymentAttempt;
 use App\Models\Invoice;
 use App\Models\InvoiceTransaction;
 use App\Models\PaymentOperation;
 use App\Models\User;
+use App\Services\Accounts\AccountPaymentLocks;
+use App\Services\Accounts\DepositLifecycle;
 use App\Services\Billing\InvoicePricing;
 use App\Services\Gateways\InvoicePaymentDependencies;
 use App\Services\Gateways\PaymentAttempts;
 use App\Services\Gateways\PaymentWriteGuard;
+use App\Services\Invoice\ProcessPaidInvoiceService;
 use Brick\Math\BigDecimal;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 use Throwable;
@@ -49,7 +55,7 @@ final class ProviderOperations
         $merchantFingerprint = $adapter->fingerprint();
         $context = $adapter->prepare($invoice, $transaction, 'provider_refund', $providerReference, $amount, $invoice->currency_code);
         $this->assertContext($context, $invoice, $gateway, $amount, $providerReference, $transaction);
-        $operation = DB::transaction(function () use ($actor, $transaction, $invoice, $gateway, $policy, $journal, $amount, $includeFee, $reason, $effectiveAt, $requestKey, $fingerprint, $identity, $context, $merchantFingerprint) {
+        $operation = $this->transaction($invoice->id, $gateway->id, $actor, function () use ($actor, $transaction, $invoice, $gateway, $policy, $journal, $amount, $includeFee, $reason, $effectiveAt, $requestKey, $fingerprint, $identity, $context, $merchantFingerprint) {
             [$invoice, $gateway] = $this->lock($invoice->id, $gateway->id);
             $policy->authorize($actor, 'refund', $invoice, $gateway);
             $transaction = InvoiceTransaction::whereKey($transaction->id)->lockForUpdate()->firstOrFail();
@@ -103,7 +109,7 @@ final class ProviderOperations
         $this->assertContext($context, $invoice, $gateway, $amount, $reference);
         $this->assertAttemptContext($context, $attempt);
 
-        return DB::transaction(function () use ($actor, $invoice, $gateway, $reference, $context, $fingerprint, $amount) {
+        return $this->transaction($invoice->id, $gateway->id, $actor, function () use ($actor, $invoice, $gateway, $reference, $context, $fingerprint, $amount) {
             [$current, $gateway] = $this->lock($invoice->id, $gateway->id, true);
             (new OperationPolicy)->authorize($actor, 'capture', $current, $gateway);
             if ($current->only(['user_id', 'currency_code']) !== $invoice->only(['user_id', 'currency_code'])) {
@@ -145,7 +151,7 @@ final class ProviderOperations
         $context = $adapter->prepare($invoice, null, 'provider_capture', $providerReference, $amount, $invoice->currency_code);
         $this->assertContext($context, $invoice, $gateway, $amount, $providerReference);
         $this->assertAttemptContext($context, $attempt);
-        $operation = DB::transaction(function () use ($actor, $invoice, $gateway, $policy, $journal, $providerReference, $reason, $effectiveAt, $requestKey, $fingerprint, $identity, $amount, $context, $merchantFingerprint) {
+        $operation = $this->transaction($invoice->id, $gateway->id, $actor, function () use ($actor, $invoice, $gateway, $policy, $journal, $providerReference, $reason, $effectiveAt, $requestKey, $fingerprint, $identity, $amount, $context, $merchantFingerprint) {
             [$invoice, $gateway] = $this->lock($invoice->id, $gateway->id, true);
             $policy->authorize($actor, 'capture', $invoice, $gateway);
             if ($invoice->only(['user_id', 'currency_code']) !== $identity) {
@@ -185,7 +191,7 @@ final class ProviderOperations
 
     private function execute(User $actor, PaymentOperation $operation): PaymentOperation
     {
-        $claimed = DB::transaction(function () use ($actor, $operation) {
+        $claimed = $this->transaction($operation->invoice_id, $operation->gateway_id, $actor, function () use ($actor, $operation) {
             [$invoice, $gateway] = $this->lock($operation->invoice_id, $operation->gateway_id);
             (new OperationPolicy)->authorize($actor, $operation->kind === 'provider_capture' ? 'capture' : 'refund', $invoice, $gateway);
             $stored = PaymentOperation::whereKey($operation->id)->lockForUpdate()->firstOrFail();
@@ -244,7 +250,7 @@ final class ProviderOperations
     private function readback(User $actor, PaymentOperation $operation, string $permission): PaymentOperation
     {
         $this->outsideTransaction();
-        $operation = DB::transaction(function () use ($actor, $operation, $permission) {
+        $operation = $this->transaction($operation->invoice_id, $operation->gateway_id, $actor, function () use ($actor, $operation, $permission) {
             [$invoice, $gateway] = $this->lock($operation->invoice_id, $operation->gateway_id);
             (new OperationPolicy)->authorize($actor, $permission, $invoice, $gateway);
             $stored = PaymentOperation::whereKey($operation->id)->lockForUpdate()->firstOrFail();
@@ -252,6 +258,9 @@ final class ProviderOperations
                 throw new RuntimeException('Only the original provider operation can be reconciled.');
             }
             $this->assertFrozenNative($stored, $invoice, $gateway);
+            if ($stored->kind === 'provider_refund' && in_array($stored->state, ['succeeded', 'failed'], true)) {
+                (new DepositLifecycle)->finalizeRefund($stored);
+            }
 
             return $stored;
         });
@@ -279,15 +288,26 @@ final class ProviderOperations
 
     private function finalize(User $actor, PaymentOperation $operation, OperationResult $result, string $permission, ?string $readbackFingerprint = null): PaymentOperation
     {
-        return DB::transaction(function () use ($actor, $operation, $result, $permission, $readbackFingerprint) {
+        $evidence = $operation->kind === 'provider_refund' && in_array($result->state, ['succeeded', 'failed'], true) && AccountReversalReservation::where('payment_operation_id', $operation->id)->exists();
+        if ($evidence) {
+            $result->assertVerified($operation);
+        }
+
+        return $this->transaction($operation->invoice_id, $operation->gateway_id, $actor, function () use ($actor, $operation, $result, $permission, $readbackFingerprint, $evidence) {
             [$invoice, $gateway] = $this->lock($operation->invoice_id, $operation->gateway_id);
-            (new OperationPolicy)->authorize($actor, $permission, $invoice, $gateway);
+            if ($evidence) {
+                (new OperationPolicy)->authorizeVerifiedResult($actor, $permission, $operation, $result);
+            } else {
+                (new OperationPolicy)->authorize($actor, $permission, $invoice, $gateway);
+            }
             $operation = PaymentOperation::whereKey($operation->id)->lockForUpdate()->firstOrFail();
             if (in_array($operation->state, ['succeeded', 'failed'], true)) {
                 return $operation;
             }
-            $this->assertFrozenNative($operation, $invoice, $gateway);
-            if ($readbackFingerprint !== null) {
+            if (!$evidence) {
+                $this->assertFrozenNative($operation, $invoice, $gateway);
+            }
+            if (!$evidence && $readbackFingerprint !== null) {
                 try {
                     $this->sameGateway($gateway, $readbackFingerprint);
                 } catch (Throwable) {
@@ -314,15 +334,26 @@ final class ProviderOperations
                     $attempt->update(['state' => 'paid', 'provider_transaction_id' => $result->providerReference]);
                 }
             }
-            $operation->recordProviderResult($result, $actor, $transaction);
+            $deferNativePosting = false;
+            if ($evidence) {
+                try {
+                    (new OperationPolicy)->authorize($actor, $permission, $invoice, $gateway);
+                } catch (AuthorizationException|RuntimeException) {
+                    $deferNativePosting = true;
+                }
+            }
+            $operation->recordProviderResult($result, $actor, $transaction, $deferNativePosting);
+            if ($transaction !== null && $operation->kind === 'provider_capture') {
+                (new ProcessPaidInvoiceService)->handleRecordedIncoming($operation);
+            }
 
             return $operation->fresh();
-        });
+        }, $evidence);
     }
 
     private function replay(User $actor, Invoice $invoice, Gateway $gateway, string $permission, string $requestKey, string $fingerprint): ?PaymentOperation
     {
-        return DB::transaction(function () use ($actor, $invoice, $gateway, $permission, $requestKey, $fingerprint) {
+        return $this->transaction($invoice->id, $gateway->id, $actor, function () use ($actor, $invoice, $gateway, $permission, $requestKey, $fingerprint) {
             [$storedInvoice, $gateway] = $this->lock($invoice->id, $gateway->id);
             (new OperationPolicy)->authorize($actor, $permission, $storedInvoice, $gateway);
             if ($storedInvoice->only(['user_id', 'currency_code']) !== $invoice->only(['user_id', 'currency_code'])) {
@@ -331,6 +362,23 @@ final class ProviderOperations
 
             return (new OperationJournal)->existing($requestKey, $fingerprint);
         });
+    }
+
+    private function transaction(int $invoiceId, int $gatewayId, User $actor, \Closure $callback, bool $evidence = false): mixed
+    {
+        // Immutable source-owner hints are discovered before any transaction.
+        $sourceOwners = AccountMovement::where('kind', 'deposit')->where('reference_id', $invoiceId)->pluck('user_id')->all();
+
+        return DB::transaction(function () use ($invoiceId, $gatewayId, $actor, $callback, $evidence, $sourceOwners) {
+            $locks = new AccountPaymentLocks;
+            $write = function () use ($actor, $callback, $sourceOwners) {
+                AccountPaymentLocks::lockFinancialUsers($actor, $sourceOwners);
+
+                return $callback();
+            };
+
+            return $evidence ? $locks->duringIncomingEvidence([$invoiceId], $write, [$gatewayId]) : $locks->during([$invoiceId], $write, [$gatewayId]);
+        }, 3);
     }
 
     private function lock(int $invoiceId, int $gatewayId, bool $collectable = false): array

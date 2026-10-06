@@ -15,5 +15,6 @@ final readonly class PaymentSummary
         public string $total,
         public string $paid,
         public string $payable,
+        public string $retainedGatewayFee = '0.00',
     ) {}
 }

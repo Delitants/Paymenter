@@ -5,6 +5,7 @@ namespace App\Services\Billing;
 use App\Classes\Settings;
 use App\Enums\InvoiceTransactionStatus;
 use App\Models\Invoice;
+use App\Services\Accounts\InternalReversalReceipt;
 use Brick\Math\BigDecimal;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
@@ -103,27 +104,41 @@ final class InvoicePricing
             }
         }
         $paid = BigDecimal::of('0.00');
+        $principalPaid = BigDecimal::of('0.00');
+        $retainedFees = BigDecimal::of('0.00');
         foreach ($transactions->get() as $transaction) {
             if ($transaction->status === InvoiceTransactionStatus::Succeeded && $transaction->settlement_state !== 'unsettled') {
-                $paid = $paid->plus($transaction->amount);
+                $effective = $transaction->settlement_origin === 'account_funding' ? InternalReversalReceipt::effectiveAmount($transaction) : $transaction->amount;
+                $paid = $paid->plus($effective);
+                $allocation = $transaction->original_allocation;
+                if (is_array($allocation) && array_keys($allocation) === ['net', 'tax', 'fee'] &&
+                    BigDecimal::of($allocation['net'])->plus($allocation['tax'])->plus($allocation['fee'])->isEqualTo($effective)) {
+                    $principalPaid = $principalPaid->plus($allocation['net'])->plus($allocation['tax']);
+                    $retainedFees = $retainedFees->plus($allocation['fee']);
+                } else {
+                    $principalPaid = $principalPaid->plus($effective);
+                }
             }
         }
         $productGross = $gross->minus($fee);
         $net = $productGross->minus($tax);
         $remaining = $gross->minus($paid);
         $remaining = $remaining->isNegative() || $invoice->status === 'paid' ? BigDecimal::of('0.00') : $remaining;
-        $unpaidProduct = $productGross->minus($paid);
+        $unpaidProduct = $productGross->minus($principalPaid);
         $unpaidProduct = $unpaidProduct->isNegative() ? BigDecimal::of('0.00') : $unpaidProduct;
         $unpaid = $remaining->isZero() ? ['net' => '0.00', 'tax' => '0.00'] : (new MoneyCalculator)->allocateRemaining((string) $net->toScale(2), (string) $tax->toScale(2), (string) $unpaidProduct->toScale(2));
 
-        return new PaymentSummary($invoice->currency_code, (string) $net->toScale(2), (string) $tax->toScale(2), (string) $productGross->toScale(2), $unpaid['net'], $unpaid['tax'], (string) $fee->toScale(2), (string) $gross->toScale(2), (string) $paid->toScale(2), (string) $remaining->toScale(2));
+        return new PaymentSummary($invoice->currency_code, (string) $net->toScale(2), (string) $tax->toScale(2), (string) $productGross->toScale(2), $unpaid['net'], $unpaid['tax'], (string) $fee->toScale(2), (string) $gross->toScale(2), (string) $paid->toScale(2), (string) $remaining->toScale(2), (string) $retainedFees->toScale(2));
     }
 
-    public function fingerprint(Invoice $invoice): string
+    public function fingerprint(Invoice $invoice, bool $includeGatewayFees = true): string
     {
         $lines = [];
         $legacyTaxes = $this->legacyTaxes($invoice);
         $items = $invoice->items()->orderBy('id');
+        if (!$includeGatewayFees) {
+            $items->where('kind', '!=', 'gateway_fee');
+        }
         if (DB::transactionLevel() > 0) {
             $items->lockForUpdate();
         }

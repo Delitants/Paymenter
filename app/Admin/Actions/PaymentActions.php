@@ -3,12 +3,16 @@
 namespace App\Admin\Actions;
 
 use App\Admin\Resources\InvoiceResource\Pages\EditInvoice;
+use App\Models\AccountFundingAllocation;
+use App\Models\AccountReversalReservation;
 use App\Models\Gateway;
 use App\Models\GatewayPaymentAttempt;
 use App\Models\Invoice;
 use App\Models\InvoiceTransaction;
 use App\Models\PaymentOperation;
 use App\Models\User;
+use App\Services\Accounts\AccountFundingReversals;
+use App\Services\Accounts\DepositLifecycle;
 use App\Services\Gateways\Operations\GatewayOperations;
 use App\Services\Gateways\Operations\ManualSettlements;
 use App\Services\Gateways\Operations\OperationPolicy;
@@ -79,7 +83,30 @@ final class PaymentActions
 
     public static function transactionActions(): array
     {
-        return [self::refund(false), self::refund(true), self::transition(false), self::transition(true)];
+        return [self::accountReversal(), self::refund(false), self::refund(true), self::transition(false), self::transition(true)];
+    }
+
+    private static function accountReversal(): Action
+    {
+        return Action::make('account_reverse')->label('Reverse account funding')
+            ->visible(function (InvoiceTransaction $record) {
+                $allocation = AccountFundingAllocation::where('invoice_transaction_id', $record->id)->first();
+
+                return auth()->user() && $allocation && (new AccountFundingReversals)->canReverse(auth()->user(), $allocation);
+            })
+            ->modalDescription('Restore all or part of this account payment to the original account. The reversed amount becomes payable again; service fulfillment is preserved.')
+            ->schema([TextInput::make('amount')->label('Amount to reverse')->required()->numeric()->minValue(0.01),
+                Textarea::make('reason')->required()->minLength(3)->maxLength(2000), Hidden::make('request_key')->default(fn () => (string) Str::uuid())])
+            ->action(function (InvoiceTransaction $record, array $data, Action $action) {
+                try {
+                    $allocation = AccountFundingAllocation::where('invoice_transaction_id', $record->id)->sole();
+                    (new AccountFundingReversals)->reverse(auth()->user(), $allocation, (string) $data['amount'], $data['reason'], $data['request_key']);
+                } catch (RuntimeException|\DomainException $e) {
+                    self::formError($action, new RuntimeException($e->getMessage()));
+                }
+                $action->getLivewire()->dispatch('admin-payment-operation-completed', invoiceId: $record->invoice_id)->to(EditInvoice::class);
+                Notification::make()->title('Account funding reversed')->body($data['amount'] . ' ' . $allocation->currency_code . ' restored to the original account.')->success()->send();
+            });
     }
 
     private static function refund(bool $provider): Action
@@ -230,10 +257,23 @@ final class PaymentActions
 
     public static function reconcile(): Action
     {
-        return Action::make('reconcile')->label('Reconcile by provider readback')->requiresConfirmation()
-            ->modalDescription('Read the existing request at the provider. This never retries a refund or capture write.')
-            ->visible(fn (PaymentOperation $record) => in_array($record->kind, ['provider_refund', 'provider_capture'], true) && in_array($record->state, ['processing', 'pending', 'uncertain'], true) && self::allowed('reconcile', $record->invoice, $record->gateway))
-            ->action(fn (PaymentOperation $record, Action $action) => self::perform(fn () => (new ProviderOperations)->reconcile(auth()->user(), $record), $action));
+        return Action::make('reconcile')->label(fn (PaymentOperation $record) => self::nativePostingRequired($record) ? 'Complete account posting' : 'Reconcile by provider readback')->requiresConfirmation()
+            ->modalDescription(fn (PaymentOperation $record) => self::nativePostingRequired($record) ? 'Apply the verified original refund to the account after its posting conflict has been resolved. This uses the stored result and makes no provider request.' : 'Read the existing request at the provider. This never retries a refund or capture write.')
+            ->visible(fn (PaymentOperation $record) => (in_array($record->kind, ['provider_refund', 'provider_capture'], true) || self::nativePostingRequired($record)) && (in_array($record->state, ['processing', 'pending', 'uncertain'], true) || self::nativePostingRequired($record)) && self::allowed('reconcile', $record->invoice, $record->gateway))
+            ->action(fn (PaymentOperation $record, Action $action) => self::perform(function () use ($record) {
+                if (self::nativePostingRequired($record)) {
+                    (new DepositLifecycle)->finalizeRefund($record);
+
+                    return $record->fresh();
+                }
+
+                return (new ProviderOperations)->reconcile(auth()->user(), $record);
+            }, $action));
+    }
+
+    private static function nativePostingRequired(PaymentOperation $record): bool
+    {
+        return in_array($record->kind, ['provider_refund', 'external_refund'], true) && in_array($record->state, ['succeeded', 'failed'], true) && AccountReversalReservation::where('payment_operation_id', $record->id)->where('state', 'reserved')->where('posting_required', true)->exists();
     }
 
     public static function columns(): array

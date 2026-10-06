@@ -4,6 +4,7 @@ namespace App\Jobs\Server;
 
 use App\Helpers\ExtensionHelper;
 use App\Models\Service;
+use App\Services\Accounts\NativeDowngradeReceipt;
 use App\Services\BillmanagerMigration\MigrationHold;
 use Exception;
 use Illuminate\Bus\Queueable;
@@ -23,13 +24,18 @@ class UpgradeJob implements ShouldQueue
     /**
      * Create a new job instance.
      */
-    public function __construct(public Service $service, public $sendNotification = true) {}
+    public function __construct(public Service $service, public $sendNotification = true, public ?int $upgradeId = null) {}
 
     /**
      * Execute the job.
      */
     public function handle(): void
     {
+        if ($this->upgradeId !== null) {
+            NativeDowngradeReceipt::fulfill($this->upgradeId);
+
+            return;
+        }
         MigrationHold::assertAllowed($this->service, 'UpgradeJob');
         // $data is the data that will be used to send the email, data is coming from the extension itself
         try {

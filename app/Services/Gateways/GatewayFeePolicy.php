@@ -47,10 +47,11 @@ final class GatewayFeePolicy
             return $base;
         }
         $fee = $values['enabled'] ? (new MoneyCalculator)->fee($base->unpaidNet, $values['percent'], $values['fixed']) : '0.00';
-        $total = BigDecimal::of($base->productGross)->plus($fee);
+        $fees = BigDecimal::of($base->retainedGatewayFee)->plus($fee);
+        $total = BigDecimal::of($base->productGross)->plus($fees);
         $payable = $total->minus($base->paid);
 
-        return new PaymentSummary($base->currency, $base->productNet, $base->productTax, $base->productGross, $base->unpaidNet, $base->unpaidTax, $fee, (string) $total->toScale(2), $base->paid, $payable->isNegative() ? '0.00' : (string) $payable->toScale(2));
+        return new PaymentSummary($base->currency, $base->productNet, $base->productTax, $base->productGross, $base->unpaidNet, $base->unpaidTax, (string) $fees->toScale(2), (string) $total->toScale(2), $base->paid, $payable->isNegative() ? '0.00' : (string) $payable->toScale(2), $base->retainedGatewayFee);
     }
 
     public function assertSupported(Gateway $gateway, string $currency): void

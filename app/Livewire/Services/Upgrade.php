@@ -2,16 +2,20 @@
 
 namespace App\Livewire\Services;
 
+use App\Classes\Price;
 use App\Events\Invoice\Created as InvoiceCreated;
 use App\Livewire\Component;
+use App\Models\AccountWallet;
 use App\Models\Invoice;
 use App\Models\Product;
 use App\Models\Service;
 use App\Models\ServiceConfig;
 use App\Models\ServiceUpgrade;
 use App\Models\User;
+use App\Services\Accounts\NativeDowngradeReceipt;
 use App\Services\BillmanagerMigration\MigrationHold;
 use App\Services\ServiceUpgrade\ServiceUpgradeService;
+use Brick\Math\BigDecimal;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Attributes\Computed;
@@ -74,7 +78,7 @@ class Upgrade extends Component
 
         $upgrade->setRelation('configs', $configs);
 
-        return $upgrade->calculatePrice();
+        return $this->managed() ? new Price(['price' => NativeDowngradeReceipt::proratedAmount($upgrade), 'currency' => $this->service->currency]) : $upgrade->calculatePrice();
     }
 
     // When upgrade changes, update the upgradeProduct
@@ -177,12 +181,13 @@ class Upgrade extends Component
                 ]);
             }
         }
-        $price = $upgrade->calculatePrice();
+        $managed = $this->managed();
+        $price = $managed ? new Price(['price' => NativeDowngradeReceipt::proratedAmount($upgrade), 'currency' => $this->service->currency]) : $upgrade->calculatePrice();
 
-        if ($price->price <= 0) {
+        if (BigDecimal::of($price->price_decimal)->isLessThanOrEqualTo('0')) {
             (new ServiceUpgradeService)->handle($upgrade);
 
-            if (!config('settings.credits_on_downgrade', true)) {
+            if ($managed || !config('settings.credits_on_downgrade', true)) {
                 $this->notify('The upgrade has been completed.', 'success', true);
 
                 return $this->redirect(route('services.show', $this->service), true);
@@ -225,7 +230,7 @@ class Upgrade extends Component
 
         $invoice->items()->create([
             'description' => 'Upgrade ' . $this->service->product->name . ' to ' . $this->upgradeProduct->name,
-            'price' => $price->price,
+            'price' => $price->price_decimal,
             'quantity' => 1,
             'reference_id' => $upgrade->id,
             'reference_type' => ServiceUpgrade::class,
@@ -236,6 +241,11 @@ class Upgrade extends Component
         $this->notify('The upgrade has been added to your cart. Please complete the payment to proceed.', 'success', true);
 
         return $this->redirect(route('invoices.show', $invoice));
+    }
+
+    private function managed(): bool
+    {
+        return AccountWallet::where('user_id', $this->service->user_id)->where('currency_code', $this->service->currency_code)->exists();
     }
 
     public function render()

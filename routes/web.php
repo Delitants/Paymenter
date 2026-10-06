@@ -59,6 +59,7 @@ Route::group(['middleware' => ['web', 'auth']], function () {
     Route::get('/account', Client\Account::class)->name('account');
     Route::get('/account/security', Client\Security::class)->name('account.security');
     Route::get('/account/credits', Client\Credits::class)->name('account.credits');
+    Route::get('/account/funding/{owner?}', Client\AccountFundingStatement::class)->whereNumber('owner')->name('account.funding');
     Route::get('/account/payment-methods', Client\PaymentMethods::class)->name('account.payment-methods');
     Route::get('/account/notifications', Client\Notifications::class)->name('account.notifications');
 

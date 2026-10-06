@@ -49,7 +49,8 @@ try {
     }
     echo "changed\n";
 } catch (RuntimeException $e) {
-    if (!str_contains(strtolower($e->getMessage()), 'reconciliation')) {
+    if (!str_contains(strtolower($e->getMessage()), 'reconciliation') &&
+        $e->getMessage() !== 'Account payment dependency graph expanded; restart before locking a wallet.') {
         throw $e;
     }
     echo "blocked\n";

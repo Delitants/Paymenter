@@ -1,3 +1,4 @@
+@can('update', $invoice)
 <div>
     @if($this->claimedAttempt)
     <p class="mb-6 p-4 border border-neutral rounded-lg text-sm" role="status">{{ __('Continue with the original payment method. Changing gateways or applying credits requires reconciliation.') }}</p>
@@ -9,20 +10,22 @@
     ->where('amount', '>', 0)
     ->first();
     $itemHasCredit = $invoice->items()->where('reference_type', App\Models\Credit::class)->exists();
+    $fundingQuote = $this->fundingQuote;
+    $availableFunding = Auth::id() === $invoice->user_id ? ($fundingQuote?->fundingAvailable ?? (string) ($credit?->amount ?? '0.00')) : '0.00';
     @endphp
-    @if($credit && !$itemHasCredit && !$this->claimedAttempt)
+    @if(config('settings.credits_enabled') && \Brick\Math\BigDecimal::of($availableFunding)->isPositive() && !$itemHasCredit && !$this->claimedAttempt)
     <div class="mb-6">
-        <h3 class="text-lg font-semibold mb-2">{{ __('invoices.pay_with_credits') }}</h3>
-        <div wire:click="$set('selectedMethod', 'credit')"
+        <h3 class="text-lg font-semibold mb-2">{{ $fundingQuote ? __('Account funding') : __('invoices.pay_with_credits') }}</h3>
+        <button type="button" aria-pressed="{{ $selectedMethod === 'credit' ? 'true' : 'false' }}" wire:click="$set('selectedMethod', 'credit')"
             wire:loading.class="opacity-50 pointer-events-none" wire:target="selectedMethod,processPayment"
-            class="flex items-center justify-between p-4 bg-background-secondary border border-neutral rounded-lg cursor-pointer transition-all {{ $selectedMethod === 'credit' ? 'border-primary ring-2 ring-primary' : 'border-neutral hover:border-neutral-focus' }}">
+            class="w-full text-left min-h-11 flex items-center justify-between p-4 bg-background-secondary border border-neutral rounded-md cursor-pointer transition-all {{ $selectedMethod === 'credit' ? 'border-primary ring-2 ring-primary' : 'border-neutral hover:border-neutral-focus' }}">
             <div class="flex items-center space-x-4">
                 <div class="text-xl">
                     <x-ri-copper-coin-line class="size-6 text-primary" />
                 </div>
                 <div>
-                    <p class="font-medium">{{ __('invoices.account_credits') }}</p>
-                    <p class="text-sm text-base/50">{{ __('invoices.available_credits', ['amount' => $credit->formattedAmount]) }}</p>
+                    <p class="font-medium">{{ $fundingQuote ? __('Cash and borrowing allowance') : __('invoices.account_credits') }}</p>
+                    <p class="text-sm text-base/50">{{ __('invoices.available_credits', ['amount' => $invoice->formattedTotal->format($availableFunding)]) }}</p>
                 </div>
             </div>
             <div
@@ -30,7 +33,7 @@
                 @if($selectedMethod === 'credit')
                 <x-ri-check-line class="size-4 text-white" /> @endif
             </div>
-        </div>
+        </button>
     </div>
     @endif
 
@@ -39,8 +42,8 @@
         <h3 class="text-lg font-semibold mb-2">{{ __('account.saved_payment_methods') }}</h3>
         <div class="space-y-3">
             @foreach($this->savedPaymentMethods as $method)
-            <div wire:click="$set('selectedMethod', '{{ $method->ulid }}')"
-                class="flex items-center justify-between p-4 bg-background-secondary border rounded-lg cursor-pointer transition-all
+            <button type="button" aria-pressed="{{ $selectedMethod === $method->ulid ? 'true' : 'false' }}" wire:click="$set('selectedMethod', '{{ $method->ulid }}')"
+                class="w-full text-left min-h-11 flex items-center justify-between p-4 bg-background-secondary border rounded-lg cursor-pointer transition-all
                     {{ $selectedMethod === $method->ulid ? 'border-primary ring-2 ring-primary' : 'border-neutral hover:border-neutral-focus' }}"
                     wire:loading.class="opacity-50 pointer-events-none" wire:target="selectedMethod,processPayment">
                 <div class="flex items-center gap-4">
@@ -89,7 +92,7 @@
                     @if($selectedMethod === $method->ulid)
                     <x-ri-check-line class="size-4 text-white" /> @endif
                 </div>
-            </div>
+            </button>
             @endforeach
             <a href="{{ route('account.payment-methods') }}" wire:navigate>
                 <x-button.secondary>
@@ -113,8 +116,8 @@
         </button>
         <div class="space-y-3 mt-3" x-show="showOneTime" x-transition>
             @foreach($this->gateways as $method)
-            <div wire:click="$set('selectedMethod', 'gateway-{{ $method->id }}')"
-                class="flex items-center justify-between p-4 border rounded-lg cursor-pointer transition-all {{ $selectedMethod === 'gateway-' . $method->id ? 'border-primary ring-2 ring-primary' : 'border-neutral hover:border-neutral-focus' }}"
+            <button type="button" aria-pressed="{{ $selectedMethod === 'gateway-' . $method->id ? 'true' : 'false' }}" wire:click="$set('selectedMethod', 'gateway-{{ $method->id }}')"
+                class="w-full text-left min-h-11 flex items-center justify-between p-4 border rounded-lg cursor-pointer transition-all {{ $selectedMethod === 'gateway-' . $method->id ? 'border-primary ring-2 ring-primary' : 'border-neutral hover:border-neutral-focus' }}"
                 wire:loading.class="opacity-50 pointer-events-none" wire:target="selectedMethod,processPayment">
                 <div class="flex items-center space-x-4">
                     <div
@@ -136,7 +139,7 @@
                     @if($selectedMethod === 'gateway-' . $method->id)
                     <x-ri-check-line class="size-4 text-white" /> @endif
                 </div>
-            </div>
+            </button>
             @endforeach
         </div>
     </div>
@@ -148,18 +151,20 @@
     </div>
     @endif
 
+    @unless($inlinePaymentOptions ?? false)
     <div class="mt-6 p-4 border border-neutral rounded-lg">
         <x-billing.payment-summary :summary="$this->paymentSummary" :formatter="$invoice->formattedTotal" :tax-name="$invoice->tax?->name ?? 'Tax'" :tax-rate="(string) ($invoice->tax?->rate ?? '0')" />
     </div>
+    @endunless
     <div class="mt-6">
-        <x-button.primary class="w-full" wire:click="processPayment" wire:loading.attr="disabled"
+        <x-button.primary class="w-full min-h-11" wire:click="processPayment" wire:loading.attr="disabled"
             :disabled="!$selectedMethod || ($this->claimedAttempt && $selectedMethod !== 'gateway-' . $this->claimedAttempt->gateway_id)">
             <x-loading target="processPayment" />
             <div wire:loading.remove wire:target="processPayment">
-                @if($selectedMethod === 'credit' && $credit && $credit->amount >= $invoice->formattedRemaining->total)
+                @if($selectedMethod === 'credit' && \Brick\Math\BigDecimal::of($availableFunding)->isGreaterThanOrEqualTo($this->paymentSummary->payable))
                 {{ __('invoices.apply_credits_and_pay') }}
-                @elseif($selectedMethod === 'credit' && $credit)
-                {{ __('invoices.apply_credit_and_continue', ['amount' => $credit->formattedAmount]) }}
+                @elseif($selectedMethod === 'credit')
+                {{ __('invoices.apply_credit_and_continue', ['amount' => $invoice->formattedTotal->format($availableFunding)]) }}
                 @else
                 {{ __('Pay :amount', ['amount' => $invoice->formattedTotal->format($this->paymentSummary->payable)]) }}
                 @endif
@@ -167,3 +172,5 @@
         </x-button.primary>
     </div>
 </div>
+
+@endcan

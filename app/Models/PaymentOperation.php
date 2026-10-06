@@ -3,9 +3,12 @@
 namespace App\Models;
 
 use App\Enums\InvoiceTransactionStatus;
+use App\Services\Accounts\DepositLifecycle;
+use App\Services\Accounts\DepositReversals;
 use App\Services\Gateways\Operations\OperationPolicy;
 use App\Services\Gateways\Operations\OperationResult;
 use Brick\Math\BigDecimal;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 use OwenIt\Auditing\Contracts\Auditable;
 use RuntimeException;
@@ -38,6 +41,75 @@ class PaymentOperation extends Model implements Auditable
         static::deleting(fn () => throw new RuntimeException('Payment operation history cannot be deleted.'));
     }
 
+    private static ?int $depositOutcomeScope = null;
+
+    public static function hasClaimScope(self $operation): bool
+    {
+        return DB::transactionLevel() > 0 && self::$claimRequest === $operation->request_key;
+    }
+
+    public static function hasDepositOutcomeScope(int $id): bool
+    {
+        return DB::transactionLevel() > 0 && self::$depositOutcomeScope === $id;
+    }
+
+    protected function performInsert(Builder $query)
+    {
+        if (!self::hasClaimScope($this) || $this->state !== 'queued') {
+            throw new RuntimeException('Operation creation requires its original native claim.');
+        }
+
+        return parent::performInsert($query);
+    }
+
+    protected function performUpdate(Builder $query)
+    {
+        if (self::$outcomeWrite !== $this->id || array_diff(array_keys($this->getDirty()), ['state', 'provider_reference', 'result_transaction_id', 'outcome_code', 'outcome_evidence', 'updated_at'])) {
+            throw new RuntimeException('Payment operation history requires a bounded native outcome.');
+        }
+
+        return parent::performUpdate($query);
+    }
+
+    protected function performDeleteOnModel()
+    {
+        throw new RuntimeException('Payment operation history cannot be deleted.');
+    }
+
+    protected function incrementOrDecrement($column, $amount, $extra, $method)
+    {
+        throw new RuntimeException('Payment operation arithmetic is not a native outcome.');
+    }
+
+    private function postDepositOutcome(bool $deferNativePosting = false): void
+    {
+        if (!in_array($this->kind, ['provider_refund', 'external_refund', 'manual_unsettle', 'manual_restore'], true)) {
+            return;
+        }
+        if (self::$depositOutcomeScope !== null) {
+            throw new RuntimeException('Nested deposit outcomes are refused.');
+        }
+        self::$depositOutcomeScope = $this->id;
+        try {
+            if ($deferNativePosting) {
+                if ($this->kind !== 'provider_refund' || !in_array($this->state, ['succeeded', 'failed'], true)) {
+                    throw new RuntimeException('Only verified managed refund truth can defer native posting.');
+                }
+                DepositReversals::markIssue($this);
+
+                return;
+            }
+            $lifecycle = new DepositLifecycle;
+            if (in_array($this->kind, ['manual_unsettle', 'manual_restore'], true)) {
+                $lifecycle->transitionManualDeposit($this);
+            } else {
+                $lifecycle->finalizeRefund($this);
+            }
+        } finally {
+            self::$depositOutcomeScope = null;
+        }
+    }
+
     private static ?int $outcomeWrite = null;
 
     private static ?string $claimRequest = null;
@@ -62,7 +134,12 @@ class PaymentOperation extends Model implements Auditable
         $policy->request($attributes['request_key'], $attributes['reason'], $attributes['effective_at']);
         self::$claimRequest = $attributes['request_key'];
         try {
-            return self::create($attributes);
+            $operation = self::create($attributes);
+            if (in_array($operation->kind, ['provider_refund', 'external_refund'], true)) {
+                (new DepositLifecycle)->reserveRefund($operation);
+            }
+
+            return $operation;
         } finally {
             self::$claimRequest = null;
         }
@@ -106,9 +183,10 @@ class PaymentOperation extends Model implements Auditable
             throw new RuntimeException('Manual outcome does not match the original operation.');
         }
         $this->writeOutcome(['state' => 'succeeded', 'outcome_code' => $outcomeCode, 'result_transaction_id' => $transaction?->id]);
+        $this->postDepositOutcome();
     }
 
-    public function recordProviderResult(OperationResult $result, User $actor, ?InvoiceTransaction $transaction = null): void
+    public function recordProviderResult(OperationResult $result, User $actor, ?InvoiceTransaction $transaction = null, bool $deferNativePosting = false): void
     {
         $this->assertLockedProvider();
         if (!in_array($this->state, ['processing', 'pending', 'uncertain'], true)) {
@@ -129,6 +207,7 @@ class PaymentOperation extends Model implements Auditable
             'actor_id' => $actor->id, 'recorded_at' => now()->utc()->format('Y-m-d H:i:s'), 'evidence' => $result->safeEvidence()];
         $this->writeOutcome(['state' => $result->state, 'provider_reference' => $result->providerReference ?? $this->provider_reference,
             'outcome_code' => $result->outcomeCode, 'outcome_evidence' => $history, 'result_transaction_id' => $transaction?->id ?? $this->result_transaction_id]);
+        $this->postDepositOutcome($deferNativePosting);
     }
 
     private function assertLockedProvider(): void

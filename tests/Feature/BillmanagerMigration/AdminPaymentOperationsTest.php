@@ -24,11 +24,13 @@ use App\Services\Gateways\Operations\ManualSettlements;
 use App\Services\Gateways\PaymentAttempts;
 use App\Services\Invoice\ProcessPaidInvoiceService;
 use Illuminate\Auth\Access\AuthorizationException;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Concerns\UsesCommittedDatabase;
@@ -299,10 +301,27 @@ class AdminPaymentOperationsTest extends TestCase
         // This fixture has no operations; rollback recreates only the new empty schema.
         $migration = require database_path('migrations/2026_10_01_000001_create_admin_payment_operations.php');
         $proofs = require database_path('migrations/2026_10_01_000002_create_gateway_operation_proofs.php');
-        $proofs->down(); // Roll back the empty dependent FK schema first.
-        $migration->down();
-        $migration->up();
-        $proofs->up();
+        $accountFunding = require database_path('migrations/2026_10_06_000001_create_account_funding_tables.php');
+        $incomingReceipts = require database_path('migrations/2026_10_06_000002_create_account_incoming_receipts.php');
+        $reservedPosting = require database_path('migrations/2026_10_06_000003_add_reserved_posting_state.php');
+        $cycleCompleted = false;
+        try {
+            $reservedPosting->down();
+            $incomingReceipts->down();
+            $accountFunding->down(); // This fixture has no managed accounts or receipts.
+            $proofs->down(); // Roll back the empty dependent FK schema first.
+            $migration->down();
+            $migration->up();
+            $proofs->up();
+            $accountFunding->up();
+            $incomingReceipts->up();
+            $reservedPosting->up();
+            $cycleCompleted = true;
+        } catch (QueryException $exception) {
+            $this->assertSame(1451, $exception->errorInfo[1], 'Unexpected schema failure in legacy-paid migration fixture');
+        }
+        $this->assertTrue($cycleCompleted, 'Legacy-paid fixture must reverse all empty dependent schemas before recreating payment operations');
+        $this->assertTrue(Schema::hasColumn('account_reversal_reservations', 'posting_required'), 'Legacy-paid schema cycle must restore the current reserved-posting evidence');
         $this->assertSame('legacy', InvoicePaidProcessing::findOrFail($invoice->id)->origin);
         $this->assertFalse((new ProcessPaidInvoiceService)->handle($invoice->fresh()));
         $this->assertSame('100.00', (string) $wallet->fresh()->getRawOriginal('amount'));

@@ -1,5 +1,6 @@
-<div class="container mt-14">
-    <div class="flex flex-col lg:grid lg:grid-cols-[minmax(0,1fr)_340px] gap-8">
+<div class="container mt-8 mb-16 max-w-6xl">
+    <h1 class="text-3xl font-bold mb-7">{{ __('Cart and checkout') }}</h1>
+    <div class="flex flex-col lg:grid lg:grid-cols-[minmax(0,1fr)_320px] gap-8">
         <div class="flex flex-col min-w-0 gap-4">
             @if (Cart::items()->count() === 0)
             <h1 class="text-2xl font-semibold">
@@ -62,24 +63,24 @@
                         <div class="flex flex-row gap-1 items-center mr-4">
                             <x-button.secondary
                                 wire:click="updateQuantity({{ $item->id }}, {{ $item->quantity - 1 }})"
-                                class="h-full !w-fit">
+                                class="h-full min-h-11 !w-fit">
                                 -
                             </x-button.secondary>
                             <x-form.input class="h-10 text-center" disabled divClass="!mt-0 !w-14" value="{{ $item->quantity }}" name="quantity" />
                             <x-button.secondary
                                 wire:click="updateQuantity({{ $item->id }}, {{ $item->quantity + 1 }});"
-                                class="h-full !w-fit">
+                                class="h-full min-h-11 !w-fit">
                                 +
                             </x-button.secondary>
                         </div>
                         @endif
                         <a href="{{ route('products.checkout', [$item->product->category, $item->product, 'edit' => $item->id]) }}"
                             wire:navigate>
-                            <x-button.primary class="h-fit w-fit">
+                            <x-button.primary class="h-fit min-h-11 w-fit">
                                 {{ __('product.edit') }}
                             </x-button.primary>
                         </a>
-                        <x-button.danger wire:click="removeProduct({{ $item->id }})" class="h-fit !w-fit">
+                        <x-button.danger wire:click="removeProduct({{ $item->id }})" class="h-fit min-h-11 !w-fit">
                             <x-loading target="removeProduct({{ $item->id }})" />
                             <div wire:loading.remove wire:target="removeProduct({{ $item->id }})">
                                 {{ __('product.remove') }}
@@ -89,6 +90,12 @@
                 </div>
             </div>
             @endforeach
+            @if($this->fundingQuote)
+            <div class="bg-background-secondary p-6 rounded-xl border border-neutral">
+                <x-billing.account-position :quote="$this->fundingQuote" :currency="Cart::get()->currency_code" />
+                <a class="inline-flex items-center min-h-11 text-primary underline text-sm mt-3" wire:navigate href="{{ route('account.funding', ['currency' => Cart::get()->currency_code]) }}">{{ __('View account statement') }}</a>
+            </div>
+            @endif
         </div>
         <div class="flex flex-col gap-4">
             @if (Cart::items()->count() > 0)
@@ -99,7 +106,7 @@
                 <div class="font-semibold flex items-end gap-2">
                     @if(!$coupon)
                     <x-form.input wire:model="coupon" name="coupon" label="Coupon" />
-                    <x-button.primary wire:click="applyCoupon" class="h-fit !w-fit mb-0.5" wire:loading.attr="disabled">
+                    <x-button.primary wire:click="applyCoupon" class="h-fit min-h-11 !w-fit mb-0.5" wire:loading.attr="disabled">
                         <x-loading target="applyCoupon" />
                         <div wire:loading.remove wire:target="applyCoupon">
                             {{ __('product.apply') }}
@@ -108,7 +115,7 @@
                     @else
                     <div class="flex justify-between items-center w-full">
                         <h4 class="text-center w-full">{{ $coupon->code }}</h4>
-                        <x-button.secondary wire:click="removeCoupon" class="h-fit !w-fit">
+                        <x-button.secondary wire:click="removeCoupon" class="h-fit min-h-11 !w-fit">
                             {{ __('product.remove') }}
                         </x-button.secondary>
                     </div>
@@ -124,11 +131,20 @@
                     @else
                     <p class="text-sm text-base/70">{{ __('No payment method is currently available.') }}</p>
                     @endif
-                    @if(Auth::check() && config('settings.credits_enabled') && Auth::user()->credits()->where('currency_code', Cart::get()->currency_code)->where('amount', '>', 0)->exists())
-                    <x-form.checkbox name="use_credits" wire:model.live="use_credits">{{ __('Use available account credits') }}</x-form.checkbox>
+                    @if(Auth::check() && config('settings.credits_enabled') && ($this->fundingQuote ? \Brick\Math\BigDecimal::of($this->fundingQuote->fundingAvailable)->isPositive() : Auth::user()->credits()->where('currency_code', Cart::get()->currency_code)->where('amount', '>', 0)->exists()))
+                    <x-form.checkbox name="use_credits" divClass="min-h-11 [&_label]:min-h-11 [&_label]:inline-flex [&_label]:items-center" wire:model.live="use_credits">{{ $this->fundingQuote ? __('Use available account funds') : __('Use available account credits') }}</x-form.checkbox>
+                    @endif
+                    @if($this->fundingQuote && \Brick\Math\BigDecimal::of($this->baseSummary()->paid)->isPositive())
+                    @php
+                        $split = \App\Services\Accounts\FundingSplit::forPayment($this->fundingQuote->balance, $this->baseSummary()->paid);
+                    @endphp
+                    <dl class="space-y-2 text-sm text-base/70 border border-neutral rounded-md p-3">
+                        <div class="flex justify-between gap-4"><dt>{{ __('Cash applied') }}</dt><dd class="whitespace-nowrap tabular-nums">{{ $split->cash }} {{ Cart::get()->currency_code }}</dd></div>
+                        <div class="flex justify-between gap-4"><dt>{{ __('Borrowing applied') }}</dt><dd class="whitespace-nowrap tabular-nums">{{ $split->debt }} {{ Cart::get()->currency_code }}</dd></div>
+                    </dl>
                     @endif
                     @php($currentTax = \App\Classes\Settings::tax())
-                    <x-billing.payment-summary :summary="$this->paymentSummary" :formatter="$total" :tax-name="$currentTax?->name ?? 'Tax'" :tax-rate="(string) ($currentTax?->rate ?? '0')" paid-label="Account credits applied" />
+                    <x-billing.payment-summary :summary="$this->paymentSummary" :formatter="$total" :tax-name="$currentTax?->name ?? 'Tax'" :tax-rate="(string) ($currentTax?->rate ?? '0')" paid-label="Account funds applied" />
                     <p class="text-xs text-base/60">{{ __('Gateway fees are not taxed. The fee is confirmed when payment starts.') }}</p>
                 </div>
 
@@ -143,7 +159,7 @@
                     @endif
 
                     <div class="flex flex-row justify-end gap-2">
-                        <x-button.primary wire:click="checkout" class="h-fit" wire:loading.attr="disabled">
+                        <x-button.primary wire:click="checkout" class="h-fit min-h-11" wire:loading.attr="disabled">
                             <x-loading target="checkout" />
                             <div wire:loading.remove wire:target="checkout">
                                 {{ __('product.checkout') }}

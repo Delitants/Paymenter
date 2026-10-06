@@ -6,20 +6,26 @@ use App\Classes\PDF;
 use App\Enums\InvoiceTransactionStatus;
 use App\Helpers\ExtensionHelper;
 use App\Livewire\Component;
+use App\Models\AccountWallet;
 use App\Models\Credit;
 use App\Models\Gateway;
 use App\Models\GatewayPaymentAttempt;
 use App\Models\Invoice;
 use App\Models\Service;
+use App\Models\User;
+use App\Services\Accounts\AccountPaymentLocks;
+use App\Services\Accounts\InvoiceFunding;
+use App\Services\Accounts\WalletLedger;
+use App\Services\Accounts\WalletQuote;
 use App\Services\Billing\InvoicePricing;
 use App\Services\Billing\PaymentSummary;
 use App\Services\Gateways\GatewayFeePolicy;
-use App\Services\Gateways\InvoicePaymentDependencies;
 use App\Services\Gateways\PaymentWriteGuard;
 use Brick\Math\BigDecimal;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Request;
+use Illuminate\Support\Str;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Locked;
 use Livewire\Attributes\Url;
@@ -28,6 +34,9 @@ class Show extends Component
 {
     #[Locked]
     public Invoice $invoice;
+
+    #[Locked]
+    public string $fundingRequestKey;
 
     public $checkPayment = false;
 
@@ -44,6 +53,7 @@ class Show extends Component
 
     public function mount()
     {
+        $this->fundingRequestKey = 'invoice-funding:' . Str::uuid();
         $claim = $this->claimedAttempt();
         $preferred = $claim?->gateway_id ?? Request::query('gateway');
         if ($preferred && collect($this->gateways())->contains('id', $preferred)) {
@@ -63,6 +73,12 @@ class Show extends Component
         if ($this->showPayModal && $this->invoice->status !== 'pending') {
             $this->showPayModal = false;
         }
+    }
+
+    #[Computed]
+    public function fundingQuote(): ?WalletQuote
+    {
+        return Auth::id() === $this->invoice->user_id ? (new WalletLedger)->quote(Auth::user(), $this->invoice->currency_code) : null;
     }
 
     #[Computed]
@@ -180,22 +196,35 @@ class Show extends Component
             return $this->notify(__('Credits cannot be applied to this payment.'), 'error');
         }
         $full = DB::transaction(function () {
-            $invoice = (new InvoicePaymentDependencies)->lock([$this->invoice->id])->firstWhere('id', $this->invoice->id);
-            $this->authorize('update', $invoice);
-            (new PaymentWriteGuard)->assertEditable($invoice);
-            $credit = Auth::user()->credits()->where('currency_code', $invoice->currency_code)->lockForUpdate()->first();
-            $remaining = BigDecimal::of((new InvoicePricing)->summary($invoice)->payable);
-            if ($invoice->status !== 'pending' || !$remaining->isPositive() || !$credit || !BigDecimal::of((string) $credit->amount)->isPositive()) {
-                return null;
-            }
-            $available = BigDecimal::of((string) $credit->amount);
-            $spend = $available->isGreaterThan($remaining) ? $remaining : $available;
-            $credit->update(['amount' => (string) $available->minus($spend)->toScale(2)]);
-            ExtensionHelper::addPayment($invoice, null, (string) $spend->toScale(2), isCreditTransaction: true);
+            return (new AccountPaymentLocks)->during([$this->invoice->id], function ($locked) {
+                $invoice = $locked->firstWhere('id', $this->invoice->id);
+                $this->authorize('update', $invoice);
+                (new PaymentWriteGuard)->assertEditable($invoice);
+                $ownerIds = array_values(array_unique([Auth::id(), $invoice->user_id]));
+                sort($ownerIds, SORT_NUMERIC);
+                foreach ($ownerIds as $ownerId) {
+                    User::whereKey($ownerId)->lockForUpdate()->firstOrFail();
+                }
+                if (AccountWallet::where('user_id', $invoice->user_id)->where('currency_code', $invoice->currency_code)->lockForUpdate()->first()) {
+                    $receipt = (new InvoiceFunding)->fundAvailable(Auth::user(), $invoice, $this->fundingRequestKey);
 
-            return $spend->isEqualTo($remaining);
+                    return $receipt ? $invoice->fresh()->status === 'paid' : null;
+                }
+                $credit = Auth::user()->credits()->where('currency_code', $invoice->currency_code)->lockForUpdate()->first();
+                $remaining = BigDecimal::of((new InvoicePricing)->summary($invoice)->payable);
+                if ($invoice->status !== 'pending' || !$remaining->isPositive() || !$credit || !BigDecimal::of((string) $credit->amount)->isPositive()) {
+                    return null;
+                }
+                $available = BigDecimal::of((string) $credit->amount);
+                $spend = $available->isGreaterThan($remaining) ? $remaining : $available;
+                $credit->update(['amount' => (string) $available->minus($spend)->toScale(2)]);
+                ExtensionHelper::addPayment($invoice, null, (string) $spend->toScale(2), isCreditTransaction: true);
+
+                return $spend->isEqualTo($remaining);
+            });
         });
         $this->invoice = $this->invoice->fresh();
+        unset($this->fundingQuote, $this->paymentSummary);
         if ($full === true) {
             return $this->redirect(route('invoices.show', $this->invoice), true);
         }
@@ -291,9 +320,11 @@ class Show extends Component
 
     public function render()
     {
+        $this->authorize('view', $this->invoice);
+
         return view('invoices.show')->layoutData([
             'title' => __('invoices.invoice', ['id' => $this->invoice->number]),
-            'sidebar' => true,
+            'sidebar' => false,
         ]);
     }
 

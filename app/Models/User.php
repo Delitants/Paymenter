@@ -185,6 +185,11 @@ class User extends Authenticatable implements Auditable, FilamentUser, HasAvatar
         return $this->hasMany(Ticket::class);
     }
 
+    public function accountWallets()
+    {
+        return $this->hasMany(AccountWallet::class, 'user_id');
+    }
+
     /**
      * Get the user's credits
      */
