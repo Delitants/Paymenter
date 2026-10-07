@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\BillmanagerAttachmentController;
+use App\Http\Controllers\ClientPortalHomeController;
 use App\Http\Controllers\LogoutController;
 use App\Http\Controllers\SocialLoginController;
 use App\Http\Controllers\TicketAttachmentController;
@@ -10,7 +11,6 @@ use App\Livewire\Billing\LegacyHistory;
 use App\Livewire\Cart;
 use App\Livewire\Client;
 use App\Livewire\Dashboard;
-use App\Livewire\Home;
 use App\Livewire\Invoices;
 use App\Livewire\Products;
 use App\Livewire\Services;
@@ -18,7 +18,7 @@ use App\Livewire\Tickets;
 use Illuminate\Foundation\Auth\EmailVerificationRequest;
 use Illuminate\Support\Facades\Route;
 
-Route::get('/', Home::class)->name('home');
+Route::get('/', ClientPortalHomeController::class)->name('home');
 
 // Destroy the session and log out the user.
 // auth()->logout();

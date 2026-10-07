@@ -34,7 +34,7 @@ class Navigation
                             'url' => route('category.show', ['category' => $category->slug]),
                         ];
                     })->toArray(),
-                    'condition' => count($categories) > 0,
+                    'condition' => Auth::check() && count($categories) > 0,
                     'separator' => true,
                     'icon' => 'ri-shopping-bag',
                 ],
