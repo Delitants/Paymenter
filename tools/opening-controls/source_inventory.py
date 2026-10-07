@@ -122,6 +122,10 @@ forms('ssl_certificate ssl_certificate_key ssl_trusted_certificate ssl_dhparam s
 forms('resolver',HSL,';',1,None,'routing')
 forms('add_header',HSL|{'if-location'},';',2,3,'routing')
 forms('expires',HSL|{'if-location'},';',1,2,'routing')
+forms('gzip',HSL|{'if-location'},';',1,1)
+forms('gzip_vary gzip_comp_level gzip_http_version limit_req_log_level',HSL,';',1,1)
+forms('gzip_proxied gzip_types',HSL,';',1,None)
+forms('limit_req_zone',{'http'},';',3,3,'routing')
 
 def address(value):
     if value in ('all','unix:'):return True
@@ -155,6 +159,17 @@ def nginx_form(name,args,terminal,ctx):
     if name in ('allow','deny') and not address(args[0]):return None
     if name in ('sendfile','tcp_nopush','tcp_nodelay','chunked_transfer_encoding','server_tokens','proxy_buffering','proxy_request_buffering','proxy_ssl_server_name') and args[0] not in ('on','off'):return None
     if name=='satisfy' and args[0] not in ('all','any'):return None
+    if name in ('gzip','gzip_vary') and args[0] not in ('on','off'):return None
+    if name=='gzip_comp_level' and not re.fullmatch('[1-9]',args[0]):return None
+    if name=='gzip_http_version' and args[0] not in ('1.0','1.1'):return None
+    if name=='gzip_proxied' and not set(args).issubset({'off','expired','no-cache','no-store','private','no_last_modified','no_etag','auth','any'}):return None
+    if name=='gzip_types' and not all('$' not in a and (a=='*' or re.fullmatch(r'[A-Za-z0-9!#&^_.+-]+/[A-Za-z0-9!#&^_.+-]+',a)) for a in args):return None
+    if name=='limit_req_log_level' and args[0] not in ('info','notice','warn','error'):return None
+    if name=='limit_req_zone':
+        params=dict(a.split('=',1) for a in args[1:] if '=' in a)
+        if set(params)!= {'zone','rate'}:return None
+        if not re.fullmatch(r'[^:\s]+:0*[1-9][0-9]*[kKmM]?',params['zone']):return None
+        if not re.fullmatch(r'0*[1-9][0-9]*r/[sm]',params['rate']):return None
     return role
 
 def parse_nginx(files,entrypoint):
