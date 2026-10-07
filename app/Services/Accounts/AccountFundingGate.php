@@ -2,6 +2,7 @@
 
 namespace App\Services\Accounts;
 
+use App\Services\BillmanagerMigration\Opening\InactiveOpeningAuthority;
 use RuntimeException;
 
 final class AccountFundingGate
@@ -14,6 +15,10 @@ final class AccountFundingGate
         if (!app()->bound(OpeningAuthority::class)) {
             throw new RuntimeException('An accepted account funding release authority is required.');
         }
-        app(OpeningAuthority::class)->assertAcceptedRelease();
+        $authority = app(OpeningAuthority::class);
+        if ($authority instanceof InactiveOpeningAuthority) {
+            throw new RuntimeException('Inactive opening authority cannot authorize normal funding.');
+        }
+        $authority->assertAcceptedRelease();
     }
 }

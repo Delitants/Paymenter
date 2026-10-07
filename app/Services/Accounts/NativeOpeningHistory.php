@@ -21,13 +21,25 @@ final class NativeOpeningHistory
         if ($wallet) {
             return self::stored($wallet);
         }
+
+        return self::current($ownerId, $currency);
+    }
+
+    public static function current(int $ownerId, string $currency): array
+    {
         $table = (new InvoicePaidProcessing)->getTable();
 
-        return ['deposit' => DB::table($table . ' as receipts')->join('invoices', 'invoices.id', '=', 'receipts.invoice_id')
+        $deposits = DB::table($table . ' as receipts')->join('invoices', 'invoices.id', '=', 'receipts.invoice_id')
             ->where('invoices.user_id', $ownerId)->where('invoices.currency_code', $currency)->where('receipts.origin', 'native')
-            ->whereNotNull('receipts.processed_at')->orderBy('receipts.invoice_id')->pluck('receipts.invoice_id')->map(fn ($id) => (int) $id)->all(),
-            'downgrade' => AccountDowngradeReceipt::where('user_id', $ownerId)->where('currency_code', $currency)
-                ->orderBy('id')->pluck('id')->map(fn ($id) => (int) $id)->all()];
+            ->whereNotNull('receipts.processed_at')->orderBy('receipts.invoice_id');
+        $downgrades = AccountDowngradeReceipt::where('user_id', $ownerId)->where('currency_code', $currency)->orderBy('id');
+        if (DB::transactionLevel() > 0) {
+            $deposits->lockForUpdate();
+            $downgrades->lockForUpdate();
+        }
+
+        return ['deposit' => $deposits->pluck('receipts.invoice_id')->map(fn ($id) => (int) $id)->all(),
+            'downgrade' => $downgrades->pluck('id')->map(fn ($id) => (int) $id)->all()];
     }
 
     private static function stored(AccountWallet $wallet): array

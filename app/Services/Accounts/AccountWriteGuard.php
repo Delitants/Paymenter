@@ -24,6 +24,10 @@ final class AccountWriteGuard
 {
     private static ?AccountWriteContext $current = null;
 
+    private static ?Credit $pendingCreditProjection = null;
+
+    private static ?array $pendingCreditAttributes = null;
+
     private static ?AccountWallet $pendingOpening = null;
 
     private static ?int $openedWalletId = null;
@@ -100,6 +104,18 @@ final class AccountWriteGuard
                     if (!$quote || $quote->blocked || $quote->balance !== self::$expectedMovement['balance_after']) {
                         throw new RuntimeException('Incomplete account movement does not reconcile to its original receipt.');
                     }
+
+                    return $result;
+                });
+            }
+
+            if ($context->heldOpeningPermit) {
+                return DB::transaction(function () use ($context, $write) {
+                    $result = $write();
+                    if (!self::$projectionWritten || self::$openedWalletId === null) {
+                        throw new RuntimeException('Incomplete held opening requires its complete cash projection.');
+                    }
+                    $this->assertCurrent($context);
 
                     return $result;
                 });
@@ -202,7 +218,7 @@ final class AccountWriteGuard
             $record->only(array_keys($expected)) !== $expected) {
             throw new RuntimeException('Account opening does not match the approved exact identity and values.');
         }
-        MigrationHold::assertAllowed($record, 'create account opening', true);
+        $this->assertOpeningHold($context, $record, 'create account opening');
         if (AccountWallet::where('user_id', $context->ownerId)->where('currency_code', $context->currency)->lockForUpdate()->first() !== null ||
             AccountWallet::where('opening_identity', $expected['opening_identity'])->lockForUpdate()->first() !== null) {
             throw new RuntimeException('Account opening identity has already been initialized.');
@@ -278,7 +294,7 @@ final class AccountWriteGuard
             $wallet->movements()->lockForUpdate()->first() !== null || $wallet->reservations()->lockForUpdate()->first() !== null) {
             throw new RuntimeException('Cash projection source opening changed.');
         }
-        MigrationHold::assertAllowed($wallet, 'write cash projection', true);
+        $this->assertOpeningHold($context, $wallet, 'write cash projection');
 
         return $wallet;
     }
@@ -301,11 +317,19 @@ final class AccountWriteGuard
             foreach ($scopes as [$owner, $currency]) {
                 $managed = AccountWallet::where('user_id', $owner)->where('currency_code', $currency)->lockForUpdate()->first() !== null || $managed;
             }
-            MigrationHold::assertAllowed($credit, 'write cash', true);
+            if (self::$current?->action === 'opening') {
+                $this->assertOpeningHold(self::$current, $credit, 'write cash');
+            } else {
+                MigrationHold::assertAllowed($credit, 'write cash', true);
+            }
             if ($credit->exists) {
                 $original = new Credit;
                 $original->setRawAttributes($credit->getRawOriginal());
-                MigrationHold::assertAllowed($original, 'write original cash', true);
+                if (self::$current?->action === 'opening') {
+                    $this->assertOpeningHold(self::$current, $original, 'write original cash');
+                } else {
+                    MigrationHold::assertAllowed($original, 'write original cash', true);
+                }
             }
             if (!$managed) {
                 return $write();
@@ -329,8 +353,34 @@ final class AccountWriteGuard
                 throw new RuntimeException('Managed cash does not match its exact opening projection.');
             }
 
+            if ($context->heldOpeningPermit !== null) {
+                if (self::$pendingCreditProjection !== null) {
+                    throw new RuntimeException('Nested cash projection events are denied.');
+                }
+                self::$pendingCreditProjection = $credit;
+                self::$pendingCreditAttributes = $credit->getAttributes();
+                try {
+                    return $write();
+                } finally {
+                    self::$pendingCreditProjection = null;
+                    self::$pendingCreditAttributes = null;
+                }
+            }
+
             return $write();
-        }, 3);
+        }, self::$current?->heldOpeningPermit !== null ? 1 : 3);
+    }
+
+    public function assertCreditMigrationEvent(Credit $credit, string $event): void
+    {
+        $context = self::$current;
+        if ($context?->action === 'opening' && $context->heldOpeningPermit !== null && self::$pendingCreditProjection === $credit &&
+            self::$pendingCreditAttributes === $credit->getAttributes() && in_array($event, ['creating', 'updating'], true)) {
+            $this->assertOpeningHold($context, $credit, 'write cash');
+
+            return;
+        }
+        MigrationHold::assertAllowed($credit, $event, true);
     }
 
     public function acknowledgeProjection(AccountWriteContext $context, Credit $credit): void
@@ -350,22 +400,42 @@ final class AccountWriteGuard
         if (DB::transactionLevel() === 0) {
             throw new RuntimeException('Account writes require an existing locked transaction.');
         }
-        (new AccountFundingGate)->assertEnabled();
-        if (in_array($context->action, AccountWriteContext::MOVEMENTS, true)) {
-            $context->assertReceiptCurrent();
-        } elseif ($context->action !== 'opening' || $context->evidence === null ||
-            $context->authority !== app(OpeningAuthority::class) ||
-            $context->ownerId !== $context->evidence->ownerId || $context->currency !== $context->evidence->currency) {
-            throw new RuntimeException('Account context does not match its accepted opening authority.');
+        if ($context->action === 'opening' && $context->heldOpeningPermit !== null && $context->evidence !== null) {
+            if ($context->authority !== app(OpeningAuthority::class) || $context->ownerId !== $context->evidence->ownerId || $context->currency !== $context->evidence->currency) {
+                throw new RuntimeException('Account context does not match its accepted opening authority.');
+            }
+            // The permit verifies the funding flag, bound authority, transaction and
+            // complete current release/approval/fence; do not repeat that same check.
+            $context->heldOpeningPermit->assertFor($context->evidence);
         } else {
-            $context->openingAttributes();
-            $context->authority->assertApproved($context->evidence);
+            (new AccountFundingGate)->assertEnabled();
+            if (in_array($context->action, AccountWriteContext::MOVEMENTS, true)) {
+                $context->assertReceiptCurrent();
+            } elseif ($context->action !== 'opening' || $context->evidence === null ||
+                $context->authority !== app(OpeningAuthority::class) ||
+                $context->ownerId !== $context->evidence->ownerId || $context->currency !== $context->evidence->currency) {
+                throw new RuntimeException('Account context does not match its accepted opening authority.');
+            } else {
+                $context->openingAttributes();
+                $context->authority->assertApproved($context->evidence);
+            }
         }
         $owner = User::whereKey($context->ownerId)->lockForUpdate()->first();
         if (!$owner || DB::table('currencies')->where('code', $context->currency)->sharedLock()->first() === null) {
             throw new RuntimeException('Account owner or currency identity is missing.');
         }
-        MigrationHold::assertAllowed($owner, 'write account records', true);
+        $this->assertOpeningHold($context, $owner, 'write account records');
+    }
+
+    public function assertOpeningHold(AccountWriteContext $context, Model $model, string $operation): void
+    {
+        if ($context->action === 'opening' && $context->heldOpeningPermit !== null && $context->evidence !== null) {
+            $context->heldOpeningPermit->assertIdentityFor($context->evidence);
+            $context->heldOpeningPermit->assertHold($model, $operation);
+
+            return;
+        }
+        MigrationHold::assertAllowed($model, $operation, true);
     }
 
     private function assertPostedMovement(): void

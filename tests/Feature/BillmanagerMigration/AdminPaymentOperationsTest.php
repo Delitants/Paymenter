@@ -304,8 +304,10 @@ class AdminPaymentOperationsTest extends TestCase
         $accountFunding = require database_path('migrations/2026_10_06_000001_create_account_funding_tables.php');
         $incomingReceipts = require database_path('migrations/2026_10_06_000002_create_account_incoming_receipts.php');
         $reservedPosting = require database_path('migrations/2026_10_06_000003_add_reserved_posting_state.php');
+        $openingHistory = require database_path('migrations/2026_10_07_000001_create_account_opening_receipts.php');
         $cycleCompleted = false;
         try {
+            $openingHistory->down(); // Empty opening receipts depend on the wallet schema.
             $reservedPosting->down();
             $incomingReceipts->down();
             $accountFunding->down(); // This fixture has no managed accounts or receipts.
@@ -316,12 +318,14 @@ class AdminPaymentOperationsTest extends TestCase
             $accountFunding->up();
             $incomingReceipts->up();
             $reservedPosting->up();
+            $openingHistory->up();
             $cycleCompleted = true;
         } catch (QueryException $exception) {
             $this->assertSame(1451, $exception->errorInfo[1], 'Unexpected schema failure in legacy-paid migration fixture');
         }
         $this->assertTrue($cycleCompleted, 'Legacy-paid fixture must reverse all empty dependent schemas before recreating payment operations');
         $this->assertTrue(Schema::hasColumn('account_reversal_reservations', 'posting_required'), 'Legacy-paid schema cycle must restore the current reserved-posting evidence');
+        $this->assertTrue(Schema::hasTable('account_opening_receipts'), 'Legacy-paid schema cycle must restore the empty opening history');
         $this->assertSame('legacy', InvoicePaidProcessing::findOrFail($invoice->id)->origin);
         $this->assertFalse((new ProcessPaidInvoiceService)->handle($invoice->fresh()));
         $this->assertSame('100.00', (string) $wallet->fresh()->getRawOriginal('amount'));

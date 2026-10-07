@@ -9,6 +9,8 @@ use App\Models\Credit;
 use App\Models\User;
 use App\Services\Billing\InvoicePricing;
 use App\Services\BillmanagerMigration\MigrationHold;
+use App\Services\BillmanagerMigration\Opening\HeldOpeningPermit;
+use App\Services\BillmanagerMigration\Opening\InactiveOpeningAuthority;
 use App\Services\Gateways\InvoicePaymentDependencies;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
@@ -18,15 +20,33 @@ final class WalletLedger
 {
     public function initialize(OpeningEvidence $evidence, OpeningAuthority $authority): AccountWallet
     {
-        return DB::transaction(function () use ($evidence, $authority) {
-            (new AccountFundingGate)->assertEnabled();
+        return $this->initializeOpening($evidence, $authority);
+    }
+
+    public function initializeHeldInactive(OpeningEvidence $evidence, InactiveOpeningAuthority $authority, HeldOpeningPermit $permit): AccountWallet
+    {
+        $permit->assertFor($evidence);
+
+        return $this->initializeOpening($evidence, $authority, $permit);
+    }
+
+    private function initializeOpening(OpeningEvidence $evidence, OpeningAuthority $authority, ?HeldOpeningPermit $permit = null): AccountWallet
+    {
+        return DB::transaction(function () use ($evidence, $authority, $permit) {
+            if ($permit) {
+                $permit->assertFor($evidence);
+            } else {
+                (new AccountFundingGate)->assertEnabled();
+            }
             if ($authority !== app(OpeningAuthority::class)) {
                 throw new RuntimeException('Opening requires the bound accepted release authority.');
             }
-            $authority->assertApproved($evidence);
+            if (!$permit) {
+                $authority->assertApproved($evidence);
+            }
             $owner = User::whereKey($evidence->ownerId)->lockForUpdate()->firstOrFail();
-            MigrationHold::assertAllowed($owner, 'initialize wallet', true);
-            $context = AccountWriteContext::opening($evidence, $authority);
+            $context = $permit ? AccountWriteContext::heldOpening($evidence, $authority, $permit) : AccountWriteContext::opening($evidence, $authority);
+            (new AccountWriteGuard)->assertOpeningHold($context, $owner, 'initialize wallet');
             $expected = $context->openingAttributes();
             if (DB::table('currencies')->where('code', $evidence->currency)->sharedLock()->first() === null) {
                 throw new RuntimeException('Opening currency identity is missing.');
@@ -41,7 +61,13 @@ final class WalletLedger
                 if ($wallet->only($immutable) !== array_intersect_key($expected, array_flip($immutable))) {
                     throw new RuntimeException('Opening evidence changed; a second opening is refused.');
                 }
-                MigrationHold::assertAllowed($wallet, 'replay opening', true);
+                (new AccountWriteGuard)->assertOpeningHold($context, $wallet, 'replay opening');
+                if ($permit) {
+                    $this->assertHeldConsistency($wallet, $context);
+                    $permit->assertFor($evidence);
+
+                    return $wallet;
+                }
                 if ($this->quoteLocked($wallet, false)->blocked) {
                     throw new RuntimeException('Opening replay requires reconciled wallet and cash history.');
                 }
@@ -62,7 +88,20 @@ final class WalletLedger
 
                 return $wallet;
             });
-        }, 3);
+        }, $permit ? 1 : 3);
+    }
+
+    private function assertHeldConsistency(AccountWallet $wallet, AccountWriteContext $context): void
+    {
+        $expected = $context->openingAttributes();
+        $cash = Credit::where('user_id', $wallet->user_id)->where('currency_code', $wallet->currency_code)->lockForUpdate()->get();
+        $amount = AccountAmount::parse($wallet->opening_balance);
+        $projection = $amount->compare(AccountAmount::parse('0')) > 0 ? $amount->floorCents() : '0.00';
+        if ($wallet->only(array_keys($expected)) !== $expected || $wallet->active || $wallet->balance !== $wallet->opening_balance ||
+            $wallet->movements()->lockForUpdate()->exists() || $wallet->reservations()->lockForUpdate()->exists() || AccountPostingIssue::where('wallet_id', $wallet->id)->lockForUpdate()->exists() ||
+            $cash->count() !== 1 || $cash->first()->amount !== $projection) {
+            throw new RuntimeException('Held opening replay requires exact inactive original wallet and projection.');
+        }
     }
 
     public function quote(User $owner, string $currency): ?WalletQuote

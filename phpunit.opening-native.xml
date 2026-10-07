@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
-         bootstrap="vendor/autoload.php"
+         bootstrap="tests/Fixtures/Opening/native-bootstrap.php"
+         failOnSkipped="true"
+         failOnIncomplete="true"
+         failOnRisky="true"
          colors="true"
 >
     <testsuites>
@@ -12,11 +15,6 @@
             <directory>tests/Feature</directory>
         </testsuite>
     </testsuites>
-    <groups>
-        <exclude>
-            <group>opening-native</group>
-        </exclude>
-    </groups>
     <source>
         <include>
             <directory>app</directory>

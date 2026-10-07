@@ -11,6 +11,8 @@ use App\Models\InvoicePaidProcessing;
 use App\Models\PaymentOperation;
 use App\Models\ServiceUpgrade;
 use App\Models\User;
+use App\Services\BillmanagerMigration\Opening\HeldOpeningPermit;
+use App\Services\BillmanagerMigration\Opening\InactiveOpeningAuthority;
 use DomainException;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
@@ -27,6 +29,7 @@ final readonly class AccountWriteContext
         public ?OpeningAuthority $authority = null,
         public ?int $invoiceId = null,
         public ?array $receiptProof = null,
+        public ?HeldOpeningPermit $heldOpeningPermit = null,
     ) {}
 
     public static function invoiceFunding(Invoice $invoice, ?User $actor, mixed $amount, bool $automatic = false, bool $maximum = false): self
@@ -251,9 +254,22 @@ final readonly class AccountWriteContext
         return new self('opening', $evidence->ownerId, $evidence->currency, $evidence, $authority);
     }
 
+    public static function heldOpening(OpeningEvidence $evidence, InactiveOpeningAuthority $authority, HeldOpeningPermit $permit): self
+    {
+        $permit->assertFor($evidence);
+
+        return new self('opening', $evidence->ownerId, $evidence->currency, $evidence, $authority, heldOpeningPermit: $permit);
+    }
+
     public function openingAttributes(): array
     {
         $evidence = $this->evidence ?? throw new RuntimeException('Opening evidence is required.');
+
+        return self::openingAttributesFrom($evidence);
+    }
+
+    public static function openingAttributesFrom(OpeningEvidence $evidence): array
+    {
         foreach ([$evidence->sourceSystem, $evidence->sourceAccount] as $identity) {
             if ($identity === '' || strlen($identity) > 190 || preg_match('/[\x00-\x1f\x7f]/', $identity)) {
                 throw new DomainException('A bounded source opening identity is required.');
