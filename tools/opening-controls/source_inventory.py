@@ -2,6 +2,7 @@
 import base64
 import fnmatch
 import hashlib
+import ipaddress
 import posixpath
 import re
 import shlex
@@ -40,39 +41,125 @@ def parse_cron(raw,path):
         result.append(record('job',identity,details))
     return result
 
+class NginxDelimiter(str):
+    """Distinguish lexical punctuation from the same quoted/escaped bytes."""
+
 def tokens(raw):
-    text=raw.decode('utf-8');out=[];word='';quote=None;i=0
+    text=raw.decode('utf-8');out=[];word='';started=False;quote=None;i=0
     while i<len(text):
         c=text[i]
         if c=='\\':
+            started=True
             i+=1
             if i>=len(text):raise SourceError('Unsupported dangling escape')
-            word+=text[i]
+            escaped=text[i]
+            word+=({'t':'\t','r':'\r','n':'\n'}.get(escaped,escaped if escaped in '\"\'\\' else '\\'+escaped))
         elif quote:
             if c==quote:quote=None
             else:word+=c
-        elif c in '\"\'':quote=c
+        elif c in '\"\'':quote=c;started=True
         elif c=='#':
-            if word:out.append(word);word=''
+            if started:out.append(word);word='';started=False
             while i<len(text) and text[i]!='\n':i+=1
         elif c=='$' and i+1<len(text) and text[i+1]=='{':
             end=text.find('}',i+2)
             if end<0:raise SourceError('Unsupported variable syntax')
             word+=text[i:end+1];i=end
+            started=True
         elif c.isspace():
-            if word:out.append(word);word=''
+            if started:out.append(word);word='';started=False
         elif c in '{};':
-            if word:out.append(word);word=''
-            out.append(c)
-        else:word+=c
+            if started:out.append(word);word='';started=False
+            out.append(NginxDelimiter(c))
+        else:word+=c;started=True
         i+=1
     if quote:raise SourceError('Unterminated quoted token')
-    if word:out.append(word)
+    if started:out.append(word)
     return out
+
+# These are inventory forms, not a replacement for nginx's module/version
+# validation. Every reviewed form is retained; none establishes route ownership.
+HSL={'http','server','location'}
+RULES={}
+def forms(names,contexts,terminal,minimum,maximum,role='configuration'):
+    for name in names.split():RULES[name]=(set(contexts),terminal,minimum,maximum,role)
+
+forms('events http',{'main'},'{',0,0)
+forms('server',{'http'},'{',0,0)
+forms('location',{'server','location'},'{',1,2,'routing')
+forms('types',HSL,'{',0,0)
+forms('map',{'http'},'{',2,2,'routing')
+forms('geo',{'http'},'{',1,2,'routing')
+forms('upstream',{'http'},'{',1,1,'routing')
+forms('if',{'server','location'},'{',1,None,'routing')
+forms('worker_processes pid',{'main'},';',1,1)
+forms('user',{'main'},';',1,2)
+forms('worker_connections',{'events'},';',1,1)
+forms('error_log',{'main','events'}|HSL,';',1,2)
+forms('access_log',HSL,';',1,None)
+forms('log_format',{'http'},';',2,None)
+forms('listen server_name',{'server'},';',1,None,'routing')
+forms('root',HSL|{'if-location'},';',1,1,'routing')
+forms('alias',{'location'},';',1,1,'routing')
+forms('index',HSL,';',1,None,'routing')
+forms('proxy_pass',{'location','if-location'},';',1,1,'routing')
+forms('fastcgi_pass',{'location','if-location'},';',1,1,'routing')
+forms('fastcgi_param',HSL,';',2,3,'routing')
+forms('proxy_set_header',HSL,';',2,2,'routing')
+forms('proxy_hide_header fastcgi_index proxy_ssl_server_name',HSL,';',1,1,'routing')
+forms('proxy_redirect',HSL,';',1,2,'routing')
+forms('allow deny',HSL|{'limit_except'},';',1,1,'routing')
+forms('satisfy',HSL,';',1,1,'routing')
+forms('error_page',HSL|{'if-location'},';',2,None,'routing')
+forms('rewrite',{'server','location','if-server','if-location'},';',2,3,'routing')
+forms('return',{'server','location','if-server','if-location'},';',1,2,'routing')
+forms('set',{'server','location','if-server','if-location'},';',2,2,'routing')
+forms('default_type sendfile tcp_nopush tcp_nodelay chunked_transfer_encoding server_tokens',HSL,';',1,1)
+forms('keepalive_timeout',HSL,';',1,2)
+forms('client_max_body_size send_timeout proxy_read_timeout proxy_send_timeout proxy_connect_timeout fastcgi_read_timeout proxy_buffer_size proxy_busy_buffers_size proxy_buffering proxy_request_buffering proxy_http_version if_modified_since',HSL,';',1,1)
+forms('proxy_buffers',HSL,';',2,2)
+forms('ssl_certificate ssl_certificate_key ssl_trusted_certificate ssl_dhparam ssl_ecdh_curve',{'http','server'},';',1,1,'routing')
+forms('resolver',HSL,';',1,None,'routing')
+forms('add_header',HSL|{'if-location'},';',2,3,'routing')
+forms('expires',HSL|{'if-location'},';',1,2,'routing')
+
+def address(value):
+    if value in ('all','unix:'):return True
+    try:ipaddress.ip_network(value,strict=False);return True
+    except ValueError:return False
+
+def nginx_form(name,args,terminal,ctx):
+    """Return a retained role for a reviewed context/arity, else deny it."""
+    parent=ctx[-1][0] if ctx else 'main'
+    if parent=='if':parent='if-'+(ctx[-2][0] if len(ctx)>1 else 'invalid')
+    if name=='include':
+        return 'include' if terminal==';' and len(args)==1 and args[0] and parent in {'main','events','types','map','geo','upstream','if-server','if-location'}|HSL else None
+    if parent=='types':
+        mime=re.fullmatch(r'[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+',name)
+        return 'mime-entry' if terminal==';' and mime and args and all(re.fullmatch(r'[A-Za-z0-9_.+-]+',a) for a in args) else None
+    if parent=='map':
+        if name in ('hostnames','volatile'):return 'map-option' if terminal==';' and not args else None
+        return 'map-entry' if terminal==';' and len(args)==1 else None
+    if parent=='geo':
+        if name=='default' or address(name):return 'geo-entry' if terminal==';' and len(args)==1 else None
+        return None
+    if parent=='upstream' and name=='server':
+        return 'routing' if terminal==';' and args else None
+    rule=RULES.get(name)
+    if not rule:return None
+    contexts,end,minimum,maximum,role=rule
+    if parent not in contexts or terminal!=end or len(args)<minimum or (maximum is not None and len(args)>maximum):return None
+    if name=='location' and len(args)==2 and args[0] not in ('=','^~','~','~*'):return None
+    if name in ('map','geo') and not all(re.fullmatch(r'\$[A-Za-z_][A-Za-z0-9_]*',a) for a in args[-1:]):return None
+    if name=='set' and (len(args)!=2 or not re.fullmatch(r'\$[A-Za-z_][A-Za-z0-9_]*',args[0])):return None
+    if name in ('allow','deny') and not address(args[0]):return None
+    if name in ('sendfile','tcp_nopush','tcp_nodelay','chunked_transfer_encoding','server_tokens','proxy_buffering','proxy_request_buffering','proxy_ssl_server_name') and args[0] not in ('on','off'):return None
+    if name=='satisfy' and args[0] not in ('all','any'):return None
+    return role
 
 def parse_nginx(files,entrypoint):
     result={'objects':[],'errors':[]};prefix=posixpath.dirname(entrypoint);expansions=0
-    def read(path,context,stack):
+    def read(path,context,stack,valid=True):
         nonlocal expansions
         expansions+=1
         if path in stack:result['errors'].append(problem('include-cycle',path));return
@@ -81,33 +168,39 @@ def parse_nginx(files,entrypoint):
         try:ts=tokens(files[path])
         except (UnicodeError,SourceError):result['errors'].append(problem('unsupported-nginx-syntax',path));return
         pos=0
-        def block(ctx,closing=False):
+        def block(ctx,closing=False,valid=True):
             nonlocal pos
+            if len(ctx)>64:raise SourceError('Nginx block depth exceeded')
             while pos<len(ts):
-                if ts[pos]=='}':
+                if isinstance(ts[pos],NginxDelimiter) and ts[pos]=='}':
                     if not closing:raise SourceError('Unexpected closing block')
                     pos+=1;return
                 at=pos;directive=[]
-                while pos<len(ts) and ts[pos] not in '{};':directive.append(ts[pos]);pos+=1
+                while pos<len(ts) and not isinstance(ts[pos],NginxDelimiter):directive.append(ts[pos]);pos+=1
                 if not directive or pos>=len(ts) or ts[pos]=='}':raise SourceError('Incomplete directive')
                 terminal=ts[pos];pos+=1;name=directive[0];args=directive[1:]
                 identity={'path':path,'token':at,'context':ctx,'expansion':expansions}
                 details={'directive':name,'args':args,'context':ctx}
-                if name=='include':
-                    if terminal!=';' or len(args)!=1:raise SourceError('Unsupported include')
+                role=nginx_form(name,args,terminal,ctx) if valid else None
+                if role is None:
+                    code='unsupported-nginx-context' if name in RULES or (ctx and ctx[-1][0] in ('types','map','geo')) else 'unsupported-nginx-directive'
+                    result['errors'].append(problem(code,path+':'+str(at)+':'+name))
+                else:
+                    details['role']=role
+                    result['objects'].append(record('include' if role=='include' else 'listener' if name=='listen' and role=='routing' else 'route',identity,details))
+                    dynamic=role in ('routing','map-entry','geo-entry') and any('$' in a for a in [name]+args)
+                    if dynamic:result['errors'].append(problem('routing-expression-unproved',path+':'+str(at)))
+                    if role=='routing' and ((name=='location' and args[0].startswith(('~','@'))) or (name=='server_name' and any(a.startswith('~') for a in args))):
+                        result['errors'].append(problem('routing-pattern-unproved',path+':'+str(at)))
+                if role=='include':
+                    if '$' in args[0]:result['errors'].append(problem('routing-expression-unproved',path+':'+str(at)));continue
                     pattern=args[0] if args[0].startswith('/') else posixpath.join(prefix,args[0]);pattern=posixpath.normpath(pattern)
-                    result['objects'].append(record('include',identity,details))
                     matches=sorted(f for f in files if captured_glob(f,pattern))
                     if not matches:result['errors'].append(problem('include-unavailable',pattern))
                     for child in matches:read(child,ctx,stack+[path])
-                elif name in ['listen','server_name','location','proxy_pass','fastcgi_pass','fastcgi_param','error_page','rewrite','return','if','map','set','upstream']:
-                    result['objects'].append(record('listener' if name=='listen' else 'route',identity,details))
-                    if name in ['proxy_pass','fastcgi_pass','rewrite','return','if','map'] and any('$' in a for a in args):result['errors'].append(problem('routing-expression-unproved',path+':'+str(at)))
-                elif name not in {'events','http','server','worker_processes','worker_connections','pid','error_log','access_log','user','default_type','sendfile','keepalive_timeout','tcp_nopush','tcp_nodelay'}:
-                    result['errors'].append(problem('unsupported-nginx-directive',path+':'+str(at)+':'+name))
-                if terminal=='{':block(ctx+[directive],True)
+                if terminal=='{':block(ctx+[directive],True,valid and role is not None)
             if closing:raise SourceError('Missing closing block')
-        try:block(context)
+        try:block(context,valid=valid)
         except SourceError:result['errors'].append(problem('unsupported-nginx-syntax',path))
     read(entrypoint,[],[]);return result
 
