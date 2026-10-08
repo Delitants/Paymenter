@@ -161,7 +161,7 @@ class NginxContextTest(unittest.TestCase):
         from source_inventory import inventory
         from source_coverage import evaluate
         raw = raw_capture()
-        raw['files'] = [f for f in raw['files'] if f['kind'] not in ('nginx', 'nginx-root')]
+        raw['files'] = [f for f in raw['files'] if f['kind'] not in ('nginx', 'nginx-root', 'cron')]
         raw['files'].append(file_record('/fixture/main.conf', 'nginx-root', b'http { limit_req_zone key zone=fixture:10m rate=1r/s; }'))
         receipt = {'controller_boot_id': 'fixture-boot', 'capture_start_ns': 0, 'capture_end_ns': 1}
         obs = inventory(raw, receipt)

@@ -18,6 +18,53 @@ def captured_glob(path,pattern):
     parts=path.split('/');patterns=pattern.split('/')
     return len(parts)==len(patterns) and all(fnmatch.fnmatchcase(part,pat) and (not part.startswith('.') or pat.startswith('.')) for part,pat in zip(parts,patterns))
 
+def cron_dispatch(words,command):
+    """Lexical candidates only; a basename never verifies installed code."""
+    result={'executable':words[0],'wrapper_module_candidate':'',
+            'forwarded_command_tokens':words,'forwarded_executable_candidate':'',
+            'forwarded_module_candidate':'','working_directory_candidate':'',
+            'conditional_side_effect_module_candidates':{},'semantics_verified':False,
+            'blockers':[]}
+    blockers=result['blockers'];name=posixpath.basename(words[0]);wrapped=name.startswith('cron-')
+    # Conservative: preserve original text, but do not interpret shell/cron
+    # expansions, redirections, pipelines, stdin %, or compound commands.
+    if re.search(r'[;&|<>$`%*?\[\]{}~\\]',command):blockers.append('cron-shell-expansion-unproved')
+    if wrapped:
+        result['forwarded_command_tokens']=words[1:]
+        suffix=name[5:]
+        if suffix not in {'core','billmgr','dnsmgr'}:blockers.append('unsupported-cron-wrapper')
+        else:
+            result['wrapper_module_candidate']=suffix
+            result['conditional_side_effect_module_candidates']={'license_guard':suffix,'error_registration':suffix}
+        blockers.append('cron-wrapper-semantics-unproved')
+        prefix,sep,tail=words[0].partition('/sbin/')
+        if (sep and tail==name and prefix.startswith('/') and posixpath.normpath(words[0])==words[0]
+            and re.fullmatch(r'[A-Za-z0-9_./-]+',words[0])):result['working_directory_candidate']=prefix
+        else:blockers.append('cron-wrapper-working-directory-unproved')
+    else:blockers.append('cron-command-semantics-unproved')
+    forwarded=result['forwarded_command_tokens']
+    if not forwarded:
+        blockers.append('cron-forwarded-command-unproved');return result
+    executable=forwarded[0]
+    if (not re.fullmatch(r'[A-Za-z0-9_./-]+',executable)
+        or posixpath.normpath(executable)!=executable or '..' in executable.split('/')):
+        blockers.append('cron-forwarded-command-unproved')
+    elif executable.startswith('/'):
+        result['forwarded_executable_candidate']=executable
+    elif wrapped and result['working_directory_candidate'] and '/' in executable:
+        result['forwarded_executable_candidate']=posixpath.join(result['working_directory_candidate'],executable)
+    else:blockers.append('cron-forwarded-command-unproved')
+    # Only a leading selector on the candidate mgrctl command is considered.
+    # Arguments mentioning cron-* or a later -m cannot select a manager.
+    if (result['forwarded_executable_candidate'] and posixpath.basename(executable)=='mgrctl'
+        and len(forwarded)>=4 and forwarded[1]=='-m'
+        and re.fullmatch(r'[A-Za-z0-9_]+',forwarded[2]) and forwarded.count('-m')==1
+        and re.fullmatch(r'[A-Za-z0-9_.:-]+',forwarded[3])
+        and not any(x in blockers for x in ['unsupported-cron-wrapper','cron-wrapper-working-directory-unproved'])):
+        result['forwarded_module_candidate']=forwarded[2]
+    elif wrapped and 'cron-forwarded-command-unproved' not in blockers:blockers.append('cron-forwarded-command-unproved')
+    return result
+
 def parse_cron(raw,path):
     result=[];env={}
     for number,line in enumerate(raw.decode('utf-8').splitlines(),1):
@@ -25,18 +72,22 @@ def parse_cron(raw,path):
         identity={'path':path,'line':number,'raw_line_sha256':hashlib.sha256(line.encode()).hexdigest()}
         if re.match(r'^\s*[A-Za-z_][A-Za-z0-9_]*\s*=',line):
             k,v=line.split('=',1);env[k.strip()]=v.strip();continue
-        details={'environment':env.copy(),'module':'','command':line,'parse_error':False}
+        details={'environment':env.copy(),'module':'','command':line,'user':'','parse_error':False}
         parts=line.split(None,5)
         if line.startswith('@'):parts=line.split(None,1)
         if len(parts) not in (2,6):details['parse_error']=True
         else:
             command=parts[-1]
             try:
+                if path=='/etc/crontab' or posixpath.dirname(path)=='/etc/cron.d':
+                    user_command=command.split(None,1)
+                    if len(user_command)!=2 or not re.fullmatch(r'[A-Za-z0-9_-]+',user_command[0]):raise ValueError
+                    details['user'],command=user_command
                 words=shlex.split(command)
                 if not words:raise ValueError
-                if any(posixpath.basename(w)=='cron-billmgr' for w in words):details['module']='billmgr'
-                for i,w in enumerate(words[:-1]):
-                    if w=='-m':details['module']=words[i+1]
+                details['cron_dispatch']=cron_dispatch(words,command)
+                if 'cron-shell-expansion-unproved' not in details['cron_dispatch']['blockers']:
+                    details['module']=details['cron_dispatch']['forwarded_module_candidate']
             except ValueError:details['parse_error']=True
         result.append(record('job',identity,details))
     return result
@@ -230,6 +281,7 @@ def inventory(raw,receipt):
                 jobs=parse_cron(data,f['path']);objects.extend(jobs)
                 for job in jobs:
                     if job['details']['parse_error']:errors.append(problem('unsupported-cron-syntax',job['id']))
+                    for code in job['details'].get('cron_dispatch',{}).get('blockers',[]):errors.append(problem(code,job['id']))
             except UnicodeError:errors.append(problem('unsupported-cron-encoding',f['path']))
         if f['kind'] in ['nginx','nginx-root']:nginx[f['path']]=data
         if f['kind']=='nginx-root':nginx_roots.append(f['path'])

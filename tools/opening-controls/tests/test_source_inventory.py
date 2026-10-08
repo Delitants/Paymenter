@@ -13,7 +13,7 @@ class InventoryTest(unittest.TestCase):
         except ModuleNotFoundError:self.fail('source_inventory functionality missing')
     def test_duplicate_jobs_and_positional_selectors_remain_distinct(self):
         line=b'* * * * * /fixture/cron-billmgr daily\n';jobs=self.m.parse_cron(line+line+b'* * * * * /fixture/notify ntemail\n','/fixture/crontab')
-        self.assertEqual(len(jobs),3);self.assertNotEqual(jobs[0]['id'],jobs[1]['id']);self.assertEqual(jobs[0]['details']['module'],'billmgr');self.assertEqual(jobs[2]['details']['module'],'')
+        self.assertEqual(len(jobs),3);self.assertNotEqual(jobs[0]['id'],jobs[1]['id']);self.assertEqual(jobs[0]['details']['module'],'');self.assertEqual(jobs[2]['details']['module'],'')
     def test_quoted_comments_and_include_cycles_do_not_invent_routes(self):
         files={'/fixture/main.conf':b'# include ghost;\nhttp { server { set $text "include ignored; # quoted"; include child.conf; } }', '/fixture/child.conf':b'include main.conf;'}
         r=self.m.parse_nginx(files,'/fixture/main.conf');self.assertEqual(len([o for o in r['objects'] if o['kind']=='include']),2);self.assertIn('include-cycle',{e['code'] for e in r['errors']})
