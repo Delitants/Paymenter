@@ -1,13 +1,14 @@
-<div class="container mt-14">
-    <div class="flex flex-col md:grid md:grid-cols-4 gap-8">
-        <div class="flex flex-col col-span-3 gap-4">
+<div class="container mt-8 mb-16 max-w-6xl">
+    <h1 class="text-3xl font-bold mb-7">{{ __('Cart and checkout') }}</h1>
+    <div class="flex flex-col lg:grid lg:grid-cols-[minmax(0,1fr)_320px] gap-8">
+        <div class="flex flex-col min-w-0 gap-4">
             @if (Cart::items()->count() === 0)
             <h1 class="text-2xl font-semibold">
                 {{ __('product.empty_cart') }}
             </h1>
             @endif
             @foreach (Cart::items() as $item)
-            <div class="flex flex-row justify-between w-full bg-background-secondary p-3 rounded-md border border-neutral">
+            <div class="flex flex-col sm:flex-row justify-between gap-4 min-w-0 w-full bg-background-secondary p-5 rounded-xl border border-neutral">
                 <div class="flex flex-col gap-1">
                     <h2 class="text-2xl font-semibold">
                         {{ $item->product->name }}
@@ -16,37 +17,70 @@
                         @foreach ($item->config_options as $option)
                         {{ $option['option_name'] }}: {{ $option['value_name'] }}<br>
                         @endforeach
+                        @if(isset($item->checkout_config))
+                            @php
+                                $checkoutConfig = is_array($item->checkout_config) ? $item->checkout_config : json_decode($item->checkout_config, true);
+                                $extensionConfig = \App\Helpers\ExtensionHelper::getCheckoutConfig($item->product, $checkoutConfig, $item->plan);
+                            @endphp
+                            @foreach($extensionConfig as $config)
+                                @if(isset($config['type']) && $config['type'] === 'section' && isset($config['fields']))
+                                    @foreach($config['fields'] as $field)
+                                        @if(isset($checkoutConfig[$field['name']]))
+                                            @if($field['type'] === 'radio' && isset($field['options'][$checkoutConfig[$field['name']]]))
+                                                {{ $field['label'] ?? $field['name'] }}: {{ $field['options'][$checkoutConfig[$field['name']]] }}
+                                                @if(isset($field['prices'][$checkoutConfig[$field['name']]]))
+                                                    @php
+                                                        $price = $field['prices'][$checkoutConfig[$field['name']]];
+                                                        $priceDisplay = $price === 0 ? 'Free' : '$' . ($price / 100) . '/month';
+                                                    @endphp
+                                                    - {{ $priceDisplay }}
+                                                @endif
+                                                <br>
+                                            @elseif($field['type'] === 'checkbox')
+                                                {{ $field['label'] ?? $field['name'] }}: {{ $checkoutConfig[$field['name']] ? (empty($field['prices'][$checkoutConfig[$field['name']]]) ? __('Enabled (Included)') : __('Enabled')) : __('Disabled') }}<br>
+                                            @elseif($field['type'] === 'text')
+                                                {{ $field['label'] ?? $field['name'] }}: {{ $checkoutConfig[$field['name']] }}<br>
+                                            @endif
+                                        @endif
+                                    @endforeach
+                                @elseif(isset($checkoutConfig[$config['name']]))
+                                    @if($config['type'] === 'text')
+                                        {{ $config['label'] ?? $config['name'] }}: {{ $checkoutConfig[$config['name']] }}<br>
+                                    @endif
+                                @endif
+                            @endforeach
+                        @endif
                     </p>
                 </div>
                 <div class="flex flex-col justify-between items-end gap-4">
                     <h3 class="text-xl font-semibold p-1">
-                        {{ $item->price->format($item->price->total * $item->quantity) }} @if ($item->quantity > 1)
+                        {{ $item->price->format((string) \Brick\Math\BigDecimal::of($item->price->total)->multipliedBy($item->quantity)) }} @if ($item->quantity > 1)
                         ({{ $item->price }} each)
                         @endif
                     </h3>
-                    <div class="flex flex-row gap-2">
+                    <div class="flex flex-wrap justify-end gap-2">
                         @if ($item->product->allow_quantity == 'combined')
                         <div class="flex flex-row gap-1 items-center mr-4">
                             <x-button.secondary
                                 wire:click="updateQuantity({{ $item->id }}, {{ $item->quantity - 1 }})"
-                                class="h-full !w-fit">
+                                class="h-full min-h-11 !w-fit">
                                 -
                             </x-button.secondary>
                             <x-form.input class="h-10 text-center" disabled divClass="!mt-0 !w-14" value="{{ $item->quantity }}" name="quantity" />
                             <x-button.secondary
                                 wire:click="updateQuantity({{ $item->id }}, {{ $item->quantity + 1 }});"
-                                class="h-full !w-fit">
+                                class="h-full min-h-11 !w-fit">
                                 +
                             </x-button.secondary>
                         </div>
                         @endif
                         <a href="{{ route('products.checkout', [$item->product->category, $item->product, 'edit' => $item->id]) }}"
                             wire:navigate>
-                            <x-button.primary class="h-fit w-fit">
+                            <x-button.primary class="h-fit min-h-11 w-fit">
                                 {{ __('product.edit') }}
                             </x-button.primary>
                         </a>
-                        <x-button.danger wire:click="removeProduct({{ $item->id }})" class="h-fit !w-fit">
+                        <x-button.danger wire:click="removeProduct({{ $item->id }})" class="h-fit min-h-11 !w-fit">
                             <x-loading target="removeProduct({{ $item->id }})" />
                             <div wire:loading.remove wire:target="removeProduct({{ $item->id }})">
                                 {{ __('product.remove') }}
@@ -56,17 +90,23 @@
                 </div>
             </div>
             @endforeach
+            @if($this->fundingQuote)
+            <div class="bg-background-secondary p-6 rounded-xl border border-neutral">
+                <x-billing.account-position :quote="$this->fundingQuote" :currency="Cart::get()->currency_code" />
+                <a class="inline-flex items-center min-h-11 text-primary underline text-sm mt-3" wire:navigate href="{{ route('account.funding', ['currency' => Cart::get()->currency_code]) }}">{{ __('View account statement') }}</a>
+            </div>
+            @endif
         </div>
         <div class="flex flex-col gap-4">
             @if (Cart::items()->count() > 0)
-            <div class="flex flex-col gap-2 w-full col-span-1 bg-background-secondary p-3 rounded-md border border-neutral">
+            <div class="flex flex-col gap-2 w-full bg-background-secondary p-5 rounded-xl lg:sticky lg:top-8 border border-neutral">
                 <h2 class="text-2xl font-semibold mb-3">
                     {{ __('product.order_summary') }}
                 </h2>
                 <div class="font-semibold flex items-end gap-2">
                     @if(!$coupon)
                     <x-form.input wire:model="coupon" name="coupon" label="Coupon" />
-                    <x-button.primary wire:click="applyCoupon" class="h-fit !w-fit mb-0.5" wire:loading.attr="disabled">
+                    <x-button.primary wire:click="applyCoupon" class="h-fit min-h-11 !w-fit mb-0.5" wire:loading.attr="disabled">
                         <x-loading target="applyCoupon" />
                         <div wire:loading.remove wire:target="applyCoupon">
                             {{ __('product.apply') }}
@@ -75,22 +115,37 @@
                     @else
                     <div class="flex justify-between items-center w-full">
                         <h4 class="text-center w-full">{{ $coupon->code }}</h4>
-                        <x-button.secondary wire:click="removeCoupon" class="h-fit !w-fit">
+                        <x-button.secondary wire:click="removeCoupon" class="h-fit min-h-11 !w-fit">
                             {{ __('product.remove') }}
                         </x-button.secondary>
                     </div>
                     @endif
                 </div>
-                <div class="font-semibold flex justify-between">
-                    <h4>{{ __('invoices.subtotal') }}:</h4> {{ $total->format($total->subtotal) }}
-                </div>
-                @if ($total->tax > 0)
-                <div class="font-semibold flex justify-between">
-                    <h4>{{ \App\Classes\Settings::tax()->name }} ({{ \App\Classes\Settings::tax()->rate }}%):</h4> {{ $total->format($total->tax) }}
-                </div>
-                @endif
-                <div class="text-lg font-semibold flex justify-between mt-1">
-                    <h4>{{ __('invoices.total') }}:</h4> {{ $total->format($total->total) }}
+                <div class="space-y-4 my-3">
+                    @if(count($this->gateways) > 0)
+                    <x-form.select name="gateway" wire:model.live="gateway" :label="__('Payment method')">
+                        @foreach($this->gateways as $method)
+                        <option value="{{ $method->id }}">{{ $method->name }}</option>
+                        @endforeach
+                    </x-form.select>
+                    @else
+                    <p class="text-sm text-base/70">{{ __('No payment method is currently available.') }}</p>
+                    @endif
+                    @if(Auth::check() && config('settings.credits_enabled') && ($this->fundingQuote ? \Brick\Math\BigDecimal::of($this->fundingQuote->fundingAvailable)->isPositive() : Auth::user()->credits()->where('currency_code', Cart::get()->currency_code)->where('amount', '>', 0)->exists()))
+                    <x-form.checkbox name="use_credits" divClass="min-h-11 [&_label]:min-h-11 [&_label]:inline-flex [&_label]:items-center" wire:model.live="use_credits">{{ $this->fundingQuote ? __('Use available account funds') : __('Use available account credits') }}</x-form.checkbox>
+                    @endif
+                    @if($this->fundingQuote && \Brick\Math\BigDecimal::of($this->baseSummary()->paid)->isPositive())
+                    @php
+                        $split = \App\Services\Accounts\FundingSplit::forPayment($this->fundingQuote->balance, $this->baseSummary()->paid);
+                    @endphp
+                    <dl class="space-y-2 text-sm text-base/70 border border-neutral rounded-md p-3">
+                        <div class="flex justify-between gap-4"><dt>{{ __('Cash applied') }}</dt><dd class="whitespace-nowrap tabular-nums">{{ $split->cash }} {{ Cart::get()->currency_code }}</dd></div>
+                        <div class="flex justify-between gap-4"><dt>{{ __('Borrowing applied') }}</dt><dd class="whitespace-nowrap tabular-nums">{{ $split->debt }} {{ Cart::get()->currency_code }}</dd></div>
+                    </dl>
+                    @endif
+                    @php($currentTax = \App\Classes\Settings::tax())
+                    <x-billing.payment-summary :summary="$this->paymentSummary" :formatter="$total" :tax-name="$currentTax?->name ?? 'Tax'" :tax-rate="(string) ($currentTax?->rate ?? '0')" paid-label="Account funds applied" />
+                    <p class="text-xs text-base/60">{{ __('Gateway fees are not taxed. The fee is confirmed when payment starts.') }}</p>
                 </div>
 
                 <div class="flex flex-col gap-2 w-full col-span-1">
@@ -104,7 +159,7 @@
                     @endif
 
                     <div class="flex flex-row justify-end gap-2">
-                        <x-button.primary wire:click="checkout" class="h-fit" wire:loading.attr="disabled">
+                        <x-button.primary wire:click="checkout" class="h-fit min-h-11" wire:loading.attr="disabled">
                             <x-loading target="checkout" />
                             <div wire:loading.remove wire:target="checkout">
                                 {{ __('product.checkout') }}

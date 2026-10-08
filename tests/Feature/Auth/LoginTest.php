@@ -6,6 +6,7 @@ use App\Livewire\Auth\Login;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Http;
 use Livewire\Livewire;
 use Tests\TestCase;
 
@@ -61,6 +62,9 @@ class LoginTest extends TestCase
      */
     public function test_cant_login_with_captcha_enabled()
     {
+        Http::fake([
+            'https://www.google.com/recaptcha/api/siteverify' => Http::response(['success' => false]),
+        ]);
         // Use captcha 6Lfi6dkkAAAAAMoS7Ya74nsiIQv840dQpPdDIYqT and 6Lfi6dkkAAAAAEdMgMWZB0VqTh6lpeBHYoxff78n
         config([
             'settings.captcha' => 'recaptcha-v3',

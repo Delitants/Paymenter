@@ -2,6 +2,7 @@
 
 namespace App\Policies;
 
+use App\Models\AccountWallet;
 use App\Models\Currency;
 use App\Models\User;
 
@@ -44,7 +45,7 @@ class CurrencyPolicy
      */
     public function delete(User $user, Currency $currency): bool
     {
-        return $user->hasPermission('admin.currencies.delete');
+        return $user->hasPermission('admin.currencies.delete') && !AccountWallet::where('currency_code', $currency->code)->exists();
     }
 
     /**

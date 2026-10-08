@@ -7,14 +7,25 @@ use App\Classes\Price;
 use App\Exceptions\DisplayException;
 use App\Helpers\ExtensionHelper;
 use App\Jobs\Server\CreateJob;
+use App\Models\AccountWallet;
 use App\Models\Invoice;
 use App\Models\Order;
 use App\Models\Service;
 use App\Models\User;
+use App\Services\Accounts\AccountPaymentLocks;
+use App\Services\Accounts\InvoiceFunding;
+use App\Services\Accounts\WalletLedger;
+use App\Services\Accounts\WalletQuote;
+use App\Services\Billing\InvoicePricing;
+use App\Services\Billing\MoneyCalculator;
+use App\Services\Billing\PaymentSummary;
+use App\Services\Gateways\GatewayFeePolicy;
+use Brick\Math\BigDecimal;
 use Exception;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\RateLimiter;
+use Livewire\Attributes\Computed;
 use Livewire\Attributes\Locked;
 
 class Cart extends Component
@@ -45,11 +56,58 @@ class Cart extends Component
 
             return;
         }
-        $this->total = new Price(['price' => ClassesCart::items()->sum(fn ($item) => $item->price->total * $item->quantity), 'currency' => ClassesCart::get()->currency]);
-        $this->gateways = ExtensionHelper::getCheckoutGateways($this->total->total, $this->total->currency->code, 'cart', ClassesCart::items());
-        if (count($this->gateways) > 0 && !array_search($this->gateway, array_column($this->gateways, 'id')) !== false) {
-            $this->gateway = $this->gateways[0]->id;
+        unset($this->baseSummary, $this->gateways, $this->paymentSummary);
+        $base = $this->baseSummary();
+        $this->total = new Price(['price' => $base->productGross, 'currency' => ClassesCart::get()->currency, 'tax_amount' => $base->productTax]);
+        if (!collect($this->gateways())->contains('id', $this->gateway)) {
+            $this->gateway = $this->gateways()[0]->id ?? null;
         }
+    }
+
+    #[Computed]
+    public function fundingQuote(): ?WalletQuote
+    {
+        return Auth::check() ? (new WalletLedger)->quote(Auth::user(), ClassesCart::get()->currency_code) : null;
+    }
+
+    #[Computed]
+    public function baseSummary(): PaymentSummary
+    {
+        $gross = $tax = BigDecimal::of('0.00');
+        foreach (ClassesCart::items() as $item) {
+            $price = $item->price;
+            $gross = $gross->plus(BigDecimal::of($price->total)->multipliedBy($item->quantity));
+            $tax = $tax->plus(BigDecimal::of($price->total_tax)->multipliedBy($item->quantity));
+        }
+        $paid = BigDecimal::of('0.00');
+        if ($this->use_credits && config('settings.credits_enabled') && Auth::check()) {
+            $credit = Auth::user()->credits()->where('currency_code', ClassesCart::get()->currency_code)->first();
+            $quote = $this->fundingQuote();
+            $available = BigDecimal::of($quote?->fundingAvailable ?? (string) ($credit?->getRawOriginal('amount') ?? '0.00'));
+            $paid = $available->isGreaterThan($gross) ? $gross : $available;
+        }
+        $net = $gross->minus($tax);
+        $remaining = $gross->minus($paid);
+        $unpaid = (new MoneyCalculator)->allocateRemaining((string) $net->toScale(2), (string) $tax->toScale(2), (string) $remaining->toScale(2));
+
+        return new PaymentSummary(ClassesCart::get()->currency_code, (string) $net->toScale(2), (string) $tax->toScale(2), (string) $gross->toScale(2), $unpaid['net'], $unpaid['tax'], '0.00', (string) $gross->toScale(2), (string) $paid->toScale(2), (string) $remaining->toScale(2));
+    }
+
+    #[Computed]
+    public function gateways(): array
+    {
+        $base = $this->baseSummary();
+
+        return ExtensionHelper::getCheckoutGateways($base->payable, $base->currency, 'cart', ClassesCart::items());
+    }
+
+    #[Computed]
+    public function paymentSummary(): PaymentSummary
+    {
+        $base = $this->baseSummary();
+        $gateway = collect($this->gateways())->firstWhere('id', $this->gateway);
+
+        return $gateway ? (new GatewayFeePolicy)->quote($base, $gateway) : $base;
     }
 
     public function applyCoupon()
@@ -124,6 +182,20 @@ class Cart extends Component
             return $this->notify('This coupon can no longer be used', 'error');
         }
 
+        // Validate opt-in provider checkout before creating an invoice or holding DB locks.
+        foreach (ClassesCart::get()->items()->with('product.server.settings', 'plan.prices')->get() as $item) {
+            if ($item->product->server && ExtensionHelper::hasFunction($item->product->server, 'validateCartItem')) {
+                $item->checkout_config = ExtensionHelper::call($item->product->server, 'validateCartItem', [$item]);
+                $item->save();
+            }
+        }
+        ClassesCart::get()->unsetRelation('items');
+        $this->updateTotal();
+
+        if (BigDecimal::of($this->baseSummary()->payable)->isPositive() && !collect($this->gateways())->contains('id', $this->gateway)) {
+            return $this->notify(__('Select an available payment method.'), 'error');
+        }
+
         // Start database transaction
         DB::beginTransaction();
         try {
@@ -133,7 +205,7 @@ class Cart extends Component
             // Lock the orderproducts
             foreach ($cart->items as $item) {
                 // Make sure we have the latest product data and lock it
-                $item->product->lockForUpdate();
+                $item->setRelation('product', $item->product()->lockForUpdate()->firstOrFail());
 
                 if (
                     $item->product->per_user_limit > 0 && ($user->services->where('product_id', $item->product->id)->count() >= $item->product->per_user_limit ||
@@ -158,8 +230,9 @@ class Cart extends Component
             ]);
             $order->save();
 
-            // Create the invoice
-            if ($this->total->price > 0) {
+            // Create the product invoice even when account credits cover it in full.
+            $invoice = null;
+            if ($cart->items->contains(fn ($item) => BigDecimal::of($item->price->total)->isPositive())) {
                 $invoice = new Invoice([
                     'user_id' => $user->id,
                     'due_at' => now()->addDays(7),
@@ -170,14 +243,9 @@ class Cart extends Component
 
             // Create the services
             foreach ($cart->items as $item) {
-                // Is it a lifetime coupon, then we can adjust the price of the service
-                if ($this->coupon && ($this->coupon->recurring === null || (int) $this->coupon->recurring == 1)) {
-                    // Apply coupon only to first billing cycle (use original price for recurring)
-                    $price = $item->price->original_price;
-                } else {
-                    // Apply coupon to all billing cycles (use discounted price)
-                    $price = $item->price->price;
-                }
+                $quoted = $item->priceForInvoice($invoice);
+                $price = $cart->coupon && ($cart->coupon->recurring === null || (int) $cart->coupon->recurring === 1)
+                    ? $quoted->original_price_decimal : $quoted->price_decimal;
                 // Create the service
                 $service = $order->services()->create([
                     'user_id' => $user->id,
@@ -223,11 +291,12 @@ class Cart extends Component
                 }
 
                 // Create the invoice items
-                if ($item->price->total > 0) {
+                if (BigDecimal::of($quoted->total)->isPositive()) {
                     $invoice->items()->create([
                         'reference_id' => $service->id,
                         'reference_type' => Service::class,
-                        'price' => $item->price->total,
+                        'price' => $quoted->total,
+                        'tax_amount' => (string) BigDecimal::of($quoted->total_tax)->multipliedBy($item->quantity)->toScale(2),
                         'quantity' => $item->quantity,
                         'description' => $service->description,
                     ]);
@@ -242,13 +311,32 @@ class Cart extends Component
                 }
             }
 
+            if ($invoice && $this->use_credits && config('settings.credits_enabled')) {
+                (new AccountPaymentLocks)->during([$invoice->id], function () use ($invoice, $user, $cart) {
+                    if (AccountWallet::where('user_id', $user->id)->where('currency_code', $invoice->currency_code)->lockForUpdate()->first()) {
+                        (new InvoiceFunding)->fundAvailable($user, $invoice, 'cart-funding:' . $cart->ulid);
+
+                        return;
+                    }
+                    Invoice::whereKey($invoice->id)->lockForUpdate()->firstOrFail();
+                    $credit = $user->credits()->where('currency_code', $invoice->currency_code)->lockForUpdate()->first();
+                    $due = BigDecimal::of((new InvoicePricing)->summary($invoice)->payable);
+                    $available = BigDecimal::of((string) ($credit?->getRawOriginal('amount') ?? '0.00'));
+                    $spend = $available->isGreaterThan($due) ? $due : $available;
+                    if ($spend->isPositive()) {
+                        $credit->update(['amount' => (string) $available->minus($spend)->toScale(2)]);
+                        ExtensionHelper::addPayment($invoice, null, (string) $spend->toScale(2), isCreditTransaction: true);
+                    }
+                });
+            }
+
             // Commit the transaction
             DB::commit();
 
             // Clear the cart
             ClassesCart::clear();
 
-            if ($this->total->price == 0) {
+            if (!$invoice) {
                 // Is it only one item? Then redirect to the service page
                 if ($order->services->count() == 1) {
                     return $this->redirect(route('services.show', $order->services->first()), true);
@@ -256,7 +344,7 @@ class Cart extends Component
 
                 return $this->redirect(route('services'), true);
             } else {
-                return $this->redirect(route('invoices.show', [$invoice, 'pay' => true]), true);
+                return $this->redirect(route('invoices.show', [$invoice, 'pay' => $invoice->fresh()->status === 'pending', 'gateway' => $invoice->fresh()->status === 'pending' ? $this->gateway : null]), true);
             }
         } catch (Exception $e) {
             // Rollback the transaction

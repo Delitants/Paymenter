@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Helpers\ExtensionHelper;
+use App\Services\Gateways\PaymentWriteGuard;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\SoftDeletes;
@@ -10,7 +11,14 @@ use OwenIt\Auditing\Contracts\Auditable;
 
 class Extension extends Model implements Auditable
 {
-    use HasFactory, SoftDeletes, Traits\Auditable;
+    use HasFactory, SoftDeletes, Traits\Auditable {
+        SoftDeletes::performDeleteOnModel as protected deleteExtensionRow;
+    }
+
+    protected function performDeleteOnModel()
+    {
+        return (new PaymentWriteGuard)->withParentDeletion($this, fn () => $this->deleteExtensionRow());
+    }
 
     protected $fillable = [
         'name',

@@ -4,6 +4,7 @@ namespace App\Policies;
 
 use App\Models\TicketMessageAttachment;
 use App\Models\User;
+use App\Services\BillmanagerMigration\AccountAccess;
 
 class TicketMessageAttachmentPolicy
 {
@@ -12,6 +13,6 @@ class TicketMessageAttachmentPolicy
      */
     public function view(User $user, TicketMessageAttachment $attachment): bool
     {
-        return $user->hasPermission('admin.tickets.view') || $user->id === $attachment->ticketMessage->ticket->user_id;
+        return $user->hasPermission('admin.tickets.view') || AccountAccess::canRead($user, $attachment->ticketMessage->ticket);
     }
 }
