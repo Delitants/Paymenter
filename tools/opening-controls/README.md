@@ -69,3 +69,16 @@ Shutdown uses the matched `mysqladmin` against the owned socket. PID/start/boot 
 For native acceptance, run both focused groups and the full toolkit in the isolated root Linux environment; require zero skips. Mocked unit tests establish input rejection, not database behavior. Inspect the private native report and transcript for exactly ten true checks and the parent retirement record for no remaining owned PID and removal of the owned RAM directory. Keep successful and failed diagnostics, runtime/candidate hashes and source observation receipt together. A coverage report and a rehearsal permit must each be rejected by the application's unchanged native fence parser; do not convert, sign or promote them.
 
 Publishing this toolkit does not install controls into the source or target application. Scheduler/process/ingress/CLI/SQL enforcement, a persistent secondary lock keeper, provider custody/reconciliation and target/cohort exclusion remain separate acceptance gates before any real handover.
+
+## Fictional boundary contracts
+
+`boundary_cli.py` is a separate local-only validator for schema-1 boundary plans, witnesses and fictional evidence. Python 3.10+ on root Linux is required for root-owned 0700 reference/evidence directories and 0600 ordinary files. References bind original bytes, including whitespace; the loader rejects unsafe links, changed hashes, file/ancestor replacement, reference cycles, unknown purposes and incompatible evidence slots. Bounds are 4 MiB per document, 32 MiB combined bytes, 10,000 combined entries and eight reference levels. The fixture helper creates only fictional temporary documents; no live capture or production adapter is accepted.
+
+```sh
+python3 tools/opening-controls/boundary_cli.py validate --plan "$BOUNDARY_PLAN" --plan-sha256 "$BOUNDARY_PLAN_SHA256" --reference-root "$BOUNDARY_REFERENCE_ROOT" --evidence "$BOUNDARY_PRIVATE_EVIDENCE"
+python3 tools/opening-controls/boundary_cli.py evaluate --plan "$BOUNDARY_PLAN" --plan-sha256 "$BOUNDARY_PLAN_SHA256" --reference-root "$BOUNDARY_REFERENCE_ROOT" --evidence "$BOUNDARY_PRIVATE_EVIDENCE" --witness "$BOUNDARY_WITNESS" "$BOUNDARY_WITNESS_SHA256"
+```
+
+Repeat `--witness PATH SHA256` for each control. Exit 0 means syntax-only validation and durable report storage, never accepted coverage. Exit 3 means evaluation stored a report with production readiness false, including a complete fictional rehearsal; exit 2 means an input or storage failure and no success acknowledgement. Stdout contains counts and a report hash only; stderr contains a fixed error code. Every report has `plan_accepted=false`, `enforcement_complete=false` and `real_execution_ready=false`.
+
+Each exclusive report filename starts `boundary-unacknowledged-`: the aggregate receipt is returned only after file/directory synchronization and final input/observer verification. A failed or interrupted write may leave an unacknowledged private artifact; its existence alone is not success. Reports are never overwritten or promoted into native opening proofs. `fixture-boundary-v1` is the only registered adapter; arbitrary imports, shell/SQL operations and production adapters are unavailable. This CLI establishes or restores no control and issues no lease. Physical adapter, custody protocol, recovery and actual-cohort acceptance remain separate work.
