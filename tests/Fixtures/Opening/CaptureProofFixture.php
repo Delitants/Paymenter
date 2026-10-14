@@ -5,6 +5,65 @@ namespace Tests\Fixtures\Opening;
 /** Fictional structural records. These fixed dates never prove native chronology. */
 final class CaptureProofFixture
 {
+    /** Complete fictional parser graph; fixed dates do not establish real custody. */
+    public static function history(array $overrides = []): array
+    {
+        $root = getenv('OPENING_FIXTURE_ROOT');
+        if (PHP_SAPI !== 'cli' || posix_geteuid() !== 0 || !$root || !is_dir($root)) {
+            throw new \RuntimeException('Owned root history fixture is required.');
+        }
+        $dir = $root . '/capture-' . bin2hex(random_bytes(8));
+        mkdir($dir, 0700);
+        ProofFactory::$directories[] = $dir;
+        $key = openssl_pkey_new(['private_key_bits' => 3072, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
+        $ref = static fn ($path) => ['path' => $path, 'sha256' => hash_file('sha256', $path)];
+        $write = static function (string $name, array $value) use ($dir, $ref): array {
+            $path = $dir . '/' . $name . '.json';
+            ProofFactory::write($path, json_encode($value, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+
+            return $ref($path);
+        };
+        $sign = static function (string $name, array $value) use ($write, $key): array {
+            $payload = $write($name, $value);
+            openssl_sign(file_get_contents($payload['path']), $raw, $key, OPENSSL_ALGO_SHA256);
+            $signature = $write($name . '-signature', ['schema_version' => 1, 'key_id' => 'fixture', 'algorithm' => 'rsa-sha256', 'signature_b64' => base64_encode($raw)]);
+
+            return ['payload' => $payload, 'signature' => $signature];
+        };
+        $base = self::records();
+        $epoch = $write('epoch', array_replace($base['epoch'], $overrides['epoch'] ?? []));
+        $collector = $write('collector', array_replace($base['collector'], ['control_epoch_sha256' => $epoch['sha256']], $overrides['collector'] ?? []));
+        $leases = [];
+        for ($sequence = 1; $sequence <= 2; $sequence++) {
+            $offset = ($sequence - 1) * 10;
+            $value = array_replace($base['capture'], ['nonce' => 'fixture-capture-' . $sequence, 'control_epoch_sha256' => $epoch['sha256'], 'sequence' => $sequence,
+                'not_before' => gmdate('Y-m-d\TH:i:s\Z', strtotime($base['capture']['issued_at']) + $offset),
+                'issued_at' => gmdate('Y-m-d\TH:i:s\Z', strtotime($base['capture']['issued_at']) + $offset),
+                'expires_at' => gmdate('Y-m-d\TH:i:s\Z', strtotime($base['capture']['issued_at']) + $offset + 60),
+                'issued_monotonic_ns' => (string) (1000000000 + $offset * 1000000000), 'expires_monotonic_ns' => (string) (61000000000 + $offset * 1000000000),
+                'previous_lease_sha256' => $sequence === 1 ? null : $leases[$sequence - 2]['payload']['sha256']], $overrides['lease_changes'][$sequence] ?? []);
+            $leases[] = $sign('capture-' . $sequence, $value);
+        }
+        $historyValue = ['schema_version' => 1, 'purpose' => 'account-opening-lease-history', 'leases' => $leases];
+        $captureHistory = $write('capture-history', $historyValue);
+        $preparationHistory = $write('preparation-history', $historyValue);
+        $acceptance = $sign('acceptance', array_replace($base['acceptance'], ['issued_at' => '2026-01-01T00:00:15Z', 'not_before' => '2026-01-01T00:00:15Z', 'expires_at' => '2026-01-01T06:00:15Z',
+            'control_epoch_sha256' => $epoch['sha256'], 'capture_fence_sha256' => $leases[0]['payload']['sha256'], 'collector_receipt_sha256' => $collector['sha256'],
+            'capture_history_sha256' => $captureHistory['sha256']], $overrides['acceptance'] ?? []));
+        $ready = $sign('ready', array_replace($base['ready'], ['nonce' => 'fixture-ready-3', 'sequence' => 3, 'issued_at' => '2026-01-01T00:00:20Z', 'not_before' => '2026-01-01T00:00:20Z', 'expires_at' => '2026-01-01T00:01:20Z',
+            'control_epoch_sha256' => $epoch['sha256'], 'capture_fence_sha256' => $leases[0]['payload']['sha256'], 'capture_acceptance_sha256' => $acceptance['payload']['sha256'],
+            'preparation_history_sha256' => $preparationHistory['sha256'], 'previous_lease_sha256' => $leases[1]['payload']['sha256'],
+            'issued_monotonic_ns' => '21000000000', 'expires_monotonic_ns' => '81000000000'], $overrides['lease_changes'][3] ?? []));
+        $leases[] = $ready;
+        $history = $write('current-history', [...$historyValue, 'leases' => $leases]);
+        $trust = $write('trust', ['schema_version' => 1, 'purpose' => 'opening-trust', 'keys' => ['fixture' => ['issuer' => 'fixture-custodian',
+            'public_key' => openssl_pkey_get_details($key)['key'], 'purposes' => ['account-opening-capture-fence', 'account-opening-capture-acceptance', 'account-opening-fence', 'billmanager-inactive-opening-approval', 'account-funding-release', 'opening-backup-acceptance']]], 'revoked_keys' => [], 'revoked_nonces' => []]);
+
+        return ['history_ref' => $history, 'trust_path' => $trust['path'], 'records' => ['directory' => $dir, 'epoch_ref' => $epoch, 'collector_ref' => $collector,
+            'capture_history_ref' => $captureHistory, 'preparation_history_ref' => $preparationHistory, 'capture_acceptance_ref' => $acceptance['payload'], 'capture_acceptance_signature_ref' => $acceptance['signature'],
+            'first_ready_ref' => $ready['payload'], 'first_ready_signature_ref' => $ready['signature'], 'leases' => $leases, 'sign' => $sign, 'write' => $write]];
+    }
+
     public static function runtimeIdentity(): array
     {
         return ['machine_id_sha256' => str_repeat('a', 64), 'runtime_realpath' => '/fixture/runtime', 'db_database' => 'fixture_database',
