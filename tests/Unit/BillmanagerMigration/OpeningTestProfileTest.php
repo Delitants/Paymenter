@@ -24,7 +24,10 @@ class OpeningTestProfileTest extends TestCase
         foreach (['Feature/Accounts/AcceptedFundingReleaseTest.php', 'Feature/Accounts/HeldOpeningPermitTest.php',
             'Feature/BillmanagerMigration/OpeningPreparationTest.php', 'Feature/BillmanagerMigration/OpeningBatchTest.php',
             'Feature/BillmanagerMigration/OpeningBatchRaceTest.php', 'Feature/BillmanagerMigration/OpeningHistoryMutationTest.php',
-            'Feature/BillmanagerMigration/OpeningIsolationTest.php', 'Unit/BillmanagerMigration/OpeningProofTest.php', 'Unit/BillmanagerMigration/RuntimeProofFileTest.php'] as $path) {
+            'Feature/BillmanagerMigration/OpeningIsolationTest.php', 'Feature/BillmanagerMigration/OpeningVersionCompatibilityTest.php',
+            'Feature/BillmanagerMigration/OpeningChronologyTest.php', 'Feature/BillmanagerMigration/OpeningReadinessTest.php', 'Feature/BillmanagerMigration/OpeningReadinessRecoveryTest.php',
+            'Feature/BillmanagerMigration/CaptureLineageTest.php', 'Unit/BillmanagerMigration/OpeningFenceHistoryTest.php',
+            'Unit/BillmanagerMigration/ControlProofGraphTest.php', 'Unit/BillmanagerMigration/OpeningProofTest.php', 'Unit/BillmanagerMigration/RuntimeProofFileTest.php'] as $path) {
             self::assertStringContainsString("#[Group('opening-native')]", file_get_contents($root . '/tests/' . $path), $path);
         }
     }

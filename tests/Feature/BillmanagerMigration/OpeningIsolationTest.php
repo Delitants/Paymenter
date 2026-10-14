@@ -7,6 +7,9 @@ use App\Models\Invoice;
 use App\Models\InvoicePaidProcessing;
 use App\Models\Server;
 use App\Models\User;
+use App\Services\Accounts\AccountFundingGate;
+use App\Services\Accounts\OpeningAuthority;
+use App\Services\BillmanagerMigration\Opening\InactiveOpeningAuthority;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -15,6 +18,7 @@ use PHPUnit\Framework\AssertionFailedError;
 use PHPUnit\Framework\Attributes\Group;
 use Tests\Concerns\AssertsOpeningIsolation;
 use Tests\Concerns\UsesCommittedDatabase;
+use Tests\Fixtures\Opening\CaptureProofFixture;
 use Tests\Fixtures\Opening\ColdRestoreProbe;
 use Tests\Fixtures\Opening\IsolationJob;
 use Tests\Fixtures\Opening\IsolationMail;
@@ -92,6 +96,48 @@ class OpeningIsolationTest extends TestCase
             } catch (AssertionFailedError $exception) {
                 self::assertStringContainsString('Opening side effect: original_database_state', $exception->getMessage());
             }
+        }
+    }
+
+    public function test_capture_evidence_cannot_authorize_web_job_cron_or_funding(): void
+    {
+        $argv = $_SERVER['argv'];
+        $_SERVER['argv'] = [base_path('artisan'), 'billmanager:openings:apply'];
+        try {
+            $p = CaptureProofFixture::ready();
+            $proofs = [[$p['history']['records']['capture_acceptance_ref']['path'], $p['history']['records']['capture_acceptance_signature_ref']['path']],
+                [$p['pointer_record']['payload']['path'], $p['pointer_record']['signature']['path']]];
+            foreach (['index.php', 'queue:work', 'schedule:run'] as $context) {
+                foreach ($proofs as [$payload,$signature]) {
+                    $authority = new InactiveOpeningAuthority($p['bundle'], $payload, $signature, $p['process']);
+                    $probe = $this->probe();
+                    $probe->captureOpeningIsolation();
+                    app()->instance(OpeningAuthority::class, $authority);
+                    config(['account-funding.enabled' => true]);
+                    $_SERVER['argv'] = [base_path('artisan'), $context];
+                    try {
+                        (new AccountFundingGate)->assertEnabled();
+                        self::fail('Capture/readiness authorized ordinary funding.');
+                    } catch (\RuntimeException $e) {
+                        self::assertSame('Inactive opening authority cannot authorize normal funding.', $e->getMessage());
+                    }
+                    try {
+                        $authority->assertApproved($p['evidence']);
+                        self::fail('Non-opening entry point authorized a capture report.');
+                    } catch (\RuntimeException $e) {
+                        self::assertStringContainsString('isolated root native opening console', $e->getMessage());
+                    }
+                    $probe->assertOpeningIsolation();
+                    $_SERVER['argv'] = [base_path('artisan'), 'billmanager:openings:apply'];
+                    app()->forgetInstance(OpeningAuthority::class);
+                    config(['account-funding.enabled' => false]);
+                }
+            }
+        } finally {
+            $_SERVER['argv'] = $argv;
+            app()->forgetInstance(OpeningAuthority::class);
+            config(['account-funding.enabled' => false]);
+            ProofFactory::cleanup();
         }
     }
 

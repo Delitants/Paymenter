@@ -4,18 +4,54 @@ namespace Tests\Feature\BillmanagerMigration;
 
 use App\Models\AccountOpeningBatch;
 use App\Models\AccountOpeningReceipt;
+use App\Models\User;
+use App\Services\BillmanagerMigration\Opening\OpeningBackupVerifier;
 use App\Services\BillmanagerMigration\Opening\OpeningTargetState;
 use Illuminate\Support\Facades\DB;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 use RuntimeException;
 use Tests\Concerns\UsesCommittedDatabase;
+use Tests\Fixtures\Opening\CaptureProofFixture;
+use Tests\Fixtures\Opening\ProofFactory;
 use Tests\TestCase;
 
 #[Group('opening-native')]
 class OpeningHistoryMutationTest extends TestCase
 {
     use UsesCommittedDatabase;
+
+    public function test_v2_does_not_exempt_session_support_or_unrelated_rows(): void
+    {
+        $argv = $_SERVER['argv'];
+        $_SERVER['argv'] = [base_path('artisan'), 'billmanager:openings:apply'];
+        try {
+            $owner = User::factory()->createQuietly();
+            $session = DB::table('user_sessions')->insertGetId(['ulid' => '01J00000000000000000000000', 'user_id' => $owner->id, 'last_activity' => '2026-01-01 00:00:00', 'user_agent' => 'original fixture']);
+            $ticket = DB::table('tickets')->insertGetId(['user_id' => $owner->id, 'subject' => 'original support', 'status' => 'closed', 'priority' => 'normal']);
+            $setting = DB::table('settings')->insertGetId(['key' => 'fixture-unrelated-setting', 'value' => 'original']);
+            $p = CaptureProofFixture::ready();
+            (new OpeningBackupVerifier)->assertReady($p['bundle']);
+            foreach ([['user_sessions', $session, 'user_agent', 'changed session'], ['tickets', $ticket, 'subject', 'changed support'], ['settings', $setting, 'value', 'changed unrelated']] as [$table,$id,$field,$changed]) {
+                $original = DB::table($table)->where('id', $id)->value($field);
+                DB::table($table)->where('id', $id)->update([$field => $changed]);
+                $before = (new OpeningTargetState)->capture();
+                try {
+                    (new OpeningBackupVerifier)->assertReady($p['bundle']);
+                    self::fail('V2 exempted original state in ' . $table);
+                } catch (RuntimeException $e) {
+                    self::assertNotSame('', $e->getMessage());
+                    self::assertSame($before, (new OpeningTargetState)->capture());
+                } finally {
+                    DB::table($table)->where('id', $id)->update([$field => $original]);
+                }
+            }
+            self::assertSame(0, DB::table('account_opening_receipts')->count());
+        } finally {
+            $_SERVER['argv'] = $argv;
+            ProofFactory::cleanup();
+        }
+    }
 
     public static function bulk(): array
     {
