@@ -302,3 +302,17 @@ Preserving borrowing limits requires a signed native account ledger, exact debt 
 `ACCOUNT_FUNDING_ENABLED` defaults to `false`. Installing the schema creates no customer wallet, borrowing limit, cash projection, invoice or job. This subsystem supplies no real opening/apply command, initialization endpoint or production opening-authority binding. Historical source payments cannot become new deposit income. A successful source preview, synthetic test, source publication or held installation does not activate a credit facility.
 
 Real opening application needs fresh frozen source evidence, original archive lineage and checksum, verified account/member/owner/currency mappings, resolved eligibility and review decisions, an approved preserve-limit policy and explicit activation authority. Hold release and current-read checks must occur within that separately accepted handover operation. Unresolved accounts remain blocked. BILLmanager stays authoritative until handover is explicitly approved; this preparation performs no live collection, provider work or customer notification.
+
+### Saved VM credentials for administrators
+
+Open a service in the admin Services section and choose **View credentials**.
+The read-only page requires both `admin.services.view` and
+`admin.services.update`; permissions are checked again on Livewire requests.
+View-only operators and clients cannot use this admin route. Client owners retain
+their existing credential page, while shared read-only members remain excluded.
+
+The page reads saved IPs, SSH username and guest password without contacting the
+provider. An encrypted password takes precedence over the legacy plain property.
+The password disclosure warns that a password changed inside the VM can differ
+from the saved value. Viewing credentials never resets a guest password or saves
+service properties.
