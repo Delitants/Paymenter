@@ -37,6 +37,8 @@ final class InactiveOpeningAuthority implements OpeningAuthority
 
     private ?array $lastFenceProof = null;
 
+    private ?array $lastHistory = null;
+
     public function __construct(private OpeningBundle $bundle, private string $approvalPath, private string $signaturePath, private OpeningProcessContext $process)
     {
         if (!$bundle->executable() || $bundle->target() !== $process->targetIdentity()) {
@@ -78,7 +80,15 @@ final class InactiveOpeningAuthority implements OpeningAuthority
     {
         $this->process->assertCurrent();
         $this->bundle->assertCurrent();
-        $release = SignedAttestation::verify($this->bundle->reference('release'), $this->bundle->reference('release_signature'), 'account-funding-release', $this->trust(), $this->now());
+        if ($this->bundle->data()['schema_version'] === 2) {
+            $graph = new ControlProofGraph;
+            $payload = $graph->read($this->bundle->referenceRecord('release'), 'control');
+            $signature = StrictProofJson::decode($graph->read($this->bundle->referenceRecord('release_signature'), 'control')['bytes']);
+            $trust = StrictProofJson::decode(PrivateProofFile::read($this->trust(), 0)['bytes']);
+            $release = SignedAttestation::verifyBytes($payload['bytes'], $signature, 'account-funding-release', $trust, $this->now());
+        } else {
+            $release = SignedAttestation::verify($this->bundle->reference('release'), $this->bundle->reference('release_signature'), 'account-funding-release', $this->trust(), $this->now());
+        }
         if (hash_file('sha256', $this->bundle->reference('release')) !== $this->bundle->data()['release_sha256']) {
             throw new RuntimeException('Accepted opening release identity changed.');
         }
@@ -88,13 +98,18 @@ final class InactiveOpeningAuthority implements OpeningAuthority
     public function assertFenceCurrent(): void
     {
         if ($this->bundle->data()['schema_version'] === 2) {
-            throw new RuntimeException('V2 live opening authority is not yet implemented.');
+            $this->assertFenceV2();
+
+            return;
         }
         $this->process->assertCurrent();
         $data = $this->bundle->data();
         $initialBytes = PrivateProofFile::read($this->bundle->reference('freeze_receipt'), 0);
         $initial = StrictProofJson::decode($initialBytes['bytes']);
         $initial = SignedAttestation::verify($this->bundle->reference('freeze_receipt'), $this->bundle->reference('freeze_signature'), 'account-opening-fence', $this->trust(), ProofSchema::date($initial['issued_at']));
+        if ($initial['schema_version'] !== 1) {
+            throw new RuntimeException('Legacy bundles require legacy opening fences.');
+        }
         $captured = new DateTimeImmutable($this->bundle->snapshot()->capturedAt());
         if ($captured < ProofSchema::date($initial['issued_at']) || $captured >= ProofSchema::date($initial['expires_at'])) {
             throw new RuntimeException('Snapshot capture is outside the original writer fence.');
@@ -104,6 +119,9 @@ final class InactiveOpeningAuthority implements OpeningAuthority
         $signature = StrictProofJson::decode(PrivateProofFile::read($reference['signature'], 0)['bytes']);
         $trust = StrictProofJson::decode(PrivateProofFile::read($this->trust(), 0)['bytes']);
         $lease = SignedAttestation::verifyBytes($payload['bytes'], $signature, 'account-opening-fence', $trust, $this->now());
+        if ($lease['schema_version'] !== 1) {
+            throw new RuntimeException('Legacy bundles cannot borrow v2 renewal authority.');
+        }
         foreach (['issuer', 'freeze_id', 'source_identity', 'source_population_fingerprint', 'target_identity', 'target_baseline_sql_sha256', 'controlled_writers_fingerprint', 'incoming_payment_boundary_fingerprint'] as $key) {
             if ($lease[$key] !== $initial[$key]) {
                 throw new RuntimeException('Current writer fence lineage changed.');
@@ -121,6 +139,42 @@ final class InactiveOpeningAuthority implements OpeningAuthority
         }
         $this->lastFence = $lease;
         $this->lastFenceProof = ['payload_b64' => base64_encode($payload['bytes']), 'signature' => $signature];
+    }
+
+    private function assertFenceV2(): void
+    {
+        $this->process->assertCurrent();
+        $graph = new ControlProofGraph;
+        $lineage = CaptureLineageVerifier::verify($this->bundle, $graph, $this->trust());
+        $reference = OpeningFenceReference::currentV2($graph);
+        $history = OpeningFenceHistoryVerifier::verify($reference['history'], $graph, $this->trust());
+        OpeningFenceHistoryVerifier::assertPrefix($lineage['preparation_history'], $history);
+        $position = count($lineage['preparation_history']['entries']);
+        $firstReady = $history['entries'][$position] ?? null;
+        if ($firstReady === null) {
+            throw new RuntimeException('Current v2 history has no opening-ready stage.');
+        }
+        foreach (['payload_ref', 'signature_ref', 'payload_bytes', 'signature'] as $key) {
+            if ($firstReady[$key] !== $lineage['first_ready'][$key]) {
+                throw new RuntimeException('Current history substituted the original ready pair.');
+            }
+        }
+        if ($this->lastHistory !== null) {
+            OpeningFenceHistoryVerifier::assertPrefix($this->lastHistory, $history);
+        }
+        $head = $history['entries'][array_key_last($history['entries'])];
+        if ($head['payload_ref'] !== $reference['payload'] || $head['signature_ref'] !== $reference['signature'] || $head['payload']['schema_version'] !== 2 || $head['payload']['purpose'] !== 'account-opening-fence') {
+            throw new RuntimeException('Current v2 readiness head changed.');
+        }
+        $trust = StrictProofJson::decode(PrivateProofFile::read($this->trust(), 0)['bytes']);
+        $lease = SignedAttestation::verifyBytes($head['payload_bytes'], $head['signature'], 'account-opening-fence', $trust, $this->now());
+        if ($lease['target_identity'] !== $this->process->targetIdentity()) {
+            throw new RuntimeException('Current readiness does not belong to the actual root operator.');
+        }
+        $this->process->assertCurrent();
+        $this->lastHistory = $history;
+        $this->lastFence = $lease;
+        $this->lastFenceProof = ['schema_version' => 2, 'payload_b64' => base64_encode($head['payload_bytes']), 'signature' => $head['signature'], 'history' => $reference['history']];
     }
 
     public function fenceFacts(): array
@@ -150,26 +204,7 @@ final class InactiveOpeningAuthority implements OpeningAuthority
     {
         $this->assertAcceptedRelease();
         $this->assertFenceCurrent();
-        $current = PrivateProofFile::read($this->approvalPath, 0);
-        foreach (['sha256', 'device', 'inode'] as $key) {
-            if ($current[$key] !== $this->approvalFile[$key]) {
-                throw new RuntimeException('Original approval was replaced.');
-            }
-        }
-        $approval = SignedAttestation::verify($this->approvalPath, $this->signaturePath, 'billmanager-inactive-opening-approval', $this->trust(), $this->now());
-        $data = $this->bundle->data();
-        if ($approval['bundle_sha256'] !== $this->bundle->digest() || $approval['capabilities'] !== ['inactive_opening'] || $approval['status'] !== 'approved' || $evidence->active ||
-            $evidence->grantHash !== $current['sha256'] || $evidence->snapshotHash !== $this->bundle->snapshot()->checksum() || $evidence->policyHash !== $data['policy_sha256']) {
-            throw new RuntimeException('An external exact inactive opening approval is required.');
-        }
-        foreach (['release_sha256', 'target_identity', 'baseline_sql_sha256', 'freeze_id', 'freeze_receipt_sha256', 'login_cutoff', 'activation_cutoff', 'policy_sha256', 'scope_fingerprint'] as $key) {
-            if ($approval[$key] !== $data[$key]) {
-                throw new RuntimeException('Opening approval scope or lineage changed.');
-            }
-        }
-        if (CanonicalPolicy::bytes($approval['accounts']) !== CanonicalPolicy::bytes($this->bundle->accounts())) {
-            throw new RuntimeException('Approval account scope changed.');
-        }
+        $this->assertFinancialApprovalCurrent($evidence);
         $report = (new OpeningPreparation)->sourceFacts($this->bundle);
         $matches = array_values(array_filter($report['accounts'], fn ($row) => $row['source_account'] === $evidence->sourceAccount && $row['currency'] === $evidence->currency));
         if (count($matches) !== 1 || $matches[0]['disposition'] !== 'candidate') {
@@ -179,6 +214,43 @@ final class InactiveOpeningAuthority implements OpeningAuthority
         if ($row['source_system'] !== $evidence->sourceSystem || $row['owner_id'] !== $evidence->ownerId || $row['opening'] !== $evidence->opening || $row['limit_exact'] !== $evidence->limit ||
             $row['hold_fingerprint'] !== OpeningPreparation::holdFingerprint(DB::transactionLevel() > 0) || NativeOpeningHistory::forOpening($evidence->ownerId, $evidence->currency) !== $row['receipt_exclusions']) {
             throw new RuntimeException('Original owner, amount, holds or receipt exclusions changed.');
+        }
+        if ($this->bundle->data()['schema_version'] === 2) {
+            $this->assertFinancialApprovalCurrent($evidence);
+        }
+    }
+
+    private function assertFinancialApprovalCurrent(OpeningEvidence $evidence): void
+    {
+        $current = PrivateProofFile::read($this->approvalPath, 0);
+        foreach (['sha256', 'device', 'inode'] as $key) {
+            if ($current[$key] !== $this->approvalFile[$key]) {
+                throw new RuntimeException('Original approval was replaced.');
+            }
+        }
+        $approval = SignedAttestation::verify($this->approvalPath, $this->signaturePath, 'billmanager-inactive-opening-approval', $this->trust(), $this->now());
+        $data = $this->bundle->data();
+        if ($approval['schema_version'] !== $data['schema_version']) {
+            throw new RuntimeException('Opening bundle and human approval versions differ.');
+        }
+        if ($approval['bundle_sha256'] !== $this->bundle->digest() || $approval['capabilities'] !== ['inactive_opening'] || $approval['status'] !== 'approved' || $evidence->active ||
+            $evidence->grantHash !== $current['sha256'] || $evidence->snapshotHash !== $this->bundle->snapshot()->checksum() || $evidence->policyHash !== $data['policy_sha256']) {
+            throw new RuntimeException('An external exact inactive opening approval is required.');
+        }
+        foreach (['release_sha256', 'target_identity', 'baseline_sql_sha256', 'freeze_id', 'freeze_receipt_sha256', 'login_cutoff', 'activation_cutoff', 'policy_sha256', 'scope_fingerprint'] as $key) {
+            if ($approval[$key] !== $data[$key]) {
+                throw new RuntimeException('Opening approval scope or lineage changed.');
+            }
+        }
+        if ($data['schema_version'] === 2) {
+            foreach (['source_capture_id', 'control_epoch_sha256', 'capture_fence_sha256', 'capture_acceptance_sha256', 'preparation_history_sha256'] as $key) {
+                if ($approval[$key] !== $data[$key]) {
+                    throw new RuntimeException('Human approval capture lineage changed.');
+                }
+            }
+        }
+        if (CanonicalPolicy::bytes($approval['accounts']) !== CanonicalPolicy::bytes($this->bundle->accounts())) {
+            throw new RuntimeException('Approval account scope changed.');
         }
     }
 
@@ -224,6 +296,12 @@ final class InactiveOpeningAuthority implements OpeningAuthority
                     // All potentially slow source and durable-receipt reads
                     // precede the live lease check immediately before commit.
                     $this->assertFenceCurrent();
+                    if ($this->bundle->data()['schema_version'] === 2) {
+                        $this->assertFinancialApprovalCurrent($evidence);
+                        if ($this->now() >= ProofSchema::date($this->lastFence['expires_at'])) {
+                            throw new RuntimeException('Readiness expired before account commit.');
+                        }
+                    }
 
                     return $result;
                 } finally {

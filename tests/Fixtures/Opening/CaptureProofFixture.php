@@ -2,12 +2,61 @@
 
 namespace Tests\Fixtures\Opening;
 
+use App\Services\Accounts\OpeningEvidence;
 use App\Services\BillmanagerMigration\Opening\OpeningBundle;
 use App\Services\BillmanagerMigration\Opening\OpeningProcessContext;
 
 /** Fictional structural records. These fixed dates never prove native chronology. */
 final class CaptureProofFixture
 {
+    public static function ready(array $overrides = []): array
+    {
+        $p = self::executable($overrides);
+        $data = $p['data'];
+        $approval = json_decode(file_get_contents($p['dir'] . '/approval.json'), true, flags: JSON_THROW_ON_ERROR);
+        $approval['schema_version'] = 2;
+        $approval['nonce'] = 'fixture-v2-approval';
+        $approval['bundle_sha256'] = $p['bundle']->digest();
+        foreach (['release_sha256', 'freeze_receipt_sha256', 'source_capture_id', 'control_epoch_sha256', 'capture_fence_sha256', 'capture_acceptance_sha256', 'preparation_history_sha256'] as $field) {
+            $approval[$field] = $data[$field];
+        }
+        $pair = ($p['sign'])('approval-v2', $approval);
+        $head = $p['history']['records']['leases'][2];
+        $pointer = ['schema_version' => 2, 'purpose' => 'account-opening-fence-reference', ...$head, 'history' => $p['history']['history_ref']];
+        $pointerRef = ($p['history']['records']['write'])('current-pointer', $pointer);
+        config(['account-opening.fence_index_path' => $pointerRef['path'], 'account-opening.journal_directory' => $p['dir']]);
+        $account = $data['scope'][0];
+        $evidence = new OpeningEvidence($account['source_system'], $account['source_account'], $account['owner_id'], $account['currency'], $account['opening'], $account['limit_exact'],
+            $p['bundle']->snapshot()->checksum(), $data['policy_sha256'], $pair['payload']['sha256'], false);
+
+        return [...$p, 'approval_path' => $pair['payload']['path'], 'signature_path' => $pair['signature']['path'], 'approval' => $approval, 'evidence' => $evidence,
+            'pointer_path' => $pointerRef['path'], 'pointer_record' => $pointer];
+    }
+
+    /** Fictional structural renewal. Actual durable independent publication is Task 8. */
+    public static function publish(array $p, array $changes = []): array
+    {
+        $pairs = $p['history']['records']['leases'];
+        $prior = $pairs[array_key_last($pairs)];
+        $value = json_decode(file_get_contents($prior['payload']['path']), true, flags: JSON_THROW_ON_ERROR);
+        $now = time();
+        $sequence = count($pairs) + 1;
+        $issuedNs = (int) $value['issued_monotonic_ns'] + max(1, ($now - strtotime($value['issued_at'])) * 1000000000);
+        $value = array_replace($value, ['sequence' => $sequence, 'nonce' => 'fixture-ready-' . $sequence, 'previous_lease_sha256' => $prior['payload']['sha256'],
+            'issued_at' => gmdate('Y-m-d\TH:i:s\Z', $now), 'not_before' => gmdate('Y-m-d\TH:i:s\Z', $now), 'expires_at' => gmdate('Y-m-d\TH:i:s\Z', $now + 60),
+            'issued_monotonic_ns' => (string) $issuedNs, 'expires_monotonic_ns' => (string) ($issuedNs + 60000000000)], $changes);
+        $head = ($p['sign'])('ready-' . $sequence . '-' . bin2hex(random_bytes(4)), $value);
+        $pairs[] = $head;
+        $history = ($p['history']['records']['write'])('history-' . $sequence . '-' . bin2hex(random_bytes(4)), ['schema_version' => 1, 'purpose' => 'account-opening-lease-history', 'leases' => $pairs]);
+        $pointer = ['schema_version' => 2, 'purpose' => 'account-opening-fence-reference', ...$head, 'history' => $history];
+        ProofFactory::write($p['pointer_path'], json_encode($pointer, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+        $p['pointer_record'] = $pointer;
+        $p['history']['history_ref'] = $history;
+        $p['history']['records']['leases'] = $pairs;
+
+        return $p;
+    }
+
     /** Structural-only executable bundle; never genuine chronological acceptance. */
     public static function executable(array $overrides = []): array
     {
