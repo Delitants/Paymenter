@@ -7,8 +7,11 @@ use RuntimeException;
 final class PrivateProofFile
 {
     /** @return array{bytes:string,sha256:string,device:int,inode:int} */
-    public static function read(string $path, int $ownerUid): array
+    public static function read(string $path, int $ownerUid, ?int $maxBytes = null): array
     {
+        if ($maxBytes !== null && $maxBytes < 0) {
+            throw new RuntimeException('Invalid private proof byte limit.');
+        }
         if ($path === '' || $path[0] !== '/' || str_contains($path, '://') || str_contains($path, "\0") || str_contains($path, '/../') || str_contains($path, '/./')) {
             throw new RuntimeException('An absolute ordinary proof path is required.');
         }
@@ -38,7 +41,25 @@ final class PrivateProofFile
             if (!$opened || $opened['dev'] !== $stat['dev'] || $opened['ino'] !== $stat['ino'] || $opened['mode'] !== $stat['mode'] || $opened['uid'] !== $stat['uid']) {
                 throw new RuntimeException('Private proof changed during open.');
             }
-            $bytes = stream_get_contents($file);
+            if ($maxBytes !== null && $opened['size'] > $maxBytes) {
+                throw new RuntimeException('Private proof byte limit exceeded.');
+            }
+            if ($maxBytes === null) {
+                $bytes = stream_get_contents($file);
+            } else {
+                $bytes = '';
+                while (!feof($file)) {
+                    $remaining = $maxBytes - strlen($bytes);
+                    $part = fread($file, $remaining === 0 ? 1 : min(8192, $remaining));
+                    if ($part === false) {
+                        throw new RuntimeException('Incomplete private proof.');
+                    }
+                    if (strlen($part) > $remaining) {
+                        throw new RuntimeException('Private proof byte limit exceeded.');
+                    }
+                    $bytes .= $part;
+                }
+            }
             $after = fstat($file);
             clearstatcache(true, $path);
             $named = @lstat($path);
