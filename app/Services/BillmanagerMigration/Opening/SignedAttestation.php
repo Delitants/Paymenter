@@ -9,8 +9,9 @@ final class SignedAttestation
 {
     public static function verify(string $payloadPath, string $signaturePath, string $purpose, string $trustPath, DateTimeImmutable $now): array
     {
-        $payload = PrivateProofFile::read($payloadPath, 0);
-        $signature = StrictProofJson::decode(PrivateProofFile::read($signaturePath, 0)['bytes']);
+        $limit = in_array($purpose, ['account-opening-capture-fence', 'account-opening-capture-acceptance'], true) ? 65536 : null;
+        $payload = PrivateProofFile::read($payloadPath, 0, $limit);
+        $signature = StrictProofJson::decode(PrivateProofFile::read($signaturePath, 0, $limit)['bytes']);
         $trust = StrictProofJson::decode(PrivateProofFile::read($trustPath, 0)['bytes']);
 
         return self::verifyBytes($payload['bytes'], $signature, $purpose, $trust, $now);
@@ -39,6 +40,9 @@ final class SignedAttestation
         }
         ProofSchema::keys($key, ['issuer', 'public_key', 'purposes']);
         $value = StrictProofJson::decode($bytes);
+        if ((in_array($purpose, ['account-opening-capture-fence', 'account-opening-capture-acceptance'], true) || ($purpose === 'account-opening-fence' && ($value['schema_version'] ?? null) === 2)) && (strlen($bytes) > 65536 || strlen(json_encode($signature, JSON_THROW_ON_ERROR)) > 65536)) {
+            throw new RuntimeException('Control attestation byte limit exceeded.');
+        }
         ProofSchema::attestation($value, $purpose);
         if ($key['issuer'] !== $value['issuer'] || !is_array($key['purposes']) || !in_array($purpose, $key['purposes'], true) || in_array($value['nonce'], $trust['revoked_nonces'], true) ||
             $now < ProofSchema::date($value['not_before']) || $now >= ProofSchema::date($value['expires_at'])) {
