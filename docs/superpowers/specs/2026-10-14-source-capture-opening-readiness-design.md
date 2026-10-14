@@ -1,6 +1,6 @@
 # Source capture and opening readiness proofs
 
-Status: written design for review. This document changes no application behavior, trust, source control or billing authority. Implementation planning, implementation, disposable native acceptance and live operational approval are separate stages. Native inline execution remains the selected method.
+Status: written design approved; the [implementation plan](../plans/2026-10-14-source-capture-opening-readiness.md) is prepared for review. This document changes no application behavior, trust, source control or billing authority. Implementation planning, implementation, disposable native acceptance and live operational approval are separate stages. Native inline execution remains the selected method.
 
 ## Intent and success criteria
 
@@ -168,4 +168,4 @@ Whole-database restoration remains ineligible after any live financial use. Exis
 6. Preserve schema-1 non-executable preparation and unchanged legacy verification/recovery tests. Explicit v2 evidence must never downgrade or borrow v1 approval. Existing report/fixture permit rejection, source/target isolation, dispatch/mail/HTTP channel assertions and complete native financial recovery tests still pass.
 7. Keep source, production and original QA untouched. Require independently owned root-native fixtures, no skipped/incomplete/risky cases, retained original artifacts and actual owned process/socket/RAM retirement. Protected-value scans cover all published generic bytes. Publish implementation to the fork only after focused and consequential native checks; no runtime installation or real trust follows publication automatically.
 
-Written-spec completion means this protocol is reviewable. It does not close physical source coverage, implement signing, prove native execution, freeze the source or authorize handover. The next stage after written-spec approval is a concrete implementation plan using the preserved native method.
+Written-spec completion means this protocol is reviewable. It does not close physical source coverage, implement signing, prove native execution, freeze the source or authorize handover. Review the linked implementation plan before implementation using the preserved native method.
