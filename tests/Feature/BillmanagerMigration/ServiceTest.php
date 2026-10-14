@@ -6,6 +6,7 @@ use App\Livewire\Services\Credentials;
 use App\Livewire\Services\Show;
 use App\Models\Server;
 use App\Models\Service;
+use App\Models\TaxRate;
 use App\Models\User;
 use App\Services\BillmanagerMigration\CustomerImporter;
 use App\Services\BillmanagerMigration\ImportContext;
@@ -19,6 +20,7 @@ use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Once;
 use Livewire\Livewire;
 use Paymenter\Extensions\Servers\Proxmox\Proxmox;
 use Tests\TestCase;
@@ -68,6 +70,20 @@ class ServiceTest extends TestCase
         $this->assertSame('matched', $result['expense_comparison']);
         $this->assertContains('fractional_cent', $result['review_reasons']);
         $this->assertSame('1.0000', $result['last_discount_total']);
+    }
+
+    public function test_imported_negotiated_total_is_preserved_by_native_recalculation(): void
+    {
+        [$snapshot, $context] = $this->fixture();
+        config(['settings.tax_enabled' => true, 'settings.tax_type' => 'exclusive', 'settings.tax_scope' => 'all']);
+        TaxRate::create(['name' => 'Synthetic tax', 'rate' => '4.7120', 'country' => 'all']);
+        Once::flush();
+        (new ServiceImporter)->import($snapshot, $context);
+        $service = Service::sole();
+        $this->assertSame('11.23', $service->calculatePrice());
+        $this->assertTrue($service->plan->price_includes_tax);
+        (new ServiceImporter)->import($snapshot, $context);
+        $this->assertSame('11.23', $service->fresh()->calculatePrice());
     }
 
     public function test_periods_and_lifetime_are_preserved_and_changed_cost_period_requires_review(): void

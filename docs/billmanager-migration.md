@@ -155,6 +155,19 @@ recorded rounding delta. Tax and discount policy must be reconciled before remov
 the service hold. Replaying the service stage rejects changed ownership, price,
 status, plan or catalog rather than silently overwriting a prepared record.
 
+Imported negotiated plans store final renewal totals with tax included. Their
+`price_includes_tax` override preserves those totals during native recalculation,
+while extracting tax at the current applicable rate. Null on ordinary plans
+continues to follow the global catalog policy. Source discounts and addons remain
+within the negotiated total; they are not charged again.
+
+Run the plan tax-basis migration during held, maintenance-only preparation. It
+backfills only unchanged, dedicated imported plans with verified source mappings;
+prices and historical invoices remain unchanged. Shared or drifted plans require
+reconciliation before any schema change. Replay is safe. Rollback refuses to
+discard explicit tax bases: use the reviewed backup or reconcile them explicitly
+before removing the column. This migration does not release billing holds.
+
 Existing Proxmox resources can be attached with `--stage=proxmox --apply
 --proxmox-servers=/private/proxmox-servers.json`. The file contains `source_host`
 and `servers_by_module`, an explicit mapping of source module IDs to native

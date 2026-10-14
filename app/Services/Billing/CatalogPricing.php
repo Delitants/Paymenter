@@ -39,6 +39,9 @@ final class CatalogPricing
         $unit = $unit->plus($this->checkoutAmount($checkoutFields ?? ExtensionHelper::getCheckoutConfig($product, $checkoutConfig, $plan), $checkoutConfig));
         $tax = config('settings.tax_enabled', false) ? Settings::tax($user) : null;
         $context = $taxContext ?? ['rate' => (string) ($tax?->rate ?? '0'), 'inclusive' => config('settings.tax_type', 'inclusive') === 'inclusive'];
+        // The stored plan's tax basis is independent of the current catalog
+        // policy or a captured rate. Null retains the existing global policy.
+        $context['inclusive'] = $plan->price_includes_tax ?? $context['inclusive'];
         $calculator = new MoneyCalculator;
         $original = $calculator->product((string) $unit->toScale(2), (string) $setup->toScale(2), 1, $context['rate'], $context['inclusive']);
         $amounts = $original;

@@ -75,6 +75,7 @@ final class ServiceImporter
                     $planId = DB::table('plans')->insertGetId([
                         'name' => 'Imported renewal', 'priceable_type' => Product::class, 'priceable_id' => $productId,
                         'type' => $price['type'], 'billing_period' => $price['billing_period'], 'billing_unit' => $price['billing_unit'],
+                        'price_includes_tax' => true,
                     ]);
                     DB::table('prices')->insert(['plan_id' => $planId, 'currency_code' => $currency, 'price' => $price['native_amount'], 'setup_fee' => '0.00']);
                     $orderId = DB::table('orders')->insertGetId(['user_id' => $owner, 'currency_code' => $currency, 'created_at' => $date($row['createdate']), 'updated_at' => $date($row['createdate'])]);
@@ -101,7 +102,7 @@ final class ServiceImporter
                     }
                     $plan = DB::table('plans')->where('id', $native->plan_id)->first();
                     $nativePrices = DB::table('prices')->where('plan_id', $native->plan_id)->get();
-                    if (!$plan || $plan->priceable_type !== Product::class || $plan->priceable_id != $native->product_id ||
+                    if (!$plan || !(bool) $plan->price_includes_tax || $plan->priceable_type !== Product::class || $plan->priceable_id != $native->product_id ||
                         $plan->type !== $price['type'] || $plan->billing_period != $price['billing_period'] || $plan->billing_unit !== $price['billing_unit'] ||
                         $nativePrices->count() !== 1 || $nativePrices[0]->currency_code !== $currency || $nativePrices[0]->price !== $price['native_amount'] || $nativePrices[0]->setup_fee !== '0.00') {
                         throw new RuntimeException('Mapped service plan changed; explicit reconciliation required');
