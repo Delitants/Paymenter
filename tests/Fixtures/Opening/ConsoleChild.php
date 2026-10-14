@@ -26,12 +26,12 @@ final class ConsoleChild
         $environment = [...$environment, 'APP_ENV' => 'testing', 'APP_KEY' => config('app.key'), 'APP_URL' => 'http://opening.example.invalid', 'APP_DEBUG' => 'false',
             'DB_CONNECTION' => $connection->getName(), 'DB_SOCKET' => $connection->getConfig('unix_socket'), 'DB_DATABASE' => $connection->getDatabaseName(),
             'DB_USERNAME' => $connection->getConfig('username'), 'DB_PASSWORD' => (string) $connection->getConfig('password'), 'ACCOUNT_FUNDING_ENABLED' => 'false',
-            'ACCOUNT_OPENING_TRUST_PATH' => $fixture['dir'] . '/trust.json', 'ACCOUNT_OPENING_FENCE_INDEX_PATH' => $fixture['dir'] . '/current-lease.json',
+            'ACCOUNT_OPENING_TRUST_PATH' => ($fixture['trust_path'] ?? $fixture['dir'] . '/trust.json'), 'ACCOUNT_OPENING_FENCE_INDEX_PATH' => ($fixture['pointer_path'] ?? $fixture['dir'] . '/current-lease.json'),
             'ACCOUNT_OPENING_JOURNAL_DIRECTORY' => $fixture['dir'], 'OPENING_FIXTURE_FAULT' => $fault, 'OPENING_FIXTURE_BARRIER' => $fixture['dir'] . '/' . $reportName . '.barrier',
             'MAIL_MAILER' => 'array', 'QUEUE_CONNECTION' => 'sync', 'CACHE_STORE' => 'array', 'SESSION_DRIVER' => 'array', 'TELEMETRY_ENABLED' => 'false'];
-        $args = [PHP_BINARY, '-d', 'auto_prepend_file=' . base_path('tests/Fixtures/Opening/batch-worker.php'), base_path('artisan'), 'billmanager:openings:' . $command, $fixture['dir'] . '/bundle.json', '--report=' . $fixture['dir'] . '/' . $reportName];
+        $args = [PHP_BINARY, '-d', 'auto_prepend_file=' . base_path('tests/Fixtures/Opening/batch-worker.php'), base_path('artisan'), 'billmanager:openings:' . $command, ($fixture['bundle_path'] ?? $fixture['dir'] . '/bundle.json'), '--report=' . $fixture['dir'] . '/' . $reportName];
         if ($command === 'apply') {
-            array_push($args, '--approval=' . $fixture['dir'] . '/approval.json', '--signature=' . $fixture['dir'] . '/approval-signature.json');
+            array_push($args, '--approval=' . ($fixture['approval_path'] ?? $fixture['dir'] . '/approval.json'), '--signature=' . ($fixture['signature_path'] ?? $fixture['dir'] . '/approval-signature.json'));
         }
         $this->process = proc_open($args, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $this->pipes, base_path(), $environment);
         if (!is_resource($this->process)) {

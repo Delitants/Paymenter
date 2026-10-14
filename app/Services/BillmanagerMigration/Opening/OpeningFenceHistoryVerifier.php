@@ -83,6 +83,15 @@ final class OpeningFenceHistoryVerifier
         return ['reference' => $historyRef, 'entries' => $entries];
     }
 
+    public static function assertRecordedHead(array $history, string $payloadBytes, array $signature): void
+    {
+        $head = $history['entries'][array_key_last($history['entries'])] ?? null;
+        if ($head === null || $head['payload_bytes'] !== $payloadBytes || $head['signature'] !== $signature ||
+            $head['payload']['schema_version'] !== 2 || $head['payload']['purpose'] !== 'account-opening-fence') {
+            throw new RuntimeException('Recorded receipt does not contain the original complete readiness head.');
+        }
+    }
+
     public static function assertPrefix(array $prefix, array $extension): void
     {
         if (!$prefix['entries'] || count($prefix['entries']) > count($extension['entries'])) {

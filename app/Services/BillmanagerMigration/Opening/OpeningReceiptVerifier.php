@@ -104,7 +104,15 @@ final class OpeningReceiptVerifier
                 }
             }
             $fence = self::historicalFence($bundle, $delta['fence_proof']);
-            $rows[] = ['batch_row' => $batchRaw, 'receipt_row' => $raw, 'wallet_row' => $delta['wallet_row'], 'credit_before' => $delta['credit_before'], 'credit_after' => $delta['credit_after'], 'attempts' => $attempts, 'fence' => $fence];
+            $row = ['batch_row' => $batchRaw, 'receipt_row' => $raw, 'wallet_row' => $delta['wallet_row'], 'credit_before' => $delta['credit_before'], 'credit_after' => $delta['credit_after'], 'attempts' => $attempts, 'fence' => $fence];
+            if ($bundle->data()['schema_version'] === 2) {
+                $created = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $raw['created_at'], new \DateTimeZone('UTC'));
+                if (!$created || $created->format('Y-m-d H:i:s') !== $raw['created_at'] || $created < ProofSchema::date($fence['issued_at']) || $created >= ProofSchema::date($fence['expires_at'])) {
+                    throw new RuntimeException('Receipt creation is outside its recorded readiness interval.');
+                }
+                $row['fence_history'] = $delta['fence_proof']['history'];
+            }
+            $rows[] = $row;
         }
 
         return $rows;
@@ -112,6 +120,9 @@ final class OpeningReceiptVerifier
 
     private static function historicalFence(OpeningBundle $bundle, array $proof): array
     {
+        if ($bundle->data()['schema_version'] === 2) {
+            return self::historicalFenceV2($bundle, $proof);
+        }
         ProofSchema::keys($proof, ['payload_b64', 'signature']);
         $bytes = is_string($proof['payload_b64']) ? base64_decode($proof['payload_b64'], true) : false;
         if ($bytes === false || base64_encode($bytes) !== $proof['payload_b64']) {
@@ -125,6 +136,9 @@ final class OpeningReceiptVerifier
         $trust = StrictProofJson::decode(PrivateProofFile::read($trustPath, 0)['bytes']);
         $fence = SignedAttestation::verifyBytes($bytes, $proof['signature'], 'account-opening-fence', $trust, ProofSchema::date($payload['issued_at']));
         $initial = StrictProofJson::decode(PrivateProofFile::read($bundle->reference('freeze_receipt'), 0)['bytes']);
+        if ($fence['schema_version'] !== 1 || $initial['schema_version'] !== 1) {
+            throw new RuntimeException('Legacy receipts require original legacy fence evidence.');
+        }
         foreach (['issuer', 'freeze_id', 'source_identity', 'source_population_fingerprint', 'target_identity', 'target_baseline_sql_sha256', 'controlled_writers_fingerprint', 'incoming_payment_boundary_fingerprint'] as $key) {
             if ($fence[$key] !== $initial[$key]) {
                 throw new RuntimeException('Recorded fence lineage changed.');
@@ -135,6 +149,38 @@ final class OpeningReceiptVerifier
         }
 
         return $fence;
+    }
+
+    private static function historicalFenceV2(OpeningBundle $bundle, array $proof): array
+    {
+        ProofSchema::keys($proof, ['schema_version', 'payload_b64', 'signature', 'history']);
+        if ($proof['schema_version'] !== 2 || !is_string($proof['payload_b64']) || strlen($proof['payload_b64']) > 87384 || !is_array($proof['signature']) || !is_array($proof['history'])) {
+            throw new RuntimeException('A bounded original v2 receipt proof is required.');
+        }
+        $bytes = base64_decode($proof['payload_b64'], true);
+        if ($bytes === false || strlen($bytes) > 65536 || base64_encode($bytes) !== $proof['payload_b64']) {
+            throw new RuntimeException('Recorded v2 fence bytes are invalid.');
+        }
+        $trustPath = config('account-opening.trust_path');
+        if (!is_string($trustPath) || $trustPath === '') {
+            throw new RuntimeException('Original fence verification trust is required.');
+        }
+        $graph = new ControlProofGraph;
+        $lineage = CaptureLineageVerifier::verify($bundle, $graph, $trustPath);
+        $history = OpeningFenceHistoryVerifier::verify($proof['history'], $graph, $trustPath);
+        OpeningFenceHistoryVerifier::assertPrefix($lineage['preparation_history'], $history);
+        $first = $history['entries'][count($lineage['preparation_history']['entries'])] ?? null;
+        if ($first === null) {
+            throw new RuntimeException('Recorded history has no original ready stage.');
+        }
+        foreach (['payload_ref', 'signature_ref', 'payload_bytes', 'signature'] as $key) {
+            if ($first[$key] !== $lineage['first_ready'][$key]) {
+                throw new RuntimeException('Recorded history substituted the original ready pair.');
+            }
+        }
+        OpeningFenceHistoryVerifier::assertRecordedHead($history, $bytes, $proof['signature']);
+
+        return $history['entries'][array_key_last($history['entries'])]['payload'];
     }
 
     public function verify(OpeningBundle $bundle, AccountOpeningBatch $batch): array

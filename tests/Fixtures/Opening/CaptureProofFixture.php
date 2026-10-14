@@ -16,6 +16,9 @@ final class CaptureProofFixture
         $approval = json_decode(file_get_contents($p['dir'] . '/approval.json'), true, flags: JSON_THROW_ON_ERROR);
         $approval['schema_version'] = 2;
         $approval['nonce'] = 'fixture-v2-approval';
+        if (isset($overrides['approval_seconds'])) {
+            $approval['expires_at'] = gmdate('Y-m-d\TH:i:s\Z', time() + $overrides['approval_seconds']);
+        }
         $approval['bundle_sha256'] = $p['bundle']->digest();
         foreach (['release_sha256', 'freeze_receipt_sha256', 'source_capture_id', 'control_epoch_sha256', 'capture_fence_sha256', 'capture_acceptance_sha256', 'preparation_history_sha256'] as $field) {
             $approval[$field] = $data[$field];
@@ -29,8 +32,26 @@ final class CaptureProofFixture
         $evidence = new OpeningEvidence($account['source_system'], $account['source_account'], $account['owner_id'], $account['currency'], $account['opening'], $account['limit_exact'],
             $p['bundle']->snapshot()->checksum(), $data['policy_sha256'], $pair['payload']['sha256'], false);
 
-        return [...$p, 'approval_path' => $pair['payload']['path'], 'signature_path' => $pair['signature']['path'], 'approval' => $approval, 'evidence' => $evidence,
+        $p['bundle_path'] = $p['dir'] . '/bundle-v2.json';
+        $p = [...$p, 'approval_path' => $pair['payload']['path'], 'signature_path' => $pair['signature']['path'], 'approval' => $approval, 'evidence' => $evidence,
             'pointer_path' => $pointerRef['path'], 'pointer_record' => $pointer];
+        if ($overrides['heartbeat'] ?? false) {
+            $pid = pcntl_fork();
+            if ($pid < 0) {
+                throw new \RuntimeException('Structural custody worker failed.');
+            }
+            if ($pid === 0) {
+                // Structural renewal only: no application, DB or provider access.
+                while (true) {
+                    usleep(10000000);
+                    $p = self::publish($p);
+                }
+            }
+            ProofFactory::$children[] = $pid;
+            $p['custodian_pid'] = $pid;
+        }
+
+        return $p;
     }
 
     /** Fictional structural renewal. Actual durable independent publication is Task 8. */
@@ -49,7 +70,11 @@ final class CaptureProofFixture
         $pairs[] = $head;
         $history = ($p['history']['records']['write'])('history-' . $sequence . '-' . bin2hex(random_bytes(4)), ['schema_version' => 1, 'purpose' => 'account-opening-lease-history', 'leases' => $pairs]);
         $pointer = ['schema_version' => 2, 'purpose' => 'account-opening-fence-reference', ...$head, 'history' => $history];
-        ProofFactory::write($p['pointer_path'], json_encode($pointer, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+        $temporary = dirname($p['pointer_path']) . '/next-pointer-' . bin2hex(random_bytes(8)) . '.json';
+        ProofFactory::write($temporary, json_encode($pointer, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+        if (!rename($temporary, $p['pointer_path'])) {
+            throw new \RuntimeException('Structural pointer publication failed.');
+        }
         $p['pointer_record'] = $pointer;
         $p['history']['history_ref'] = $history;
         $p['history']['records']['leases'] = $pairs;
@@ -62,7 +87,7 @@ final class CaptureProofFixture
     {
         $origin = time() - 30;
         $stamp = static fn (int $offset) => gmdate('Y-m-d\TH:i:s\Z', $origin + $offset);
-        $p = AcceptedFixture::make(captured: $stamp(2), heartbeat: false, realBackup: true);
+        $p = AcceptedFixture::make(captured: $stamp(2), heartbeat: false, realBackup: true, tables: $overrides['tables'] ?? []);
         $readyOffset = time() - $origin;
         $runtime = OpeningProcessContext::runtimeTargetIdentity();
         $target = $p['process']->targetIdentity();

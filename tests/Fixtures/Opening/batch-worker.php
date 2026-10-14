@@ -34,14 +34,14 @@ $application->booted(function () {
     };
     $latePaused = false;
     DB::listen(static function ($event) use ($fault, $publish, &$latePaused) {
-        if ($latePaused || !in_array($fault, ['final-second-account', 'final-seal', 'initial-batch'], true)) {
+        if ($latePaused || !in_array($fault, ['final-first-account', 'final-second-account', 'final-seal', 'initial-batch'], true)) {
             return;
         }
         $sql = strtolower($event->sql);
         $stack = array_column(debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS), 'function');
         $initial = $fault === 'initial-batch' && str_starts_with($sql, 'insert into `account_opening_batches`');
-        $account = $fault === 'final-second-account' && in_array('assertAccountCommitted', $stack, true)
-            && str_contains($sql, '`account_posting_issues`') && AccountOpeningReceipt::count() === 2;
+        $account = in_array($fault, ['final-first-account', 'final-second-account'], true) && in_array('assertAccountCommitted', $stack, true)
+            && str_contains($sql, '`account_posting_issues`') && AccountOpeningReceipt::count() === ($fault === 'final-first-account' ? 1 : 2);
         $seal = $fault === 'final-seal' && in_array('seal', $stack, true) && in_array('assertApproved', $stack, true) && in_array('forOpening', $stack, true)
             && str_contains($sql, '`account_wallets`') && DB::table('account_opening_batches')->value('state') === 'sealed';
         if ($initial || $account || $seal) {
@@ -52,7 +52,7 @@ $application->booted(function () {
     });
     $paused = false;
     DB::listen(static function ($event) use ($fault, $publish, &$paused) {
-        if ($paused || !str_starts_with(strtolower($event->sql), 'insert into `credits`') || !in_array($fault, ['before-receipt', 'before-second-receipt'], true)) {
+        if ($paused || !str_starts_with(strtolower($event->sql), 'insert into `credits`') || !in_array($fault, ['before-receipt', 'before-second-receipt', 'before-first-receipt-then-exit'], true)) {
             return;
         }
         if ($fault === 'before-second-receipt' && AccountOpeningReceipt::count() !== 1) {
@@ -63,11 +63,11 @@ $application->booted(function () {
         posix_kill(getmypid(), SIGSTOP);
     });
     Event::listen(TransactionCommitted::class, static function ($event) use ($fault, $publish) {
-        if ($event->connection->transactionLevel() !== 0 || !in_array($fault, ['after-first-commit', 'after-69-commits'], true)) {
+        if ($event->connection->transactionLevel() !== 0 || !in_array($fault, ['after-first-commit', 'after-69-commits', 'before-first-receipt-then-exit'], true)) {
             return;
         }
         $count = AccountOpeningReceipt::count();
-        if ($count === ($fault === 'after-first-commit' ? 1 : 69)) {
+        if ($count === (in_array($fault, ['after-first-commit', 'before-first-receipt-then-exit'], true) ? 1 : 69)) {
             $publish('committed');
             exit(86);
         }

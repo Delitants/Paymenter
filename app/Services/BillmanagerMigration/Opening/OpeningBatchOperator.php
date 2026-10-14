@@ -81,7 +81,11 @@ final class OpeningBatchOperator
             $replayed = $verified['committed'];
             foreach (OpeningReceiptVerifier::committedRows($bundle, $this->batch) as $row) {
                 if (isset($row['fence'])) {
-                    $this->authority->assertFenceNotBefore($row['fence']);
+                    if ($bundle->data()['schema_version'] === 2) {
+                        $this->authority->assertRecordedFenceNotBefore($row['fence'], $row['fence_history']);
+                    } else {
+                        $this->authority->assertFenceNotBefore($row['fence']);
+                    }
                 }
             }
             foreach ($bundle->accounts() as $account) {
@@ -228,6 +232,10 @@ final class OpeningBatchOperator
         $matches = array_filter(array_slice($rows, 1), fn ($row) => $row['receipt_row']['source_account'] === $evidence->sourceAccount && $row['receipt_row']['currency'] === $evidence->currency && $row['receipt_row']['attempt_sha256'] === self::$active->attempt);
         if (count($matches) !== 1) {
             throw new RuntimeException('An opening must commit with its exact durable receipt.');
+        }
+        if (self::$active->bundle->data()['schema_version'] === 2) {
+            $row = array_values($matches)[0];
+            $authority->assertRecordedFenceNotBefore($row['fence'], $row['fence_history']);
         }
     }
 

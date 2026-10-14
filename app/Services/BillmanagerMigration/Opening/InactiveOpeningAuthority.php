@@ -39,6 +39,8 @@ final class InactiveOpeningAuthority implements OpeningAuthority
 
     private ?array $lastHistory = null;
 
+    private ?array $committingFence = null;
+
     public function __construct(private OpeningBundle $bundle, private string $approvalPath, private string $signaturePath, private OpeningProcessContext $process)
     {
         if (!$bundle->executable() || $bundle->target() !== $process->targetIdentity()) {
@@ -200,6 +202,25 @@ final class InactiveOpeningAuthority implements OpeningAuthority
         }
     }
 
+    public function assertRecordedFenceNotBefore(array $priorFence, array $priorHistoryRef): void
+    {
+        if ($this->bundle->data()['schema_version'] !== 2) {
+            throw new RuntimeException('Recorded custody history is available only for v2 batches.');
+        }
+        $prior = OpeningFenceHistoryVerifier::verify($priorHistoryRef, new ControlProofGraph, $this->trust());
+        $head = $prior['entries'][array_key_last($prior['entries'])];
+        OpeningFenceHistoryVerifier::assertRecordedHead($prior, $head['payload_bytes'], $head['signature']);
+        if ($head['payload'] !== $priorFence) {
+            throw new RuntimeException('Recorded receipt fence differs from its original history head.');
+        }
+        $this->assertFenceCurrent();
+        OpeningFenceHistoryVerifier::assertPrefix($prior, $this->lastHistory);
+        if ($this->current !== null) {
+            OpeningBatchOperator::assertAccountScope($this, $this->current);
+            $this->committingFence = $priorFence;
+        }
+    }
+
     public function assertApproved(OpeningEvidence $evidence): void
     {
         $this->assertAcceptedRelease();
@@ -280,6 +301,7 @@ final class InactiveOpeningAuthority implements OpeningAuthority
                 NativeOpeningHistory::current($evidence->ownerId, $evidence->currency);
                 $this->assertApproved($evidence);
                 $this->current = $evidence;
+                $this->committingFence = null;
                 $this->token = bin2hex(random_bytes(32));
                 $this->issuing = true;
                 try {
@@ -301,12 +323,16 @@ final class InactiveOpeningAuthority implements OpeningAuthority
                         if ($this->now() >= ProofSchema::date($this->lastFence['expires_at'])) {
                             throw new RuntimeException('Readiness expired before account commit.');
                         }
+                        if ($this->committingFence !== null && $this->now() >= ProofSchema::date($this->committingFence['expires_at'])) {
+                            throw new RuntimeException('Recorded readiness expired before account commit.');
+                        }
                     }
 
                     return $result;
                 } finally {
                     $this->permit = null;
                     $this->current = null;
+                    $this->committingFence = null;
                     $this->token = null;
                     $this->level = 0;
                     $this->connection = null;
