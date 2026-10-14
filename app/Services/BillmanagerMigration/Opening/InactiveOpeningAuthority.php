@@ -87,6 +87,9 @@ final class InactiveOpeningAuthority implements OpeningAuthority
 
     public function assertFenceCurrent(): void
     {
+        if ($this->bundle->data()['schema_version'] === 2) {
+            throw new RuntimeException('V2 live opening authority is not yet implemented.');
+        }
         $this->process->assertCurrent();
         $data = $this->bundle->data();
         $initialBytes = PrivateProofFile::read($this->bundle->reference('freeze_receipt'), 0);

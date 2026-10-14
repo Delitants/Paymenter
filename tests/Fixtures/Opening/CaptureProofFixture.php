@@ -2,9 +2,97 @@
 
 namespace Tests\Fixtures\Opening;
 
+use App\Services\BillmanagerMigration\Opening\OpeningBundle;
+use App\Services\BillmanagerMigration\Opening\OpeningProcessContext;
+
 /** Fictional structural records. These fixed dates never prove native chronology. */
 final class CaptureProofFixture
 {
+    /** Structural-only executable bundle; never genuine chronological acceptance. */
+    public static function executable(array $overrides = []): array
+    {
+        $origin = time() - 30;
+        $stamp = static fn (int $offset) => gmdate('Y-m-d\TH:i:s\Z', $origin + $offset);
+        $p = AcceptedFixture::make(captured: $stamp(2), heartbeat: false, realBackup: true);
+        $readyOffset = time() - $origin;
+        $runtime = OpeningProcessContext::runtimeTargetIdentity();
+        $target = $p['process']->targetIdentity();
+        $scenario = $overrides['scenario'] ?? '';
+        $acceptance = ['runtime_target_identity' => $runtime, 'snapshot_sha256' => $p['bundle']->snapshot()->checksum(), 'source_population_fingerprint' => $p['data']['references']['population_review']['sha256'],
+            'login_cutoff' => $p['data']['login_cutoff'], 'activation_cutoff' => $p['data']['activation_cutoff']];
+        $ready = ['target_identity' => $target, 'source_population_fingerprint' => $acceptance['source_population_fingerprint'], 'target_baseline_sql_sha256' => $p['data']['baseline_sql_sha256'],
+            'issued_at' => $stamp($readyOffset), 'not_before' => $stamp($readyOffset), 'expires_at' => $stamp($readyOffset + 60),
+            'issued_monotonic_ns' => (string) (1000000000 + $readyOffset * 1000000000), 'expires_monotonic_ns' => (string) (61000000000 + $readyOffset * 1000000000)];
+        $collector = ['snapshot_sha256' => $acceptance['snapshot_sha256'], ...($overrides['collector'] ?? [])];
+        $epoch = ['runtime_target_identity' => $runtime];
+        $leases = [1 => ['runtime_target_identity' => $runtime], 2 => ['runtime_target_identity' => $runtime]];
+        if ($scenario === 'acceptance_before_collector') {
+            $acceptance['issued_at'] = $acceptance['not_before'] = $stamp(2);
+        } elseif ($scenario === 'ready_before_acceptance') {
+            $ready = array_replace($ready, ['issued_at' => $stamp(14), 'not_before' => $stamp(14), 'expires_at' => $stamp(74), 'issued_monotonic_ns' => '15000000000', 'expires_monotonic_ns' => '75000000000']);
+        } elseif ($scenario === 'ready_before_backup') {
+            $ready = array_replace($ready, ['issued_at' => $stamp(20), 'not_before' => $stamp(20), 'expires_at' => $stamp(80), 'issued_monotonic_ns' => '21000000000', 'expires_monotonic_ns' => '81000000000']);
+        } elseif ($scenario === 'ready_at_acceptance_expiry') {
+            $acceptance['expires_at'] = $ready['issued_at'];
+        } elseif (in_array($scenario, ['missing_preparation_coverage', 'missing_preparation_utc', 'missing_preparation_monotonic'], true)) {
+            if ($scenario !== 'missing_preparation_monotonic') {
+                $leases[2]['expires_at'] = $stamp(17);
+            }
+            if ($scenario !== 'missing_preparation_utc') {
+                $leases[2]['expires_monotonic_ns'] = '18000000000';
+            }
+        } elseif ($scenario === 'preparation_meets_ready') {
+            $leases[2]['expires_at'] = $ready['issued_at'];
+            $leases[2]['expires_monotonic_ns'] = $ready['issued_monotonic_ns'];
+        } elseif ($scenario === 'source_boot_id') {
+            $collector['source_boot_id'] = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+        } elseif ($scenario === 'runtime_database' || $scenario === 'runtime_socket') {
+            $leases[1]['runtime_target_identity'][$scenario === 'runtime_database' ? 'db_database' : 'db_socket_realpath'] = $scenario === 'runtime_database' ? 'changed_database' : '/fixture/changed.sock';
+        } elseif ($scenario === 'capture_id') {
+            $acceptance['source_capture_id'] = 'changed-capture';
+        } elseif ($scenario === 'snapshot_digest') {
+            $acceptance['snapshot_sha256'] = str_repeat('f', 64);
+        } elseif ($scenario === 'population_digest') {
+            $acceptance['source_population_fingerprint'] = $ready['source_population_fingerprint'] = str_repeat('f', 64);
+        } elseif ($scenario === 'source_identity') {
+            $acceptance['source_identity'] = 'different.example.invalid';
+        } elseif ($scenario === 'login_cutoff' || $scenario === 'activation_cutoff') {
+            $acceptance[$scenario] = '2024-01-02 00:00:00';
+        }
+        $leases[3] = $ready;
+        $h = self::history(['origin_at' => $stamp(0), 'epoch' => $epoch, 'collector' => $collector, 'acceptance' => $acceptance, 'lease_changes' => $leases,
+            'preparation_prefix_length' => $scenario === 'preparation_prefix' ? 1 : 2]);
+        $sign = $h['records']['sign'];
+        $read = static fn ($path) => json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $release = $sign('release', $read($p['bundle']->reference('release')));
+        $backupValue = $read($p['bundle']->reference('backup_acceptance'));
+        $backup = $sign('backup', [...$backupValue, 'release_sha256' => $release['payload']['sha256']]);
+        $refs = $p['data']['references'];
+        foreach (['release' => $release['payload'], 'release_signature' => $release['signature'], 'backup_acceptance' => $backup['payload'], 'backup_signature' => $backup['signature'],
+            'control_epoch' => $h['records']['epoch_ref'], 'collector_receipt' => $h['records']['collector_ref'], 'capture_fence' => $h['records']['leases'][0]['payload'], 'capture_fence_signature' => $h['records']['leases'][0]['signature'],
+            'capture_history' => $h['records']['capture_history_ref'], 'preparation_history' => $h['records']['preparation_history_ref'], 'capture_acceptance' => $h['records']['capture_acceptance_ref'], 'capture_acceptance_signature' => $h['records']['capture_acceptance_signature_ref'],
+            'freeze_receipt' => $h['records']['first_ready_ref'], 'freeze_signature' => $h['records']['first_ready_signature_ref']] as $name => $ref) {
+            $refs[$name] = $ref;
+        }
+        $data = [...$p['data'], 'schema_version' => 2, 'references' => $refs, 'release_sha256' => $release['payload']['sha256'], 'freeze_receipt_sha256' => $refs['freeze_receipt']['sha256'],
+            'source_capture_id' => 'fixture-capture', 'control_epoch_sha256' => $refs['control_epoch']['sha256'], 'capture_fence_sha256' => $refs['capture_fence']['sha256'],
+            'capture_acceptance_sha256' => $refs['capture_acceptance']['sha256'], 'preparation_history_sha256' => $refs['preparation_history']['sha256']];
+        if (in_array($scenario, ['observer_boot_id', 'control_profile'], true)) {
+            $value = $read($refs['control_epoch']['path']);
+            if ($scenario === 'observer_boot_id') {
+                $value['observer_identity']['boot_id'] = '11111111-2222-3333-4444-555555555555';
+            } else {
+                $value['control_profile_sha256'] = str_repeat('f', 64);
+            }
+            ProofFactory::write($refs['control_epoch']['path'], json_encode($value, JSON_THROW_ON_ERROR));
+            $data['references']['control_epoch']['sha256'] = hash_file('sha256', $refs['control_epoch']['path']);
+        }
+        ProofFactory::write($p['dir'] . '/bundle-v2.json', json_encode($data, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+        config(['account-opening.trust_path' => $h['trust_path']]);
+
+        return [...$p, 'bundle' => OpeningBundle::load($p['dir'] . '/bundle-v2.json'), 'data' => $data, 'trust_path' => $h['trust_path'], 'history' => $h, 'sign' => $sign, 'scenario' => $scenario, 'fictional_structural_fixture' => true];
+    }
+
     /** Complete fictional parser graph; fixed dates do not establish real custody. */
     public static function history(array $overrides = []): array
     {
@@ -31,6 +119,17 @@ final class CaptureProofFixture
             return ['payload' => $payload, 'signature' => $signature];
         };
         $base = self::records();
+        $origin = strtotime($overrides['origin_at'] ?? $base['capture']['issued_at']);
+        $shift = $origin - strtotime($base['capture']['issued_at']);
+        foreach ($base as &$record) {
+            foreach ($record as $field => &$value) {
+                if (is_string($value) && preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/D', $value)) {
+                    $value = gmdate('Y-m-d\TH:i:s\Z', strtotime($value) + $shift);
+                }
+            }
+            unset($value);
+        }
+        unset($record);
         $epoch = $write('epoch', array_replace($base['epoch'], $overrides['epoch'] ?? []));
         $collector = $write('collector', array_replace($base['collector'], ['control_epoch_sha256' => $epoch['sha256']], $overrides['collector'] ?? []));
         $leases = [];
@@ -46,11 +145,11 @@ final class CaptureProofFixture
         }
         $historyValue = ['schema_version' => 1, 'purpose' => 'account-opening-lease-history', 'leases' => $leases];
         $captureHistory = $write('capture-history', $historyValue);
-        $preparationHistory = $write('preparation-history', $historyValue);
-        $acceptance = $sign('acceptance', array_replace($base['acceptance'], ['issued_at' => '2026-01-01T00:00:15Z', 'not_before' => '2026-01-01T00:00:15Z', 'expires_at' => '2026-01-01T06:00:15Z',
+        $preparationHistory = $write('preparation-history', [...$historyValue, 'leases' => array_slice($leases, 0, $overrides['preparation_prefix_length'] ?? 2)]);
+        $acceptance = $sign('acceptance', array_replace($base['acceptance'], ['issued_at' => gmdate('Y-m-d\TH:i:s\Z', $origin + 15), 'not_before' => gmdate('Y-m-d\TH:i:s\Z', $origin + 15), 'expires_at' => gmdate('Y-m-d\TH:i:s\Z', $origin + 21615),
             'control_epoch_sha256' => $epoch['sha256'], 'capture_fence_sha256' => $leases[0]['payload']['sha256'], 'collector_receipt_sha256' => $collector['sha256'],
             'capture_history_sha256' => $captureHistory['sha256']], $overrides['acceptance'] ?? []));
-        $ready = $sign('ready', array_replace($base['ready'], ['nonce' => 'fixture-ready-3', 'sequence' => 3, 'issued_at' => '2026-01-01T00:00:20Z', 'not_before' => '2026-01-01T00:00:20Z', 'expires_at' => '2026-01-01T00:01:20Z',
+        $ready = $sign('ready', array_replace($base['ready'], ['nonce' => 'fixture-ready-3', 'sequence' => 3, 'issued_at' => gmdate('Y-m-d\TH:i:s\Z', $origin + 20), 'not_before' => gmdate('Y-m-d\TH:i:s\Z', $origin + 20), 'expires_at' => gmdate('Y-m-d\TH:i:s\Z', $origin + 80),
             'control_epoch_sha256' => $epoch['sha256'], 'capture_fence_sha256' => $leases[0]['payload']['sha256'], 'capture_acceptance_sha256' => $acceptance['payload']['sha256'],
             'preparation_history_sha256' => $preparationHistory['sha256'], 'previous_lease_sha256' => $leases[1]['payload']['sha256'],
             'issued_monotonic_ns' => '21000000000', 'expires_monotonic_ns' => '81000000000'], $overrides['lease_changes'][3] ?? []));

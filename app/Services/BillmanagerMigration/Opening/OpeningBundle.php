@@ -9,6 +9,10 @@ use RuntimeException;
 
 final readonly class OpeningBundle
 {
+    private const LINEAGE_FIELDS = ['source_capture_id', 'control_epoch_sha256', 'capture_fence_sha256', 'capture_acceptance_sha256', 'preparation_history_sha256'];
+
+    private const CAPTURE_REFERENCES = ['control_epoch', 'capture_fence', 'capture_fence_signature', 'collector_receipt', 'capture_history', 'capture_acceptance', 'capture_acceptance_signature', 'preparation_history'];
+
     private function __construct(private array $data, private string $hash, private string $path, private int $device, private int $inode) {}
 
     public static function load(string $bundlePath): self
@@ -16,12 +20,13 @@ final readonly class OpeningBundle
         $file = PrivateProofFile::read($bundlePath, 0);
         $data = StrictProofJson::decode($file['bytes']);
         $full = ($data['purpose'] ?? '') === 'billmanager-inactive-opening-bundle';
+        $v2 = $full && ($data['schema_version'] ?? null) === 2;
         if (!$full && ($data['purpose'] ?? '') !== 'billmanager-inactive-opening-input') {
             throw new RuntimeException('Unknown opening input purpose.');
         }
         ProofSchema::keys($data, ['schema_version', 'purpose', 'source_identity', 'login_cutoff', 'activation_cutoff', 'source_timezone', 'import_id', 'scope', 'references',
-            ...($full ? ['target_identity', 'baseline_sql_sha256', 'release_sha256', 'freeze_id', 'freeze_receipt_sha256', 'policy_sha256', 'scope_fingerprint'] : [])]);
-        if ($data['schema_version'] !== 1 || !is_string($data['source_identity']) || $data['source_identity'] === '' || strlen($data['source_identity']) > 45 ||
+            ...($full ? ['target_identity', 'baseline_sql_sha256', 'release_sha256', 'freeze_id', 'freeze_receipt_sha256', 'policy_sha256', 'scope_fingerprint'] : []), ...($v2 ? self::LINEAGE_FIELDS : [])]);
+        if ((!$v2 && $data['schema_version'] !== 1) || !is_string($data['source_identity']) || $data['source_identity'] === '' || strlen($data['source_identity']) > 45 ||
             !is_int($data['import_id']) || $data['import_id'] < 1 || !is_array($data['scope']) || !array_is_list($data['scope']) || !is_array($data['references'])) {
             throw new RuntimeException('Invalid opening input identity.');
         }
@@ -43,11 +48,27 @@ final readonly class OpeningBundle
             if (!is_array($data['target_identity']) || !$data['target_identity'] || !is_string($data['freeze_id']) || $data['freeze_id'] === '') {
                 throw new RuntimeException('Executable opening target and freeze identity are missing.');
             }
+            if ($v2) {
+                ProofSchema::openingTargetIdentity($data['target_identity']);
+                if (!is_string($data['source_capture_id']) || $data['source_capture_id'] === '' || strlen($data['source_capture_id']) > 128 || str_contains($data['source_capture_id'], "\0")) {
+                    throw new RuntimeException('Exact source capture identity is required.');
+                }
+                foreach (array_slice(self::LINEAGE_FIELDS, 1) as $field) {
+                    ProofSchema::hash($data[$field]);
+                }
+                array_push($required, ...self::CAPTURE_REFERENCES);
+            }
         }
         ProofSchema::keys($data['references'], $required);
         $bundle = new self($data, $file['sha256'], $bundlePath, $file['device'], $file['inode']);
+        $graph = new ControlProofGraph;
         foreach ($required as $name) {
-            $bundle->reference($name);
+            $kind = $bundle->controlKind($name);
+            if ($kind !== null) {
+                $graph->read($bundle->referenceRecord($name), $kind);
+            } else {
+                $bundle->reference($name);
+            }
         }
         $snapshot = $bundle->snapshot();
         if ($snapshot->sourceTimezone() !== $data['source_timezone'] || !is_string($data['source_timezone'])) {
@@ -114,21 +135,45 @@ final readonly class OpeningBundle
 
     public function reference(string $name): string
     {
+        $ref = $this->referenceRecord($name);
+        $kind = $this->controlKind($name);
+        if ($kind !== null) {
+            (new ControlProofGraph)->read($ref, $kind);
+
+            return $ref['path'];
+        }
+        $file = PrivateProofFile::read($ref['path'], 0);
+        if (!hash_equals($ref['sha256'], $file['sha256'])) {
+            throw new RuntimeException('Opening evidence bytes changed.');
+        }
+
+        return $ref['path'];
+    }
+
+    /** @return array{path:string,sha256:string} Reference syntax only, not target verification. */
+    public function referenceRecord(string $name): array
+    {
         $this->assertCurrent();
         $ref = $this->data['references'][$name] ?? throw new RuntimeException('Missing opening evidence reference.');
         if (!is_array($ref)) {
             throw new RuntimeException('Invalid opening reference.');
         }
         ProofSchema::keys($ref, ['path', 'sha256']);
-        if (!is_string($ref['path'])) {
+        if (!is_string($ref['path']) || $ref['path'] === '' || $ref['path'][0] !== '/' || str_contains($ref['path'], '://') || str_contains($ref['path'], "\0") || str_contains($ref['path'], '/../') || str_contains($ref['path'], '/./')) {
             throw new RuntimeException('Invalid opening reference path.');
         }
-        $file = PrivateProofFile::read($ref['path'], 0);
-        if (!hash_equals(ProofSchema::hash($ref['sha256']), $file['sha256'])) {
-            throw new RuntimeException('Opening evidence bytes changed.');
+        ProofSchema::hash($ref['sha256']);
+
+        return $ref;
+    }
+
+    private function controlKind(string $name): ?string
+    {
+        if ($this->data['schema_version'] === 2 && in_array($name, [...self::CAPTURE_REFERENCES, 'freeze_receipt', 'freeze_signature', 'backup_acceptance', 'backup_signature', 'release', 'release_signature'], true)) {
+            return in_array($name, ['capture_history', 'preparation_history'], true) ? 'history' : 'control';
         }
 
-        return $ref['path'];
+        return null;
     }
 
     public function snapshot(): Snapshot
