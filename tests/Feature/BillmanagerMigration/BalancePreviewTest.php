@@ -57,6 +57,91 @@ class BalancePreviewTest extends TestCase
         return [$path, $context];
     }
 
+    private function refreshedFixture(bool $changeEmail = false): array
+    {
+        [$originalPath, $originalContext] = $this->fixture();
+        $data = json_decode(file_get_contents($originalPath), true, flags: JSON_THROW_ON_ERROR);
+        $data['captured_at_utc'] = '2026-01-02T00:00:00Z';
+        $data['tables']['users'][0]['last_login'] = '2025-02-01 00:00:00';
+        if ($changeEmail) {
+            $data['tables']['users'][0]['email'] = 'refreshed@example.test';
+            $data['tables']['users'][0]['name'] = 'refreshed-login';
+            DB::table('users')->where('id', $originalContext->mappedId('users', '11'))
+                ->update(['email' => 'refreshed@example.test']);
+        }
+        $path = tempnam(sys_get_temp_dir(), 'refreshed-balance-');
+        $this->files = array_merge($this->files, [$path, $path . '.sha256']);
+        file_put_contents($path, json_encode($data, JSON_THROW_ON_ERROR));
+        file_put_contents($path . '.sha256', hash_file('sha256', $path));
+        $snapshot = Snapshot::load($path, '192.0.2.10', '2024-01-01 00:00:00');
+        $id = DB::table('billmanager_imports')->insertGetId(['source_host' => '192.0.2.10',
+            'snapshot_sha256' => $snapshot->checksum(), 'status' => 'prepared_partial']);
+        $context = new ImportContext($id, '192.0.2.10');
+        (new CustomerImporter)->import($snapshot, $context);
+        (new FinancialImporter)->import($snapshot, $context);
+
+        return [$snapshot, $context, $originalContext];
+    }
+
+    public function test_reconciled_email_refresh_uses_current_archive_and_preserves_original_lineage(): void
+    {
+        [$snapshot, $context, $original] = $this->refreshedFixture(true);
+        $before = DB::table('billmanager_records')->orderBy('id')->get()->all();
+        $mappings = DB::table('billmanager_mappings')->orderBy('id')->get()->all();
+        $plan = (new BalancePreview)->prepare($snapshot, $context, '2024-01-01 00:00:00', 'preserve');
+        $this->assertSame('12.3450', $plan['entries'][0]['exact_amount']);
+        $this->assertSame($original->mappedId('users', '11'), $plan['entries'][0]['owner_user_id']);
+        $this->assertEquals($before, DB::table('billmanager_records')->orderBy('id')->get()->all());
+        $this->assertEquals($mappings, DB::table('billmanager_mappings')->orderBy('id')->get()->all());
+        $this->assertFalse($plan['application_authorized']);
+        $this->assertSame(0, Credit::count());
+    }
+
+    public function test_refreshed_preview_rejects_a_context_bound_to_another_snapshot(): void
+    {
+        [$snapshot, $context] = $this->refreshedFixture();
+        DB::table('billmanager_imports')->where('id', $context->importId)
+            ->update(['snapshot_sha256' => str_repeat('f', 64)]);
+        $this->expectException(\RuntimeException::class);
+        (new BalancePreview)->prepare($snapshot, $context, '2024-01-01 00:00:00', 'preserve');
+    }
+
+    public function test_refreshed_preview_rejects_tampered_current_customer_archive(): void
+    {
+        [$snapshot, $context] = $this->refreshedFixture();
+        $record = BillmanagerRecord::where('import_id', $context->importId)->where('source_table', 'users')->sole();
+        $payload = $record->payload;
+        $payload['last_login'] = '2025-03-01 00:00:00';
+        $json = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+        DB::table('billmanager_records')->where('id', $record->id)->update([
+            'payload' => Crypt::encryptString($json), 'payload_sha256' => hash('sha256', $json),
+        ]);
+        $this->expectException(\RuntimeException::class);
+        (new BalancePreview)->prepare($snapshot, $context, '2024-01-01 00:00:00', 'preserve');
+    }
+
+    public function test_refreshed_preview_requires_current_account_and_user_archives(): void
+    {
+        [$snapshot, $context] = $this->refreshedFixture();
+        DB::table('billmanager_records')->where('import_id', $context->importId)->where('source_table', 'accounts')->delete();
+        $this->expectException(\RuntimeException::class);
+        (new BalancePreview)->prepare($snapshot, $context, '2024-01-01 00:00:00', 'preserve');
+    }
+
+    public function test_refreshed_preview_still_rejects_original_account_lineage_drift(): void
+    {
+        [$snapshot, $context, $original] = $this->refreshedFixture();
+        $record = BillmanagerRecord::where('import_id', $original->importId)->where('source_table', 'users')->sole();
+        $payload = $record->payload;
+        $payload['account'] = '99';
+        $json = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+        DB::table('billmanager_records')->where('id', $record->id)->update([
+            'payload' => Crypt::encryptString($json), 'payload_sha256' => hash('sha256', $json),
+        ]);
+        $this->expectException(\RuntimeException::class);
+        (new BalancePreview)->prepare($snapshot, $context, '2024-01-01 00:00:00', 'preserve');
+    }
+
     private function preview(string $path, array $options = [])
     {
         return $this->artisan('billmanager:balances:preview', $options + ['snapshot' => $path,

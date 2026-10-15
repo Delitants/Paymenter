@@ -292,6 +292,13 @@ The example source and dates are synthetic. Use the exact source identity and or
 
 The command verifies the existing checksum-bound import, exact financial ledger, source mappings, owner membership and active user holds. Duplicate balances for one account/currency and drift fail. Each source account/currency has one entry, preserving its exact amount, HALF_UP two-decimal rounding and delta. Proposed credits belong to the resolved owner, never every member login. Credit limits are retained separately and are not added to deposited funds. Signed debt remains a review case even if it rounds to zero. Shared accounts, credit limits, provisional funds and unknown/inactive or postpaid states are flagged for review.
 
+After an explicit customer identity refresh, previews validate current account and
+user records against that immutable snapshot's archive. Original mapping archives
+still prove the stable source ID and account lineage; historical emails remain
+unchanged. The native email must already match the current source record. A
+different snapshot binding, missing current archive, altered payload or changed
+original account lineage makes the preview fail. A preview never authorizes funds.
+
 Only aggregate counts are printed. `--report` is optional and creates a new file with mode 0600; existing files and symlinks are refused. Protect and retain the report as financial evidence. It contains exact amounts and mapped user identities.
 
 This command performs no database writes, creates no spendable credits or debt invoices, releases no holds, contacts no provider, and has no apply option. Repeated previews do not replay historical payments. A report is not an opening-credit receipt or authority to activate billing; atomic carryover application and unresolved financial policies remain separate handover work.

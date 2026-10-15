@@ -16,6 +16,11 @@ final class BalancePreview
         if ($creditLimitPolicy !== null && $creditLimitPolicy !== 'preserve') {
             throw new RuntimeException('Unsupported credit limit policy');
         }
+        if ($snapshot->sourceHost() !== $context->sourceHost || !DB::table('billmanager_imports')->where([
+            'id' => $context->importId, 'source_host' => $snapshot->sourceHost(), 'snapshot_sha256' => $snapshot->checksum(),
+        ])->exists()) {
+            throw new RuntimeException('Balance preview snapshot lineage requires reconciliation');
+        }
         (new FinancialReconciler)->compare($snapshot, $context);
         $owners = [];
         $members = [];
@@ -29,7 +34,7 @@ final class BalancePreview
             if ((string) $account->source_account_id !== (string) $source['id']) {
                 throw new RuntimeException('Account mapping conflicts with source identity');
             }
-            $this->verifyCustomerArchive($mapping, $source, 'accounts');
+            $this->verifyCustomerArchive($mapping, $source, 'accounts', $context);
             $expected = [];
             foreach ($snapshot->rows('users') as $user) {
                 if ((string) $user['account'] !== (string) $source['id']) {
@@ -44,7 +49,7 @@ final class BalancePreview
                 if (mb_strtolower(trim($native->email)) !== mb_strtolower(trim($user['email']))) {
                     throw new RuntimeException('Mapped customer identity requires reconciliation');
                 }
-                $this->verifyCustomerArchive($userMapping, $user, 'users');
+                $this->verifyCustomerArchive($userMapping, $user, 'users', $context);
                 if (!MigrationHold::isHeld($native)) {
                     throw new RuntimeException('Balance preview requires held source members');
                 }
@@ -168,7 +173,7 @@ final class BalancePreview
         return $plan;
     }
 
-    private function verifyCustomerArchive(object $mapping, array $source, string $table): void
+    private function verifyCustomerArchive(object $mapping, array $source, string $table, ImportContext $context): void
     {
         if (!DB::table('billmanager_imports')->where(['id' => $mapping->import_id, 'source_host' => $mapping->source_host])->exists()) {
             throw new RuntimeException('Customer mapping source lineage requires reconciliation');
@@ -179,9 +184,15 @@ final class BalancePreview
         if ((string) $record->source_account_id !== (string) $account
             || (string) ($payload['id'] ?? '') !== (string) $source['id']
             || !hash_equals($record->payload_sha256, hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)))
-            || ($table === 'users' && ((string) ($payload['account'] ?? '') !== (string) $account
-                || mb_strtolower(trim($payload['email'] ?? '')) !== mb_strtolower(trim($source['email']))))) {
+            || ($table === 'users' && (string) ($payload['account'] ?? '') !== (string) $account)) {
             throw new RuntimeException('Archived customer identity requires reconciliation');
+        }
+        // Mapping lineage is historical. Current details must come from the exact
+        // immutable refresh being previewed, after native identity reconciliation.
+        $current = BillmanagerRecord::where(['import_id' => $context->importId, 'source_table' => $table, 'source_id' => (string) $source['id']])->first();
+        if (!$current || (string) $current->source_account_id !== (string) $account || $current->payload !== $source
+            || !hash_equals($current->payload_sha256, hash('sha256', json_encode($current->payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)))) {
+            throw new RuntimeException('Current customer archive requires reconciliation');
         }
     }
 }
