@@ -63,3 +63,10 @@ class SqlDriverTests(unittest.TestCase):
     def test_native_unescaped_database_pattern_is_not_a_literal_schema(self):
         self.assertEqual(d._unpattern(r'fixture\_demo'),'fixture_demo')
         with self.assertRaises(SqlFenceError):d._unpattern('fixture_demo')
+
+    def test_zero_exit_does_not_hide_grant_table_corruption(self):
+        names=('mysql.user','mysql.db','mysql.tables_priv','mysql.columns_priv','mysql.procs_priv','mysql.proxies_priv','mysql.host')
+        good=tuple((n,'check','status','OK') for n in names)
+        d.assert_grant_integrity(d.AttemptResult('',0,None,good))
+        for rows in (good[:-1],(('mysql.user','check','error','Corrupt'),*good[1:]),(('mysql.user','check','status','Not OK'),*good[1:])):
+            with self.assertRaises(SqlFenceError):d.assert_grant_integrity(d.AttemptResult('',0,None,rows))

@@ -425,6 +425,12 @@ def shutdown_owned_server(c):
     require(not c.socket.exists(),'sql-socket-retirement')
 
 
+def assert_grant_integrity(result):
+    require(type(result) is AttemptResult and result.status==0 and result.error_code is None,'sql-grant-integrity')
+    require(len(result.rows)==len(COLUMNS) and {r[0] for r in result.rows if len(r)==4}=={'mysql.'+t for t in COLUMNS},'sql-grant-integrity')
+    require(all(len(r)==4 and r[1:]==('check','status','OK') for r in result.rows),'sql-grant-integrity')
+
+
 def restart_owned_server(c,hard):
     require(type(hard) is bool,'sql-restart');_guard(c)
     before=snapshot(c);c.supervisor.set_client_admission(False,None)
@@ -435,7 +441,7 @@ def restart_owned_server(c,hard):
     if c.socket.exists():
         require(_inode(c.socket)==c.socket_identity,'sql-reused-socket');c.socket.unlink()
     _start_server(c)
-    _query(c,'CHECK TABLE '+','.join('mysql.'+identifier(t) for t in COLUMNS)+';')
+    assert_grant_integrity(_query(c,'CHECK TABLE '+','.join('mysql.'+identifier(t) for t in COLUMNS)+';'))
     after=snapshot(c);require(after==before,'sql-restart-readback')
     c.supervisor.set_client_admission(True,snapshot_hash(after))
 
