@@ -249,7 +249,7 @@ class SqlDocuments(ReferenceSet):
         # Archive is validated only inside the admitted memory domain, never as JSON.
         require(archive['sha256']==manifest['archive_sha256'],'sql-runtime-archive')
         require(p['protected_schema'] in seed.schemas and set(p['preserved_schemas'])<=set(seed.schemas),'sql-schema-scope')
-        self.plan=p;self.manifest=frozen(manifest);self.verify_unchanged()
+        self.plan=p;self.plan_reference=dict(plan_ref);self.manifest=frozen(manifest);self.verify_unchanged()
         return FixturePlan(p,seed,tuple(BusinessRequirement(r['schema'],r['role'],tuple(sorted(r['privileges']))) for r in p['required_business']),tuple(p['cases']))
     def verify_unchanged(self):
         try:super().verify_unchanged()

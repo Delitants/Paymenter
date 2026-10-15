@@ -359,3 +359,57 @@ def create_fixture(runtime,supervisor):
             _query(c,_grant_sql(GrantOperation('grant:'+g.level,g.principal,g.target,g.privileges)),bootstrap=True)
     c.accepted=snapshot(c);require(c.accepted.grants==c.plan.seed,'sql-native-seed-mismatch')
     supervisor.evidence('original-snapshot',snapshot_record(c.accepted));return c
+
+
+def restore_original(c,original,expected_current):
+    _guard(c);current=snapshot(c)
+    require(current==expected_current,'sql-competing-restore-state')
+    require(current.account_nonprivilege_sha256==original.account_nonprivilege_sha256 and current.protected_sha256==original.protected_sha256,'sql-restore-preservation')
+    roles={(p.user,p.host) for p in c.plan.seed.principals}
+    require(current.grants.principals==original.grants.principals and current.grants.schemas==original.grants.schemas,'sql-restore-scope')
+    sql=[]
+    # Authentication/TLS/resource cells are not assigned or replaced.
+    for row in original.raw_grant_rows:
+        if row['table']!='user':continue
+        values=dict(zip(COLUMNS['user'],(_cell(v) for v in row['cells'])))
+        assignments=','.join(identifier(k+'_priv')+'='+_literal(values[k+'_priv']) for k,_ in FLAGS)
+        sql.append('UPDATE mysql.user SET '+assignments+' WHERE User='+_literal(values['User'])+' AND Host='+_literal(values['Host'])+';')
+    for table,cols in COLUMNS.items():
+        if table in ('user','host'):continue
+        # All rows were inventoried; an unexpected principal already denied snapshot.
+        for u,host in sorted(roles):
+            sql.append('DELETE FROM mysql.'+identifier(table)+' WHERE User='+_literal(u.encode())+' AND Host='+_literal(host.encode())+';')
+        for row in original.raw_grant_rows:
+            if row['table']==table:
+                sql.append('INSERT INTO mysql.'+identifier(table)+' ('+','.join(identifier(x) for x in cols)+') VALUES ('+','.join(_literal(_cell(v)) for v in row['cells'])+');')
+    _query(c,' '.join(sql)+' FLUSH PRIVILEGES;')
+    after=snapshot(c)
+    require(after.raw_grant_rows==original.raw_grant_rows and after.grants==original.grants and after.account_nonprivilege_sha256==original.account_nonprivilege_sha256 and after.protected_sha256==original.protected_sha256 and after.unrelated_sha256==current.unrelated_sha256,'sql-exact-restore')
+    c.accepted=after;c.supervisor.evidence('exact-restored-snapshot',snapshot_record(after));return after
+
+
+def shutdown_owned_server(c):
+    _guard(c)
+    args=(*c.loader,'/'+c.runtime['manifest']['roles']['mysqladmin'],
+          '--defaults-file=/tmp/'+c.options['administrator'].name,'--socket=/tmp/fence.sock','shutdown')
+    p=c.supervisor.spawn(args,'shutdown',True)
+    try:out,err=p.communicate(timeout=8)
+    except subprocess.TimeoutExpired:c.supervisor.stop_owned(p);raise SqlFenceError('sql-shutdown-timeout') from None
+    c.supervisor.evidence('shutdown',{'status':p.returncode,'stdout_hex':out.hex(),'stderr_hex':err.hex()})
+    require(p.returncode==0,'sql-shutdown');c.server.wait(timeout=5)
+    require(not c.socket.exists(),'sql-socket-retirement')
+
+
+def restart_owned_server(c,hard):
+    require(type(hard) is bool,'sql-restart');_guard(c)
+    before=snapshot(c);c.supervisor.set_client_admission(False,None)
+    require(not c.sessions,'sql-restart-session-census')
+    if hard:c.supervisor.stop_owned(c.server,hard=True)
+    else:shutdown_owned_server(c)
+    # Only the stopped server's inode-bound socket may be removed after a hard kill.
+    if c.socket.exists():
+        require(_inode(c.socket)==c.socket_identity,'sql-reused-socket');c.socket.unlink()
+    _start_server(c)
+    _query(c,'CHECK TABLE '+','.join('mysql.'+identifier(t) for t in COLUMNS)+';')
+    after=snapshot(c);require(after==before,'sql-restart-readback')
+    c.supervisor.set_client_admission(True,snapshot_hash(after))
