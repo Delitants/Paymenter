@@ -15,26 +15,46 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 
+
+def authentication_activity(lines, cutoff):
+    """An explicit log user ID survives renames and never follows a reused name.
+
+    Only records without an ID retain the legacy name-based fallback.
+    """
+    by_id, by_name = {}, {}
+    for line in lines:
+        if isinstance(line, bytes):
+            line = line.decode('utf8')
+        fields = line.rstrip('\n').split('\t')
+        if len(fields) != 5 or fields[0] < cutoff:
+            continue
+        match = re.match(r'^(.*)\(([0-9]+)\)$', fields[2])
+        target = by_id if match else by_name
+        identity = str(int(match.group(2))) if match else fields[2]
+        target[identity] = max(fields[0], target.get(identity, ''))
+    return by_id, by_name
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--source-id', required=True)
 parser.add_argument('--login-cutoff', required=True)
 parser.add_argument('--auth-log', default='/usr/local/mgr5/var/billmgr.auth.log')
 args = parser.parse_args()
 datetime.datetime.strptime(args.login_cutoff, '%Y-%m-%d %H:%M:%S')
-last_login = {}
-for line in open(args.auth_log):
-    fields = line.rstrip('\n').split('\t')
-    if len(fields) == 5 and fields[0] >= args.login_cutoff:
-        match = re.match(r"^(.*)\(([0-9]+)\)$", fields[2])
-        login = match.group(1) if match else fields[2]
-        last_login[login] = max(fields[0], last_login.get(login, ''))
-if not last_login:
+with open(args.auth_log) as auth_log:
+    login_by_id, login_by_name = authentication_activity(auth_log, args.login_cutoff)
+if not login_by_id and not login_by_name:
     raise RuntimeError('No eligible logins')
+predicates = []
+if login_by_id:
+    predicates.append('id IN (' + ','.join(sorted(login_by_id, key=int)) + ')')
 hexnames = []
-for name in sorted(last_login):
+for name in sorted(login_by_name):
     encoded = name.encode('utf8') if not isinstance(name, bytes) else name
     hexnames.append("CONVERT(0x" + binascii.hexlify(encoded).decode('ascii') + " USING utf8)")
-selection = "level=16 AND enabled='on' AND name IN (" + ','.join(hexnames) + ")"
+if hexnames:
+    predicates.append('name IN (' + ','.join(hexnames) + ')')
+selection = "level=16 AND enabled='on' AND (" + ' OR '.join(predicates) + ')'
 account_filter = ' IN (SELECT account FROM user WHERE ' + selection + ')'
 active_items = 'SELECT id FROM item WHERE account' + account_filter + ' AND parent IS NULL AND status IN (1,2,3,5)'
 tickets = 'SELECT id FROM ticket WHERE account_client' + account_filter
@@ -108,7 +128,11 @@ tables = dict((key, rows(part)) for key, part in zip(keys, parts[1:]))
 if not tables['users'] or not tables['accounts']:
     raise RuntimeError('Empty selection')
 for user in tables['users']:
-    user['last_login'] = last_login[user['name']]
+    activity = [stamp for stamp in (login_by_id.get(str(user['id'])),
+                                   login_by_name.get(user['name'])) if stamp is not None]
+    if not activity:
+        raise RuntimeError('Selected user has no qualifying authentication record')
+    user['last_login'] = max(activity)
 zone_path = os.path.realpath('/etc/localtime')
 source_timezone = zone_path.split('/zoneinfo/', 1)[1] if '/zoneinfo/' in zone_path else None
 result = {'source_timezone': source_timezone, 'schema_version': 1, 'source_host': args.source_id, 'login_cutoff': args.login_cutoff,

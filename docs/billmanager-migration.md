@@ -12,6 +12,12 @@ is inclusive and uses timestamps as recorded in that log; verify the source time
 zone before selecting a cutoff. Passwords, TOTP secrets and merchant credentials
 are intentionally excluded.
 
+Authentication records with an explicit user ID select that user even if their
+login has since changed. They do not qualify another user who reused the old
+login name. Only legacy records without a user ID use name-based matching; those
+records cannot distinguish a renamed or reused login. The exported `last_login`
+is the latest qualifying activity for the user ID or a matching legacy name.
+
 Stream the output to a private destination outside the web root. Restrict both the
 JSON file and its adjacent `.sha256` file to the operator. The sidecar must contain
 only the lowercase SHA-256 digest of the JSON bytes. Do not commit exports,
