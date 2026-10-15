@@ -329,3 +329,8 @@ provider. An encrypted password takes precedence over the legacy plain property.
 The password disclosure warns that a password changed inside the VM can differ
 from the saved value. Viewing credentials never resets a guest password or saves
 service properties.
+
+
+Client admission uses `billmanager_legacy_credentials.login_blocked` independently of financial and lifecycle holds. Operators must apply the approved, freshly checked eligibility exclusions before exposing an imported portal. Retain excluded identities, credentials, OTP and history. Set a specific `block_reason` for each admission hold; a credential re-import preserves every existing block except the known technical password/MFA block, which can clear when a valid bundle is installed. Clearing an admission hold requires an explicit reviewed data change.
+
+The shared login action rejects blocked users before creating a session, covering password, linked-account and pending OTP sign-in. Session resolution also revokes blocked users' existing and remembered device tokens. Password resets and credential upgrades do not clear admission blocks. This does not activate customer access or release billing holds.

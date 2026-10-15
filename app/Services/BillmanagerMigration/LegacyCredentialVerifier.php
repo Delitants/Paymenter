@@ -10,6 +10,8 @@ use RuntimeException;
 
 final class LegacyCredentialVerifier
 {
+    private const CREDENTIAL_BLOCK_REASON = 'Legacy password or required MFA needs a verified reset';
+
     public function findByLogin(string $login): ?User
     {
         $login = strtolower(trim($login));
@@ -27,6 +29,13 @@ final class LegacyCredentialVerifier
         return DB::table('billmanager_mappings')->where([
             'source_table' => 'users', 'target_table' => 'users', 'target_id' => $user->id,
         ])->exists();
+    }
+
+    public function canAuthenticate(User $user): bool
+    {
+        $legacy = DB::table('billmanager_legacy_credentials')->where('user_id', $user->id)->first();
+
+        return !$legacy || (!$legacy->login_blocked && $this->isMapped($user));
     }
 
     public function install(User $user, string $hash, ?string $totpSecret, bool $requiresMfa): void
@@ -51,7 +60,9 @@ final class LegacyCredentialVerifier
             $supportedHash = preg_match('/^\$(1|5|6|2[aby])\$/', $hash) === 1;
             $secret = strtoupper(trim($totpSecret ?? ''));
             $validFactor = preg_match('/^[A-Z2-7]{16,128}={0,6}$/', $secret) === 1;
-            $blocked = !$supportedHash || ($requiresMfa && !$validFactor);
+            // Admission holds are independent of whether the credential bundle is valid.
+            $admissionBlocked = $existing && $existing->login_blocked && $existing->block_reason !== self::CREDENTIAL_BLOCK_REASON;
+            $blocked = $admissionBlocked || !$supportedHash || ($requiresMfa && !$validFactor);
             if ($validFactor) {
                 DB::table('users')->where('id', $current->id)->update(['tfa_secret' => Crypt::encryptString($secret)]);
             }
@@ -59,7 +70,7 @@ final class LegacyCredentialVerifier
                 'credential' => Crypt::encryptString($hash),
                 'password_fingerprint' => hash('sha256', $current->password),
                 'login_blocked' => $blocked,
-                'block_reason' => $blocked ? 'Legacy password or required MFA needs a verified reset' : null,
+                'block_reason' => $admissionBlocked ? $existing->block_reason : ($blocked ? self::CREDENTIAL_BLOCK_REASON : null),
             ];
             if ($existing) {
                 $query->update($values);
