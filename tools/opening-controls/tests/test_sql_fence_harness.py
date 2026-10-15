@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from sql_fence_schema import SqlFenceError,canonical
+from sql_fence_schema import SqlFenceError,canonical,FixturePlan,DefinerObject
 from sql_fence_driver import SqlSnapshot,snapshot_record
 from sql_fence_projection import compile_projection
 from sql_fence_fixtures import model,preserved,requirements
@@ -72,3 +72,59 @@ class SqlHarnessTests(unittest.TestCase):
                 with patch('os.fsync',side_effect=OSError('full')):
                     with self.assertRaises(SqlFenceError):j.intent(p.establish[0],snap())
                 with self.assertRaises(SqlFenceError):j.verify_prefix()
+
+    def test_readmission_denies_cached_sessions_even_with_matching_snapshot(self):
+        s=object.__new__(h.OwnedSupervisor);s.context=object();s.clients_allowed=False;s.evidence=lambda *a:None
+        with patch.object(h,'snapshot',return_value=snap()),patch.object(h,'drain_barrier',side_effect=SqlFenceError('cached')):
+            with self.assertRaisesRegex(SqlFenceError,'cached'):s.set_client_admission(True,h.snapshot_hash(snap()))
+        self.assertFalse(s.clients_allowed)
+
+    def test_network_admission_uses_namespace_link_and_route_inventory(self):
+        h.validate_network([{'ifname':'lo'}],[],[])
+        for links,routes in (([{'ifname':'lo'},{'ifname':'eth0'}],[]),([{'ifname':'lo'}],[{'dst':'default'}])):
+            with self.assertRaises(SqlFenceError):h.validate_network(links,routes,[])
+
+    def test_native_launch_failure_is_retained_as_false_aggregate(self):
+        import types
+        from sql_fence_fixtures import plan_record
+        docs=types.SimpleNamespace(verify_unchanged=lambda:None,plan_reference={'sha256':'a'*64})
+        plan=FixturePlan(plan_record(),model(),requirements(),tuple(plan_record()['cases']))
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td).resolve();root.chmod(0o700)
+            with patch.object(h,'_launch',side_effect=SqlFenceError('sql-admission')):
+                result=h.run_rehearsal(plan,docs,root/'evidence')
+            self.assertFalse(result['native_passed']);self.assertFalse(result['real_execution_ready'])
+            self.assertTrue((root/'evidence/parent-failure.json').is_file())
+
+    def test_existing_evidence_directory_is_never_written_on_admission_failure(self):
+        import types
+        from sql_fence_fixtures import plan_record
+        docs=types.SimpleNamespace(verify_unchanged=lambda:None,plan_reference={'sha256':'a'*64})
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td).resolve();root.chmod(0o700)
+            with patch.object(h,'_launch',side_effect=SqlFenceError('sql-evidence-exclusive')):
+                with self.assertRaises(SqlFenceError):h.run_rehearsal(FixturePlan(plan_record(),model(),requirements(),tuple(plan_record()['cases'])),docs,root)
+            self.assertEqual(list(root.iterdir()),[])
+
+    def test_repeated_native_evidence_keeps_original_once_and_durable_events(self):
+        import time
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td).resolve();root.chmod(0o700)
+            s=object.__new__(h.OwnedSupervisor);s.counter=0;s.blobs={};s.deadline=time.monotonic()+10;s.evidence_root=root;s.events=None;s.events_identity=None;s.events_bytes=b''
+            s.evidence('attempt',{'counter':1});s.evidence('attempt',{'counter':1})
+            rows=[json.loads(x) for x in (root/'events.jsonl').read_text().splitlines()]
+            self.assertEqual(len(rows),2);self.assertEqual(rows[0]['original'],rows[1]['original'])
+            self.assertEqual(len(list(root.glob('*attempt.json'))),1)
+            if s.events is not None:s.events.close()
+
+    def test_unsafe_seed_is_rejected_before_any_native_launch_or_evidence_write(self):
+        import types
+        from sql_fence_fixtures import plan_record
+        bad=replace(model(),definitions=(DefinerObject('fixture_web','view',('fx_admin','localhost'),'0'*64),))
+        plan=FixturePlan(plan_record(),bad,requirements(),tuple(plan_record()['cases']))
+        docs=types.SimpleNamespace(verify_unchanged=lambda:None,plan_reference={'sha256':'a'*64})
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td).resolve();root.chmod(0o700)
+            with patch.object(h,'_launch',side_effect=AssertionError('unsafe input reached native launch')):
+                with self.assertRaises(SqlFenceError):h.run_rehearsal(plan,docs,root/'evidence')
+            self.assertFalse((root/'evidence').exists())

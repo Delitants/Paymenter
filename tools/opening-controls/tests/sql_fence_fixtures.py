@@ -3,7 +3,7 @@ import hashlib
 import os
 from pathlib import Path
 from source_schema import canonical
-from sql_fence_schema import CASE_IDS, parse_seed, BusinessRequirement
+from sql_fence_schema import CASE_IDS, parse_seed, BusinessRequirement, PRIVILEGES
 
 
 def preserved():
@@ -25,7 +25,7 @@ def seed_record():
             'principals':principals,
             'grants':[
                 {'principal':['fx_admin','localhost'],'level':'global','target':[],
-                 'privileges':['SELECT','INSERT','UPDATE','DELETE','CREATE','DROP','ALTER','INDEX','SUPER','FILE','GRANT OPTION','CREATE USER','PROCESS','RELOAD','SHUTDOWN','SHOW DATABASES','CREATE TABLESPACE']},
+                 'privileges':sorted(PRIVILEGES)},
                 {'principal':['fx_writer','localhost'],'level':'global','target':[],
                  'privileges':['SELECT','INSERT','UPDATE','DELETE','CREATE','DROP','ALTER','INDEX','SUPER','FILE','GRANT OPTION','CREATE USER','CREATE TABLESPACE']},
                 {'principal':['fx_shared','localhost'],'level':'global','target':[],

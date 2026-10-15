@@ -2,11 +2,12 @@
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
 from types import MappingProxyType
 from typing import Mapping
-from boundary_refs import ReferenceSet, entry_count
+from boundary_refs import ReferenceSet, entry_count, ordinary, token
 from boundary_schema import BoundaryError
 from custody import strict_json
 from source_schema import SourceError, validate_runtime_manifest
@@ -159,6 +160,14 @@ def header(v,purpose):
     require(v.get('purpose')==purpose,'sql-purpose')
 
 
+def _closed_parser(fn):
+    def parse(raw):
+        try:return fn(raw)
+        except (TypeError,KeyError,ValueError,RecursionError):
+            raise SqlFenceError('sql-contract') from None
+    return parse
+
+@_closed_parser
 def parse_plan(raw: bytes) -> dict:
     v=_json(raw)
     keys(v,'schema_version purpose runtime_archive runtime_manifest grant_seed protected_schema preserved_schemas required_business cases')
@@ -186,6 +195,7 @@ def model_record(m: GrantModel) -> dict:
             'definitions':[{'schema':d.schema,'kind':d.kind,'definer':list(d.definer),'definition_sha256':d.definition_sha256} for d in m.definitions]}
 
 
+@_closed_parser
 def parse_seed(raw: bytes) -> GrantModel:
     v=_json(raw);keys(v,'schema_version purpose schemas principals grants definitions');header(v,'fictional-sql-grant-seed')
     require(all(type(v[k]) is list for k in ('schemas','principals','grants','definitions')))
@@ -225,6 +235,7 @@ def parse_seed(raw: bytes) -> GrantModel:
 
 class SqlDocuments(ReferenceSet):
     def __init__(self,root: Path):
+        self.archive_pin=None
         try:super().__init__(root)
         except BoundaryError as e:raise SqlFenceError('sql-'+str(e)) from None
         self.sql_cache={};self.plan=None;self.manifest=None
@@ -248,10 +259,45 @@ class SqlDocuments(ReferenceSet):
         require(self.root in Path(archive['path']).parents,'sql-reference-path')
         # Archive is validated only inside the admitted memory domain, never as JSON.
         require(archive['sha256']==manifest['archive_sha256'],'sql-runtime-archive')
+        self._pin_archive(archive)
         require(p['protected_schema'] in seed.schemas and set(p['preserved_schemas'])<=set(seed.schemas),'sql-schema-scope')
         self.plan=p;self.plan_reference=dict(plan_ref);self.manifest=frozen(manifest);self.verify_unchanged()
         return FixturePlan(p,seed,tuple(BusinessRequirement(r['schema'],r['role'],tuple(sorted(r['privileges']))) for r in p['required_business']),tuple(p['cases']))
+    def close(self):
+        if self.archive_pin is not None:
+            os.close(self.archive_pin[0]);self.archive_pin=None
+        super().close()
+    def _pin_archive(self,r):
+        reference(r);require(self.archive_pin is None,'sql-archive-reuse');p=Path(r['path'])
+        require(self.root in p.parents,'sql-reference-path')
+        try:
+            parent=self._directories(p.parent,self.root)
+            before=os.stat(p.name,dir_fd=parent,follow_symlinks=False);ordinary(before)
+            fd=os.open(p.name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,dir_fd=parent)
+            try:
+                after=os.fstat(fd);ordinary(after)
+                require(token(before)==token(after) and after.st_size<=256*1024**2,'sql-archive-identity')
+            except BaseException:os.close(fd);raise
+            self.archive_pin=(fd,parent,p.name,token(after),after.st_size,r['sha256'])
+        except (OSError,BoundaryError):raise SqlFenceError('sql-archive-identity') from None
+    def _archive_metadata(self):
+        if self.archive_pin is None:return
+        fd,parent,name,identity,size,h=self.archive_pin
+        try:
+            current=os.stat(name,dir_fd=parent,follow_symlinks=False);held=os.fstat(fd);ordinary(current);ordinary(held)
+            require(token(current)==identity==token(held) and current.st_size==size==held.st_size,'sql-archive-replacement')
+        except (OSError,BoundaryError):raise SqlFenceError('sql-archive-identity') from None
+    def verify_archive(self):
+        # Called only inside the admitted worker, separate from bounded JSON reads.
+        require(self.archive_pin is not None,'sql-archive-custody');self.verify_unchanged()
+        fd,_,_,_,size,h=self.archive_pin;os.lseek(fd,0,os.SEEK_SET);digest=hashlib.sha256();count=0
+        while True:
+            raw=os.read(fd,65536)
+            if not raw:break
+            digest.update(raw);count+=len(raw);require(count<=size,'sql-archive-size')
+        require(count==size and digest.hexdigest()==h,'sql-archive-hash');self.verify_unchanged()
     def verify_unchanged(self):
+        self._archive_metadata()
         try:super().verify_unchanged()
         except BoundaryError as e:raise SqlFenceError('sql-'+str(e)) from None
     def runtime_manifest_record(self):

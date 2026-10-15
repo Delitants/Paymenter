@@ -66,3 +66,45 @@ class SqlSchemaTests(unittest.TestCase):
             p.unlink();p.symlink_to('/etc/passwd')
             with SqlDocuments(root) as docs:
                 with self.assertRaises(SqlFenceError):docs._json(r)
+
+    def test_malformed_nested_shapes_are_sanitized_rejections(self):
+        for field,value in (('cases',[{}]*10),('preserved_schemas',[{},'fixture_a','fixture_b'])):
+            d=plan_record();d[field]=value
+            with self.assertRaises(SqlFenceError):parse_plan(canonical(d))
+        for field,value in (('privileges',[{}]),('level',{}),('principal',[{},{}])):
+            d=seed_record();d['grants'][0][field]=value
+            with self.assertRaises(SqlFenceError):parse_seed(canonical(d))
+
+    def test_binary_archive_is_pinned_separately_and_replacement_denies(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td).resolve();root.chmod(0o700);p=root/'archive';p.write_bytes(b'fictional archive');p.chmod(0o600)
+            ref={'path':str(p),'sha256':hashlib.sha256(p.read_bytes()).hexdigest()}
+            if sys.platform!='linux' or os.geteuid()!=0:
+                with self.assertRaises(SqlFenceError):SqlDocuments(root)
+                return
+            with SqlDocuments(root) as docs:
+                docs._pin_archive(ref);docs.verify_archive()
+                q=root/'replacement';q.write_bytes(p.read_bytes());q.chmod(0o600);q.replace(p)
+                with self.assertRaises(SqlFenceError):docs.verify_unchanged()
+
+    def test_native_private_file_owner_mode_links_and_ancestor_denied(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td).resolve();root.chmod(0o700)
+            if sys.platform!='linux' or os.geteuid()!=0:
+                with self.assertRaises(SqlFenceError):SqlDocuments(root)
+                return
+            p=root/'input';p.write_bytes(canonical(plan_record()));p.chmod(0o600)
+            ref={'path':str(p),'sha256':hashlib.sha256(p.read_bytes()).hexdigest()}
+            for uid,gid,mode in ((0,0,0o644),(1000,0,0o600),(0,1000,0o600)):
+                os.chown(p,uid,gid);p.chmod(mode)
+                with SqlDocuments(root) as docs:
+                    with self.assertRaises(SqlFenceError):docs._json(ref)
+                os.chown(p,0,0);p.chmod(0o600)
+            link=root/'hard';os.link(p,link)
+            with SqlDocuments(root) as docs:
+                with self.assertRaises(SqlFenceError):docs._json(ref)
+            link.unlink()
+            with SqlDocuments(root) as docs:
+                docs._json(ref);root.chmod(0o755)
+                with self.assertRaises(SqlFenceError):docs.verify_unchanged()
+                root.chmod(0o700)

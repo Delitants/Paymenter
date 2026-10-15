@@ -14,6 +14,7 @@ import stat
 import subprocess
 import time
 from control import process_identity
+from custody import private_file,CustodyError
 from lock_runtime import verify_runtime
 from sql_fence_schema import (SqlFenceError,GrantRow,GrantModel,CASE_IDS,ROLES,canonical,
     model_record,parse_seed,sha,require,frozen,detached)
@@ -108,14 +109,21 @@ def _guard(c):
         require(_namespaces(c.server.pid)==c.namespaces==_namespaces(os.getpid()),'sql-server-namespace')
         for p,i in c.directories:
             st=p.lstat();require(stat.S_ISDIR(st.st_mode) and st.st_uid==0 and st.st_gid==0 and stat.S_IMODE(st.st_mode)==0o700 and _inode(p)==i,'sql-owned-directory')
-        require(_inode(c.marker)==c.marker_identity and c.marker.read_bytes()==c.marker_value,'sql-fixture-marker')
+        private_file(c.marker);require(_inode(c.marker)==c.marker_identity and c.marker.read_bytes()==c.marker_value,'sql-fixture-marker')
         st=c.socket.lstat();require(stat.S_ISSOCK(st.st_mode) and st.st_uid==0 and _inode(c.socket)==c.socket_identity,'sql-owned-socket')
         require((c.jail/'tmp/fence.pid').read_text().strip()==str(c.server.pid),'sql-server-pidfile')
     except (OSError,AttributeError):raise SqlFenceError('sql-physical-identity') from None
 
 
+def guard_option(path,identity,expected_sha256):
+    try:
+        require(private_file(path)==tuple(identity) and sha(path.read_bytes())==expected_sha256,'sql-client-options')
+    except (OSError,CustodyError):raise SqlFenceError('sql-client-options') from None
+
+
 def _command(c,role,tcp=False):
     require(role in c.options,'sql-role')
+    guard_option(c.options[role],*c.option_identities[role])
     opts='/tmp/'+c.options[role].name
     args=(*c.loader,'/'+c.runtime['manifest']['roles']['mysql'],'--defaults-file='+opts,
           '--batch','--raw','--skip-column-names','--unbuffered','--connect-timeout=2')
@@ -163,15 +171,20 @@ def _grant_sql(op):
 
 
 def _raw_rows(c):
-    result=[]
+    statements=[]
     for table,cols in COLUMNS.items():
         expressions=["IF("+identifier(x)+" IS NULL,'N',CONCAT('H',HEX(CAST("+identifier(x)+" AS BINARY))))" for x in cols]
-        rows=_query(c,'SELECT '+','.join(expressions)+' FROM mysql.'+identifier(table)+' ORDER BY '+','.join(identifier(x) for x in cols)+';').rows
-        for cells in rows:
-            require(len(cells)==len(cols),'sql-grant-columns')
-            for cell in cells:_cell(cell)
-            result.append({'table':table,'cells':tuple(cells)})
-    return tuple(result)
+        statements.append("SELECT '"+table+"',"+','.join(expressions)+' FROM mysql.'+identifier(table)+' ORDER BY '+','.join(identifier(x) for x in cols)+';')
+    statements.append("SELECT '__definitions__',(SELECT COUNT(*) FROM information_schema.VIEWS WHERE TABLE_SCHEMA LIKE 'fixture%')+(SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA LIKE 'fixture%')+(SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA LIKE 'fixture%')+(SELECT COUNT(*) FROM information_schema.EVENTS WHERE EVENT_SCHEMA LIKE 'fixture%');")
+    rows=_query(c,' '.join(statements)).rows
+    require(rows and len(rows[-1])==2 and rows[-1][0]=='__definitions__','sql-definition-census')
+    result=[]
+    for row in rows[:-1]:
+        table=row[0];require(table in COLUMNS,'sql-grant-table');cells=row[1:]
+        require(len(cells)==len(COLUMNS[table]),'sql-grant-columns')
+        for cell in cells:_cell(cell)
+        result.append({'table':table,'cells':tuple(cells)})
+    return tuple(result),rows[-1][1]
 
 
 def _unpattern(v):
@@ -184,7 +197,7 @@ def _unpattern(v):
     require(database_pattern(out)==v,'sql-database-pattern');return out
 
 
-def _logical(c,raw):
+def _logical(c,raw,definition_count):
     grants=[];users=set();nonpriv=[];mapping={k+'_priv':v for k,v in FLAGS}
     roles={(p.user,p.host):p.role for p in c.plan.seed.principals}
     for row in raw:
@@ -207,30 +220,41 @@ def _logical(c,raw):
         if privileges:grants.append(GrantRow(principal,level,target,privileges))
     require(users==set(roles),'sql-account-census')
     # Unexpected objects cannot hide behind an input model that declared none.
-    defs=_query(c,"SELECT (SELECT COUNT(*) FROM information_schema.VIEWS WHERE TABLE_SCHEMA LIKE 'fixture%')+(SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA LIKE 'fixture%')+(SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA LIKE 'fixture%')+(SELECT COUNT(*) FROM information_schema.EVENTS WHERE EVENT_SCHEMA LIKE 'fixture%');").rows
-    require(defs==( ('0',), ),'sql-definer-escape')
+    require(definition_count=='0','sql-definer-escape')
     m=GrantModel(c.plan.seed.schemas,c.plan.seed.principals,tuple(sorted(grants,key=lambda g:(g.principal,g.level,g.target))),())
     require(parse_seed(canonical(model_record(m)))==m,'sql-native-grants')
     return m,sha(canonical(nonpriv))
 
 
-def _schema_hash(c,schemas):
-    statements=[]
+def _data_hashes(c):
+    protected=c.plan.value['protected_schema'];preserved=tuple(c.plan.value['preserved_schemas'])
+    schemas=(protected,*preserved)
+    expected=[];statements=["SELECT 'I',TABLE_SCHEMA,TABLE_NAME,ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA IN ("+','.join(_literal(s.encode()) for s in schemas)+') ORDER BY TABLE_SCHEMA,TABLE_NAME;']
     for schema in schemas:
-        tables=_query(c,"SELECT TABLE_NAME,ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA="+_literal(schema.encode())+' ORDER BY TABLE_NAME;').rows
-        if schema==c.plan.value['protected_schema']:
-            require(tables==tuple(('t%03d'%i,'InnoDB') for i in range(300)),'sql-protected-manifest')
-        for name,engine in tables:
-            require(re.fullmatch(r'(t[0-9]{3}|counter|accepted)',name) is not None,'sql-object-manifest')
-            target=identifier(schema)+'.'+identifier(name)
-            statements.extend(('SHOW CREATE TABLE '+target+';','SELECT * FROM '+target+' ORDER BY id;'))
-    return sha(canonical([list(r) for r in _query(c,' '.join(statements)).rows]))
+        tables=tuple('t%03d'%i for i in range(300)) if schema==protected else ('counter',)
+        engine='MyISAM' if schema==preserved[1] else 'InnoDB'
+        for table in tables:
+            expected.append(('I',schema,table,engine));target=identifier(schema)+'.'+identifier(table)
+            statements.extend(("SELECT 'D',"+_literal(schema.encode())+','+_literal(table.encode())+';',
+                               'SHOW CREATE TABLE '+target+';','SELECT * FROM '+target+' ORDER BY id;'))
+    rows=_query(c,' '.join(statements)).rows
+    census=tuple(r for r in rows if r and r[0]=='I')
+    require(census==tuple(sorted(expected)),'sql-data-manifest')
+    buckets={s:[] for s in schemas};current=None;seen=set()
+    for row in rows[len(census):]:
+        if len(row)==3 and row[0]=='D':
+            schema,table=row[1:];require((schema,table) not in seen and ('I',schema,table,'MyISAM' if schema==preserved[1] else 'InnoDB') in expected,'sql-data-marker')
+            seen.add((schema,table));current=schema;buckets[schema].append(list(row))
+        else:
+            require(current is not None,'sql-data-marker');buckets[current].append(list(row))
+    require(len(seen)==303,'sql-data-manifest')
+    return sha(canonical(buckets[protected])),sha(canonical({s:buckets[s] for s in preserved}))
 
 
 def snapshot(c):
-    _guard(c);raw=_raw_rows(c);m,nonpriv=_logical(c,raw)
-    return SqlSnapshot(m,raw,nonpriv,_schema_hash(c,(c.plan.value['protected_schema'],)),
-                       _schema_hash(c,tuple(c.plan.value['preserved_schemas'])))
+    _guard(c);raw,definitions=_raw_rows(c);m,nonpriv=_logical(c,raw,definitions)
+    protected,unrelated=_data_hashes(c)
+    return SqlSnapshot(m,raw,nonpriv,protected,unrelated)
 
 
 def execute_operation(c,op):
@@ -277,6 +301,7 @@ def _probe(c,key,role):
         'grant_table':'UPDATE mysql.user SET Super_priv=\'Y\' WHERE User=\'fx_writer\';',
         'create_user':"CREATE USER 'fx_escape'@'localhost';",
         'super':'SET GLOBAL read_only=1;',
+        'event_scheduler':'SET GLOBAL event_scheduler=ON;',
         'file':"SELECT 'fixture' INTO OUTFILE '/tmp/forbidden';",
         'tablespace':'CREATE TABLESPACE fixture_escape ADD DATAFILE \'/tmp/escape\';'}
     require(key in queries and role in ROLES,'sql-probe')
@@ -319,11 +344,11 @@ def create_fixture(runtime,supervisor):
     try:out,err=p.communicate(bootstrap,timeout=30)
     except subprocess.TimeoutExpired:supervisor.stop_owned(p);raise SqlFenceError('sql-bootstrap-timeout') from None
     supervisor.evidence('bootstrap',{'status':p.returncode,'stdout_hex':out.hex(),'stderr_hex':err.hex()});require(p.returncode==0,'sql-bootstrap')
-    c.options={};c.actors={}
+    c.options={};c.actors={};c.option_identities={}
     def options(role,actor,password):
         p=c.jail/'tmp'/('client-'+secrets.token_hex(6)+'.cnf')
         supervisor.exclusive_bytes(p,('[client]\nuser='+actor[0]+'\npassword='+password+'\n').encode())
-        c.options[role]=p;c.actors[role]=actor
+        c.options[role]=p;c.actors[role]=actor;c.option_identities[role]=(_inode(p),sha(p.read_bytes()))
     options('administrator',('root','localhost'),'')
     _start_server(c)
     require(_query(c,'SELECT @@version,@@datadir,@@socket;',bootstrap=True).rows==( ('5.5.68-MariaDB','/data-v1/','/tmp/fence.sock'), ),'sql-runtime-version')
@@ -358,7 +383,7 @@ def create_fixture(runtime,supervisor):
         if next(p.role for p in c.plan.seed.principals if (p.user,p.host)==g.principal)!='administrator':
             _query(c,_grant_sql(GrantOperation('grant:'+g.level,g.principal,g.target,g.privileges)),bootstrap=True)
     c.accepted=snapshot(c);require(c.accepted.grants==c.plan.seed,'sql-native-seed-mismatch')
-    supervisor.evidence('original-snapshot',snapshot_record(c.accepted));return c
+    c.original=c.accepted;supervisor.evidence('original-snapshot',snapshot_record(c.accepted));return c
 
 
 def restore_original(c,original,expected_current):
@@ -413,3 +438,39 @@ def restart_owned_server(c,hard):
     _query(c,'CHECK TABLE '+','.join('mysql.'+identifier(t) for t in COLUMNS)+';')
     after=snapshot(c);require(after==before,'sql-restart-readback')
     c.supervisor.set_client_admission(True,snapshot_hash(after))
+
+
+def _open_session(c,role):
+    _guard(c);require(c.supervisor.clients_allowed,'sql-client-admission')
+    p=c.supervisor.spawn(_command(c,role),'client',True)
+    p.stdin.write(b'SELECT CURRENT_USER(),CONNECTION_ID();\n');p.stdin.flush()
+    line=_session_line(p);require(len(line)==2 and line[0]==c.actors[role][0]+'@'+c.actors[role][1],'sql-session-authentication')
+    s={'process':p,'id':int(line[1]),'user':c.actors[role][0],'role':role};c.sessions.append(s);return s
+
+
+def _session_line(p):
+    require(p.poll() is None and select.select([p.stdout],[],[],8)[0],'sql-session-timeout')
+    raw=p.stdout.readline(4097);require(raw and len(raw)<=4096,'sql-session-output')
+    return tuple(raw.decode().strip().split('\t'))
+
+
+def _session_statement(c,s,key):
+    _guard(c);require(s in c.sessions and s['process'].poll() is None,'sql-session-custody')
+    target=identifier(c.plan.value['protected_schema'])+'.t000'
+    sql={'zero_update':'UPDATE '+target+" SET value=value WHERE id=0; SELECT 'ZERO_AUTHORIZED';",
+         'transaction':"START TRANSACTION; SELECT 'TRANSACTION_STARTED';",
+         'read':'SELECT value FROM '+target+' WHERE id=1;',
+         'active':"SELECT SLEEP(2);"}
+    require(key in sql,'sql-session-probe');s['process'].stdin.write((sql[key]+'\n').encode());s['process'].stdin.flush()
+    if key=='active':return None
+    return _session_line(s['process'])
+
+
+def _close_session(c,s,hard=False):
+    require(s in c.sessions,'sql-session-custody');p=s['process']
+    if hard:c.supervisor.stop_owned(p,hard=True)
+    else:
+        p.stdin.close()
+        try:p.wait(timeout=5)
+        except subprocess.TimeoutExpired:raise SqlFenceError('sql-session-drain-timeout') from None
+    c.sessions.remove(s)

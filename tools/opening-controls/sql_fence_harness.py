@@ -15,7 +15,7 @@ from control import process_identity
 from custody import private_directory,private_file,CustodyError,strict_json
 from lock_runtime import stage_runtime,verify_runtime
 from sql_fence_schema import (SqlFenceError,canonical,sha,require,SqlDocuments,detached,CASE_IDS)
-from sql_fence_projection import semantic_hash,apply_operation
+from sql_fence_projection import semantic_hash,apply_operation,compile_projection
 from sql_fence_driver import (snapshot,snapshot_hash,snapshot_record,execute_operation,
     restore_original,drain_barrier,shutdown_owned_server,_namespaces)
 
@@ -61,8 +61,9 @@ def _evidence_size(root):
     total=0
     for p in Path(root).rglob('*'):
         s=p.lstat();require(not stat.S_ISLNK(s.st_mode),'sql-evidence-link')
-        if stat.S_ISREG(s.st_mode):total+=s.st_size
-        else:require(stat.S_ISDIR(s.st_mode),'sql-evidence-type')
+        if stat.S_ISREG(s.st_mode):total+=max(s.st_size,s.st_blocks*512)
+        else:
+            require(stat.S_ISDIR(s.st_mode),'sql-evidence-type');total+=s.st_blocks*512
     require(total<=EVIDENCE_LIMIT,'sql-evidence-budget');return total
 
 class OperationJournal:
@@ -102,7 +103,7 @@ class OperationJournal:
         record={'schema_version':1,'purpose':'fictional-sql-grant-operation','generation':self.generation,
             'seq':seq,'previous':sha(canonical(records[-1])) if records else '0'*64,
             'kind':kind,'intent_id':intent_id,'value':value}
-        raw=canonical(record);require(sum(p.stat().st_size for p in self.root.iterdir())+len(raw)<=EVIDENCE_LIMIT,'sql-journal-budget')
+        raw=canonical(record);require(_evidence_size(getattr(self,'evidence_root',self.root))+((len(raw)+4095)//4096)*4096<=EVIDENCE_LIMIT,'sql-journal-budget')
         pending=self.root/('%06d.pending'%seq);final=self.root/('%06d.json'%seq)
         try:
             _exclusive(pending,raw);os.link(pending,final,follow_symlinks=False);pending.unlink()
@@ -156,6 +157,11 @@ def _run_fixed(argv,timeout=8):
     return p.stdout
 
 
+def validate_network(links,ipv4_routes,ipv6_default_routes):
+    require(type(links) is list and len(links)==1 and links[0].get('ifname')=='lo','sql-external-interface')
+    require(ipv4_routes==[] and ipv6_default_routes==[],'sql-external-route')
+
+
 def _mount_record(path):
     matches=[]
     for line in Path('/proc/self/mountinfo').read_text().splitlines():
@@ -169,15 +175,14 @@ class OwnedSupervisor:
         self._admitted=False;self.config=config;self.plan=plan;self.root=Path(config['root'])
         self.evidence_root=Path(config['evidence']);self.cgroup=Path(config['cgroup']);self.processes=[]
         self.deadline=config['deadline'];self.clients_allowed=False;self.counter=0;self.context=None
-        self.mounts=[];self.log_files=[];self._runtime=None
+        self.mounts=[];self.log_files=[];self._runtime=None;self.blobs={};self.events=None;self.events_identity=None;self.events_bytes=b''
         self._admission_guard();self._admitted=True
         _run_fixed(('mount','--make-rprivate','/'))
         _run_fixed(('mount','-t','tmpfs','-o','size=268435456,mode=0700,nosuid,nodev','sql-fixture',str(self.root)))
         self.mounts.append(_mount_record(self.root));self.root_identity=_token(self.root)
         require(os.statvfs(self.root).f_blocks*os.statvfs(self.root).f_frsize==TMPFS_LIMIT,'sql-tmpfs-budget')
         _run_fixed(('ip','link','set','lo','up'))
-        require(set(os.listdir('/sys/class/net'))=={'lo'},'sql-external-interface')
-        require(not _run_fixed(('ip','route','show')).strip() and not _run_fixed(('ip','-6','route','show','default')).strip(),'sql-external-route')
+        validate_network(json.loads(_run_fixed(('ip','-json','link','show'))),json.loads(_run_fixed(('ip','-json','route','show'))),json.loads(_run_fixed(('ip','-json','-6','route','show','default'))))
         self.evidence('admission',{'namespaces':_namespaces(os.getpid()),'cgroup_identity':list(_token(self.cgroup)),
               'limits':self._limits(),'root_mount':self.mounts[0],'resources':resources(),'real_execution_ready':False})
     def _limits(self):return {k:(self.cgroup/k).read_text().strip() for k in ('memory.max','memory.swap.max','pids.max')}
@@ -197,8 +202,20 @@ class OwnedSupervisor:
     def exclusive_bytes(self,path,raw):_exclusive(path,raw)
     def evidence(self,label,value):
         self.deadline_guard();self.counter+=1
-        raw=canonical(value);require(_evidence_size(self.evidence_root)+len(raw)<=EVIDENCE_LIMIT,'sql-evidence-budget')
-        _exclusive(self.evidence_root/('%05d-%s.json'%(self.counter,label)),raw)
+        raw=canonical(value);h=sha(raw)
+        require(_evidence_size(self.evidence_root)+((len(raw)+4095)//4096)*4096+4096<=EVIDENCE_LIMIT,'sql-evidence-budget')
+        if h not in self.blobs:
+            original='%05d-%s.json'%(self.counter,label)
+            _exclusive(self.evidence_root/original,raw);self.blobs[h]=original
+        event=canonical({'sequence':self.counter,'observed_monotonic_ns':time.monotonic_ns(),
+            'label':label,'original':self.blobs[h],'sha256':h})+b'\n'
+        path=self.evidence_root/'events.jsonl'
+        if self.events is None:
+            self.events=os.fdopen(os.open(path,os.O_WRONLY|os.O_APPEND|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600),'wb',buffering=0)
+            self.events_identity=private_file(path)
+        require(private_file(path)==self.events_identity and path.read_bytes()==self.events_bytes,'sql-evidence-events-replacement')
+        require(self.events.write(event)==len(event),'sql-evidence-events-write');os.fsync(self.events.fileno());self.events_bytes+=event
+
     def spawn(self,argv,label,interactive):
         require(self._admitted and type(argv) is tuple and label in ('bootstrap','server','client','shutdown','controller'),'sql-not-admitted')
         self._admission_guard()
@@ -222,6 +239,9 @@ class OwnedSupervisor:
         require(type(allow) is bool,'sql-client-admission')
         if allow:
             require(self.context is not None and expected_snapshot_sha256==snapshot_hash(snapshot(self.context)),'sql-client-readmission')
+            prior=self.clients_allowed;self.clients_allowed=True
+            try:drain_barrier(self.context,())
+            finally:self.clients_allowed=prior
         self.clients_allowed=allow
         self.evidence('client-admission',{'allow':allow,'snapshot_sha256':expected_snapshot_sha256,'real_execution_ready':False})
     def prepare_runtime(self,documents):
@@ -266,6 +286,7 @@ def retire(supervisor,evidence_root):
     peak=int((s.cgroup/'memory.peak').read_text());events=(s.cgroup/'memory.events').read_text()
     require(peak<=MEMORY_LIMIT and all(int(x.split()[1])==0 for x in events.splitlines() if x.split()[0] in ('oom','oom_kill','max')),'sql-memory-budget')
     s.evidence('pre-retirement',{'all_owned_processes_retired':True,'memory_peak':peak,'memory_events':events,'evidence_bytes':_evidence_size(evidence_root),'real_execution_ready':False})
+    if s.events is not None:s.events.close();s.events=None
     manifest=_manifest(evidence_root,'phase-manifest.json')
     _exclusive(evidence_root/'retention-request.json',canonical({'schema_version':1,'purpose':'fictional-sql-retention-request','manifest_sha256':manifest['sha256']}))
     # The operator independently retains and verifies the phase originals, then
@@ -294,15 +315,15 @@ def _worker(config_fd,barrier_fd):
     try:
         with SqlDocuments(Path(config['reference_root'])) as documents:
             plan=documents.load(config['plan_ref']);sup=OwnedSupervisor(config,plan)
-            runtime=sup.prepare_runtime(documents)
+            documents.verify_archive();runtime=sup.prepare_runtime(documents)
             from sql_fence_driver import create_fixture
             from sql_fence_cases import run_case
             c=create_fixture(runtime,sup);sup.context=c
             sup.clients_allowed=True
             for case in CASE_IDS:
-                documents.verify_unchanged();sup.deadline_guard()
+                documents.verify_archive();sup.deadline_guard()
                 outcome['checks'][case]=run_case(case,c,sup)
-            documents.verify_unchanged()
+            documents.verify_archive()
     except BaseException as e:
         outcome['error']=e.code if isinstance(e,SqlFenceError) else type(e).__name__
         # The traceback stays private and bounded; public stdout never contains it.
@@ -326,8 +347,7 @@ def _launch(plan,documents,evidence_root):
     parent=Path(evidence_root).parent
     try:private_directory(parent)
     except (OSError,CustodyError):raise SqlFenceError('sql-evidence-parent') from None
-    require(Path(evidence_root).is_absolute() and not Path(evidence_root).exists() and not Path(evidence_root).is_symlink(),'sql-evidence-exclusive')
-    evidence_root.mkdir(mode=0o700)
+    private_directory(evidence_root);require(not any(evidence_root.iterdir()),'sql-evidence-exclusive')
     cgroup_parent=Path('/sys/fs/cgroup')
     require({'memory','pids'}<=set((cgroup_parent/'cgroup.subtree_control').read_text().split()),'sql-cgroup-delegation')
     suffix=secrets.token_hex(12);root=Path('/dev/shm')/('opening-sql-'+suffix);group=cgroup_parent/('opening-sql-'+suffix)
@@ -392,3 +412,60 @@ def _launch(plan,documents,evidence_root):
             try:os.close(fd)
             except OSError:pass
         if not log.closed:log.flush();log.close()
+
+
+def validate_outcome(outcome):
+    from sql_fence_cases import validate_case
+    require(type(outcome) is dict and outcome.get('error') is None and outcome.get('real_execution_ready') is False,'sql-outcome')
+    checks=outcome.get('checks');require(type(checks) is dict and set(checks)==set(CASE_IDS),'sql-incomplete-cases')
+    for k,r in checks.items():
+        require(type(r) is dict and set(r)=={'case_id','passed','effects','real_execution_ready'} and r['case_id']==k and r['passed'] is True and r['real_execution_ready'] is False,'sql-case-outcome')
+        validate_case(k,r['effects'])
+    retirement=outcome.get('retirement',{})
+    require(all(retirement.get(k) is True for k in ('complete','all_owned_processes_retired','owned_mounts_retired','owned_cgroup_retired','owned_root_retired')) and retirement.get('phase_manifest',{}).get('sha256'),'sql-incomplete-retirement')
+    require(type(retirement.get('memory_peak')) is int and retirement['memory_peak']<=MEMORY_LIMIT and type(retirement.get('evidence_bytes')) is int and retirement['evidence_bytes']<=EVIDENCE_LIMIT,'sql-retirement-budget')
+
+
+def run_rehearsal(plan,documents,evidence_root):
+    documents.verify_unchanged()
+    compile_projection(plan.seed,plan.value['protected_schema'],tuple(plan.value['preserved_schemas']),plan.required_business)
+    require(evidence_root.is_absolute() and not evidence_root.exists() and not evidence_root.is_symlink(),'sql-evidence-exclusive')
+    private_directory(evidence_root.parent)
+    evidence_root.mkdir(mode=0o700);evidence_identity=_token(evidence_root)
+    try:outcome=_launch(plan,documents,evidence_root)
+    except (SqlFenceError,OSError,CustodyError,ValueError) as e:
+        # Retain failure only in an already admitted exclusive evidence directory.
+        private_directory(evidence_root);require(_token(evidence_root)==evidence_identity,'sql-evidence-replacement')
+        code=e.code if isinstance(e,SqlFenceError) else type(e).__name__
+        _exclusive(evidence_root/'parent-failure.json',canonical({'code':code,'real_execution_ready':False}))
+        worker=evidence_root/'worker-outcome.json'
+        outcome=strict_json(worker.read_bytes()) if worker.exists() else {'checks':{},'retirement':{'complete':False},'real_execution_ready':False}
+        outcome['error']=code
+    passed=True
+    try:validate_outcome(outcome)
+    except SqlFenceError:passed=False
+    manifest=_manifest(evidence_root,'final-manifest.json')
+    result={'schema_version':1,'purpose':'fictional-sql-privilege-result',
+        'plan_sha256':documents.plan_reference['sha256'],
+        'runtime_manifest_sha256':plan.value['runtime_manifest']['sha256'],
+        'checks':outcome['checks'],'native_passed':passed,'retirement':outcome['retirement'],
+        'evidence_manifest':manifest,'real_execution_ready':False}
+    _exclusive(evidence_root/'result.json',canonical(result));_evidence_size(evidence_root);return result
+
+
+def main(argv=None):
+    import argparse
+    parser=argparse.ArgumentParser(add_help=False,allow_abbrev=False)
+    for flag in ('plan','plan-sha256','reference-root','evidence'):parser.add_argument('--'+flag,required=True)
+    try:
+        args=parser.parse_args(argv)
+        with SqlDocuments(Path(args.reference_root)) as docs:
+            plan=docs.load({'path':args.plan,'sha256':args.plan_sha256})
+            result=run_rehearsal(plan,docs,Path(args.evidence))
+        print(json.dumps({'checks_passed':sum(r.get('passed') is True for r in result['checks'].values()),'result_sha256':sha(canonical(result))}))
+        return 0 if result['native_passed'] else 1
+    except (SqlFenceError,OSError,CustodyError,ValueError,SystemExit):
+        print(json.dumps({'checks_passed':0,'result_sha256':None}));return 1
+
+
+if __name__=='__main__':sys.exit(main())
