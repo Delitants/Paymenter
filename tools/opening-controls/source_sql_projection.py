@@ -132,6 +132,7 @@ def parse_source_census(raw, context):
     flag_names = {k+'_priv': privilege for k, privilege in FLAGS}
     for table in sorted(COLUMNS):
         require(type(tables[table]) is list, 'sql-grant-census')
+        require(all(type(row) is list for row in tables[table]), 'sql-census-form')
         retained.append((table, tuple(tuple(r) for r in tables[table])))
         require(table not in ('host', 'procs_priv') or not tables[table], 'sql-unsupported-graph')
         for row in tables[table]:

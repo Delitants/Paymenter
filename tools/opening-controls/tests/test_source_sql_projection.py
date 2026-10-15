@@ -177,5 +177,13 @@ class SourceSqlProjectionTests(unittest.TestCase):
                 with self.assertRaisesRegex(ContainmentError, 'sql-column-summary'):
                     self.compile(value)
 
+    def test_malformed_source_rows_are_sanitized(self):
+        for row in (None, 1, True):
+            value = copy.deepcopy(self.census)
+            value['grant_tables']['user'] = [row]
+            with self.subTest(row=row):
+                with self.assertRaisesRegex(ContainmentError, 'sql-census-form'):
+                    self.compile(value)
+
 
 if __name__ == '__main__': unittest.main()

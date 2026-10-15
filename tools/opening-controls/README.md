@@ -16,7 +16,7 @@ Run local focused tests:
 python3 -m unittest discover -s tools/opening-controls/tests -v
 ```
 
-Two tests require root Linux and are skipped elsewhere. Native acceptance must run outside the app in a network-isolated root process:
+The original small rehearsal has two root-Linux-only tests. Full toolkit acceptance also requires the configured owned SQL runtime described below; unsupported platforms/runtime cannot provide native acceptance. Run outside the app in a network-isolated root process:
 
 ```sh
 unshare --net python3 -m unittest discover -s tools/opening-controls/tests -v
@@ -115,4 +115,26 @@ The declared fixture administrator remains trusted. This experiment establishes 
 
 ## Real-source containment implementation planning
 
-The approved SQL-only rehearsal is followed by four reviewable implementation/rehearsal plans: [admission and SQL](../../docs/superpowers/plans/2026-10-14-source-containment-admission-sql.md), [dispatch and process](../../docs/superpowers/plans/2026-10-14-source-containment-dispatch-process.md), [ingress and custody](../../docs/superpowers/plans/2026-10-14-source-containment-ingress-custody.md), and [composition/readiness](../../docs/superpowers/plans/2026-10-14-source-containment-composition.md). These are plans only; the proposed adapter modules do not exist yet. Matching source kernel/vendor/runtime, actual protocols, privileged authority, full-size storage/cohort and deployed controls remain separately unaccepted. No real enforcement CLI, key, trust, freeze, payment action or handover is installed by these documents. Native inline author-only execution remains selected.
+The approved SQL-only rehearsal is followed by four reviewable implementation/rehearsal plans: [admission and SQL](../../docs/superpowers/plans/2026-10-14-source-containment-admission-sql.md), [dispatch and process](../../docs/superpowers/plans/2026-10-14-source-containment-dispatch-process.md), [ingress and custody](../../docs/superpowers/plans/2026-10-14-source-containment-ingress-custody.md), and [composition/readiness](../../docs/superpowers/plans/2026-10-14-source-containment-composition.md). The admission/SQL increment is implemented below; the three subsequent adapter families remain separate work. Matching source kernel/vendor/runtime, actual protocols, privileged authority, full-size storage/cohort and deployed controls remain separately unaccepted. No real enforcement CLI, key, trust, freeze, payment action or handover is installed by these documents. Native inline author-only execution remains selected.
+
+## Closed admission and source-shaped owned SQL qualification
+
+`containment_schema.py` and `containment_admission.py` validate exact context/boot/observer generations, root-private original references, complete member/dependency assignments, privileged actor declarations and bounded resource inputs. Actual original bytes, including opaque retained source captures, share the 4 MiB individual, 32 MiB aggregate, 10,000-entry and eight-level limits. Reference substitution and stale/future/mixed-boot observations reject or block admission. A matched profile still reports `physical-control-unaccepted` and `real_execution_ready=false`.
+
+`containment_runtime.py` issues nonserializable, process-bound contexts for newly owned SQL control-file allocation. Caller-supplied roots, sockets or commands cannot construct a context. Other finite factory kinds remain unqualified until their own implementation/native acceptance. Allocation and retirement verify actual ownership, boot/PID/start identity, private markers and original bytes; unknown files are retained rather than recursively removed.
+
+`source_sql_projection.py` consumes a closed full seven-table MariaDB 5.5.68 census, every declared schema/object, authenticated account/host/path attribution and explicit unrelated business requirements. It preserves physical authentication/TLS/resource/grant metadata independently of normalized grant operations. Manual-only proxy edges require exclusive attributed administration; automated administrators or proxy reachability, unsupported host/authentication forms, wildcard database patterns, incomplete schema/column summaries and definer graphs reject compilation. Original fictional schemas and allowlists remain unchanged. A pure projection is not physical control evidence.
+
+`source_sql_adapter.py` binds only an independently created owned server/context. It journals fixed grant operations, drains only accepted idle completed sessions, rejects active/transactional/unowned sessions without killing them, verifies actual seven-table integrity rows and fresh authenticated denial, and preserves explicit unrelated InnoDB/MyISAM work. The separate restricted keeper issues complete READ locks without a snapshot or transaction. Keeper loss cannot restore primary privileges. Unacknowledged native operations remain recovery-required; exact grant-only restoration requires observed owned-operator retirement and anchored original evidence, and retains unrelated data deltas.
+
+`source_sql_native.py` exercises seven mandatory actual cases: manual proxy/host precedence; cached privileges and idle reconnect; active/unowned session admission; actual grant integrity; complete keeper lock/transaction/exit behavior; partial grant restoration and competing state; orderly/hard restart and interrupted requester recovery. It creates seven fictional SQL identities and two manual proxy edges on a fresh server, with 300 protected InnoDB tables and three explicit business schemas. It accepts no existing server/socket/datadir, source credentials, arbitrary SQL, manager command or provider endpoint.
+
+Set these explicit private inputs before running the root Linux toolkit: `SOURCE_CONTAINMENT_RUNTIME_ARCHIVE`, `SOURCE_CONTAINMENT_RUNTIME_ARCHIVE_SHA256`, `SOURCE_CONTAINMENT_RUNTIME_MANIFEST`, `SOURCE_CONTAINMENT_RUNTIME_MANIFEST_SHA256`, and `SOURCE_CONTAINMENT_EVIDENCE` (a new child of an existing private directory). Archive references are pinned separately; binary content validation/staging occurs inside the admitted worker. Missing runtime, root/platform or delegated memory/PID controls means unqualified failure, never a skipped acceptance.
+
+```sh
+unshare --net python3 -m unittest discover -s tools/opening-controls/tests -v
+```
+
+The fixed limits and independent `phase-manifest.json`/`retention-request.json`/atomic `retention-ack.json` procedure are the same as the SQL-only harness above. Independently retain final outcome/retirement originals after exit too. Require all seven cases, zero skipped tests, original hashes and actual owned process/socket/mount/cgroup/RAM retirement. Preserve failed trials; a negative CLI unit's `checks_passed: 0` footer is not the native qualification result.
+
+Every admission/readback/qualification remains distinct from real opening proofs and has false real readiness. The supported owned SQL runtime/host/authentication assumptions do not accept the actual source's attribution, root authority, cgroup-v1/vendor start semantics, callback custody, target/cohort exclusions, capacity or live maintenance. No signer/trust, public runtime, source control, financial opening, hold release or handover is installed. BILLmanager remains authoritative until the separately accepted handover.
