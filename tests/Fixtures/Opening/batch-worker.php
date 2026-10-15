@@ -2,6 +2,9 @@
 
 use App\Models\AccountOpeningReceipt;
 use App\Models\AccountWallet;
+use App\Services\BillmanagerMigration\Opening\OpeningProcessContext;
+use App\Services\BillmanagerMigration\Opening\OpeningReportFile;
+use App\Services\BillmanagerMigration\Opening\PrivateProofFile;
 use Illuminate\Database\Events\TransactionCommitted;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
@@ -23,6 +26,48 @@ $application->booted(function () {
     Bus::fake();
     Mail::fake();
     Http::fake();
+    $identityPath = getenv('OPENING_CHRONOLOGY_IDENTITY_PATH') ?: '';
+    if ($identityPath !== '') {
+        OpeningReportFile::write($identityPath, [
+            'target_identity' => OpeningProcessContext::capture()->targetIdentity(),
+            'pid' => getmypid(), 'utc' => gmdate('Y-m-d\TH:i:s\Z'), 'monotonic_ns' => (string) hrtime(true),
+        ]);
+    }
+    $chronologyPath = getenv('OPENING_CHRONOLOGY_EVENTS_PATH') ?: '';
+    $lastRecordedCount = 0;
+    Event::listen(TransactionCommitted::class, static function ($event) use ($chronologyPath, &$lastRecordedCount) {
+        if ($chronologyPath === '' || $event->connection->transactionLevel() !== 0) {
+            return;
+        }
+        $count = AccountOpeningReceipt::count();
+        if ($count <= $lastRecordedCount) {
+            return;
+        }
+        $root = realpath(getenv('OPENING_FIXTURE_ROOT') ?: '');
+        if (!$root || !str_starts_with($chronologyPath, $root . '/') || realpath(dirname($chronologyPath)) !== dirname($chronologyPath)) {
+            throw new RuntimeException('Owned chronological event path required.');
+        }
+        $f = fopen($chronologyPath, 'ab');
+        if (!$f || !flock($f, LOCK_EX)) {
+            throw new RuntimeException('Native commit event lock failed.');
+        }
+        try {
+            $original = PrivateProofFile::read($chronologyPath, 0);
+            $stat = fstat($f);
+            if ($stat['dev'] !== $original['device'] || $stat['ino'] !== $original['inode']) {
+                throw new RuntimeException('Native commit event identity changed.');
+            }
+            $bytes = json_encode(['phase' => 'account-commit', 'utc' => gmdate('Y-m-d\TH:i:s\Z'), 'monotonic_ns' => (string) hrtime(true), 'pid' => getmypid(),
+                'namespace' => readlink('/proc/self/ns/net'), 'receipts' => AccountOpeningReceipt::orderBy('id')->get(['id', 'wallet_id', 'receipt_sha256'])->toArray()], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES) . "\n";
+            if (fwrite($f, $bytes) !== strlen($bytes) || !fflush($f) || !fsync($f)) {
+                throw new RuntimeException('Incomplete native commit event.');
+            }
+            $lastRecordedCount = $count;
+        } finally {
+            flock($f, LOCK_UN);
+            fclose($f);
+        }
+    });
     $fault = getenv('OPENING_FIXTURE_FAULT') ?: '';
     $barrier = getenv('OPENING_FIXTURE_BARRIER') ?: '';
     $publish = static function (string $phase) use ($barrier) {

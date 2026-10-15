@@ -11,6 +11,7 @@ final class RuntimeFixture
     public static function accepted(): array
     {
         $parent = self::root();
+        self::qualifyInstalledReader();
         $fixture = ProofFactory::signed('account-funding-runtime-acceptance', [
             'not_before' => gmdate('Y-m-d\TH:i:s\Z', time() - 5),
             'expires_at' => gmdate('Y-m-d\TH:i:s\Z', time() + 3600),
@@ -41,6 +42,32 @@ final class RuntimeFixture
         config(['account-funding.enabled' => true, 'account-funding.runtime_reader_gid' => self::gid()]);
 
         return [...$fixture, 'authority' => new AcceptedFundingReleaseAuthority($fixture['payload'], $fixture['signature'], $fixture['trust'])];
+    }
+
+    /** Test-only preparation, before signing; never changes a product exclusion. */
+    private static function qualifyInstalledReader(): void
+    {
+        $root = realpath(base_path());
+        if (PHP_SAPI !== 'cli' || !app()->environment('testing') || posix_geteuid() !== 0 || !$root || $root !== base_path() || is_link($root)) {
+            throw new \RuntimeException('Owned root testing runtime required for reader qualification.');
+        }
+        $qualify = static function (string $path): void {
+            $stat = lstat($path);
+            if (!$stat || $stat['uid'] !== 0 || is_link($path)) {
+                throw new \RuntimeException('Unexpected installed fixture ownership or link.');
+            }
+            $directory = ($stat['mode'] & 0170000) === 0040000;
+            if (!$directory && (($stat['mode'] & 0170000) !== 0100000 || $stat['nlink'] !== 1)) {
+                throw new \RuntimeException('Ordinary original fixture files required.');
+            }
+            if (!chmod($path, $directory ? 0750 : 0640) || !chgrp($path, self::gid())) {
+                throw new \RuntimeException('Owned service-reader qualification failed.');
+            }
+        };
+        $qualify($root);
+        foreach (new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS), \RecursiveIteratorIterator::SELF_FIRST) as $file) {
+            $qualify($file->getPathname());
+        }
     }
 
     public static function root(): string

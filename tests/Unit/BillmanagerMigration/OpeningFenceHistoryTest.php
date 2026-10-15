@@ -183,7 +183,7 @@ class OpeningFenceHistoryTest extends TestCase
             ProofFactory::write($path, str_repeat('a', 4194304));
             $graph->read(['path' => $path, 'sha256' => hash_file('sha256', $path)], 'history');
         }
-        $this->denied(fn () => OpeningFenceHistoryVerifier::verify($p['history_ref'],$graph,$p['trust_path']));
-        self::assertSame(['bytes' => 33554432, 'documents' => 8],$graph->usage());
+        $this->denied(fn () => OpeningFenceHistoryVerifier::verify($p['history_ref'], $graph, $p['trust_path']));
+        self::assertSame(['bytes' => 33554432, 'documents' => 8], $graph->usage());
     }
 }

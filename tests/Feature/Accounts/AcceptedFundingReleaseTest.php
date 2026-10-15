@@ -159,26 +159,41 @@ class AcceptedFundingReleaseTest extends TestCase
 
     public function test_fresh_nonroot_worker_reads_acceptance_but_cannot_replace_it(): void
     {
-        $fixture = RuntimeFixture::accepted();
-        $before = (new OpeningTargetState)->capture();
-        $environment = getenv();
-        $environment['ACCOUNT_FUNDING_ENABLED'] = 'true';
-        $environment['ACCOUNT_FUNDING_RUNTIME_READER_GID'] = (string) RuntimeFixture::gid();
-        $environment['ACCOUNT_FUNDING_RUNTIME_ACCEPTANCE_PATH'] = $fixture['payload'];
-        $environment['ACCOUNT_FUNDING_RUNTIME_SIGNATURE_PATH'] = $fixture['signature'];
-        $environment['ACCOUNT_FUNDING_RUNTIME_TRUST_PATH'] = $fixture['trust'];
-        $pipes = [];
-        $child = proc_open(['/usr/bin/setpriv', '--reuid=33', '--regid=33', '--clear-groups', PHP_BINARY, 'tests/Fixtures/Opening/runtime-worker.php'],
-            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, base_path(), $environment);
-        self::assertIsResource($child);
-        fclose($pipes[0]);
-        $output = stream_get_contents($pipes[1]);
-        $errors = stream_get_contents($pipes[2]);
-        fclose($pipes[1]);
-        fclose($pipes[2]);
-        self::assertSame(0, proc_close($child), $errors);
-        self::assertSame(['accepted' => true, 'uid' => 33, 'proof_write_denied' => true, 'ancestor_write_denied' => true], json_decode($output, true, flags: JSON_THROW_ON_ERROR));
-        self::assertSame($before, (new OpeningTargetState)->capture());
+        $directory = base_path('storage/app/reader-probe-' . bin2hex(random_bytes(8)));
+        if (!is_dir(dirname($directory))) {
+            mkdir(dirname($directory), 0700, true);
+        }
+        mkdir($directory, 0700);
+        $artifact = $directory . '/data.bin';
+        file_put_contents($artifact, 'fictional newly generated runtime data');
+        chmod($directory, 0700);
+        chmod($artifact, 0600);
+        try {
+            $fixture = RuntimeFixture::accepted();
+            $before = (new OpeningTargetState)->capture();
+            $environment = getenv();
+            $environment['ACCOUNT_FUNDING_ENABLED'] = 'true';
+            $environment['ACCOUNT_FUNDING_RUNTIME_READER_GID'] = (string) RuntimeFixture::gid();
+            $environment['ACCOUNT_FUNDING_RUNTIME_ACCEPTANCE_PATH'] = $fixture['payload'];
+            $environment['ACCOUNT_FUNDING_RUNTIME_SIGNATURE_PATH'] = $fixture['signature'];
+            $environment['ACCOUNT_FUNDING_RUNTIME_TRUST_PATH'] = $fixture['trust'];
+            $pipes = [];
+            $child = proc_open(['/usr/bin/setpriv', '--reuid=33', '--regid=33', '--clear-groups', PHP_BINARY, 'tests/Fixtures/Opening/runtime-worker.php'],
+                [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, base_path(), $environment);
+            self::assertIsResource($child);
+            fclose($pipes[0]);
+            $output = stream_get_contents($pipes[1]);
+            $errors = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            self::assertSame(0, proc_close($child), $errors);
+            self::assertJson($output, $errors);
+            self::assertSame(['accepted' => true, 'uid' => 33, 'proof_write_denied' => true, 'ancestor_write_denied' => true], json_decode($output, true, flags: JSON_THROW_ON_ERROR));
+            self::assertSame($before, (new OpeningTargetState)->capture());
+        } finally {
+            unlink($artifact);
+            rmdir($directory);
+        }
     }
 
     public function test_normal_funding_retains_hold_and_receipt_checks(): void

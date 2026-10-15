@@ -279,7 +279,7 @@ class OpeningReadinessTest extends TestCase
             $p = $this->fixture();
             $authority = $this->authority($p);
             $authority->assertFenceCurrent();
-            CaptureProofFixture::publish($p,[$field => str_repeat('f',64)]);
+            CaptureProofFixture::publish($p, [$field => str_repeat('f', 64)]);
             $this->denied(fn () => $authority->assertFenceCurrent());
         }
     }

@@ -96,6 +96,6 @@ class OpeningVersionCompatibilityTest extends TestCase
         ProofFactory::write($p['pointer_path'], json_encode($p['pointer_record']));
         $this->denied(fn () => (new InactiveOpeningAuthority($p['bundle'], $p['dir'] . '/approval.json', $p['dir'] . '/approval-signature.json', $p['process']))->assertApproved($p['evidence']));
         self::assertSame($v2Bytes, file_get_contents($p['bundle_path']));
-        self::assertSame(0,DB::table('account_opening_receipts')->count());
+        self::assertSame(0, DB::table('account_opening_receipts')->count());
     }
 }
