@@ -2,6 +2,20 @@
 
 This is an external operations toolkit, not a Paymenter extension. Python 3.10+ and its standard library are sufficient. It installs no routes, workers, schedules, trust or real signing keys. The application never invokes it.
 
+## Dispatch/process preflight only
+
+The [dispatch/process plan](../../docs/superpowers/plans/2026-10-14-source-containment-dispatch-process.md) has a portable preflight subset. `source_scheduler_adapter.py` projects exact reviewed whole-entry deletions and classifies claimed original/suppressed/competing file bytes without filesystem mutation. `source_start_adapter.py` checks candidate runtime/launcher obligations. `source_process_adapter.py` compares claimed process/thread/ancestry/membership and group states. These are pure planning helpers; consistent documents remain unqualified and real readiness stays false. The process input retains primary UID/GID only; complete credential, namespace, privilege and physical domain observation is still pending.
+
+All scheduler/start/process physical API endpoints refuse with a fixed runtime-unqualified error before resource access. No matching owned legacy Cronie, vendor runtime or cgroup-v1 environment is registered. No Cronie generation observation, persistent launcher denial, freezer operation, controller-loss/reboot qualification or physical rollback exists yet. The native tests and all three full plan tasks remain incomplete. Existing SQL qualification cannot accept them.
+
+Run only the portable preflight groups with:
+
+```sh
+PYTHONPATH=tools/opening-controls/tests python3 -m unittest test_source_scheduler_adapter test_source_start_adapter test_source_process_adapter -v
+```
+
+Their passing results are unit evidence, not native acceptance or a source maintenance permit. The wider toolkit also contains root Linux and owned MariaDB tests; do not count their unavailable-runtime failures or skip them as passed. No production adapter is added to the fixture dispatcher or application proof parser.
+
 `custody.py` retains original bounded POST bodies, ordered headers, path/query and every delivery in an operator-owned `0700` directory with a `0600` SQLite journal. Transactions use FULL synchronization; a receipt is returned only after commit and filesystem synchronization. Authenticated Authorize.net notifications are deduplicated by notification ID and original body hash. Conflicting bodies remain quarantined; every retry remains in the arrivals table. Receipt acknowledgement means delivery, never settlement. No provider call, financial application or automatic replay exists.
 
 Supply the separately configured Authorize.net Signature Key as decoded 64-byte data. It is never generated, loaded from the app or logged by this library. [Authorize.net documents HMAC-SHA512 verification and HTTP 200 delivery acknowledgement](https://developer.authorize.net/api/reference/features/webhooks.html). An accepted ingress can respond 200 only after `delivery_acknowledged=True`. Errors must prevent acknowledgement. Storage failure after commit is recoverable by redelivery; idempotency retains one logical event.

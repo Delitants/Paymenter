@@ -10,7 +10,15 @@
 
 **Spec:** [Scheduler/process design](../specs/2026-10-07-scheduler-process-adapters-design.md) and [source boundary design](../specs/2026-10-07-source-boundary-enforcement-design.md). Depends on Task 1 of [admission/SQL](2026-10-14-source-containment-admission-sql.md).
 
-**Status:** Written implementation/rehearsal plan, awaiting review. No implementation or live enforcement has occurred under this plan.
+**Status:** Approved for native inline, author-only implementation. A portable preflight subset is implemented; all three physical/native tasks below remain incomplete. No matching owned runtime is qualified and no live enforcement has occurred. The native step checkboxes remain unchecked intentionally.
+
+## Implemented preflight subset and remaining gate
+
+`source_scheduler_adapter.py` provides the exact whole-entry byte projection, reviewed scope checks and read-only multifile drift classification. Its narrow literal syntax subset rejects shell/continuation forms; it does not validate Cronie calendar semantics or prove wrapper ownership. `source_start_adapter.py` inventories closed candidate artifact/launcher obligations. `source_process_adapter.py` compares closed candidate boot/task/thread/ancestry/group identities and effective-state claims. All are pure planning helpers; caller-supplied facts, hashes, review flags and FROZEN strings cannot produce physical acceptance. Every physical API raises a specific runtime-unqualified error before resource access; these refusal endpoints are not implementations of physical control or recovery.
+
+Portable unit tests exercise only these helpers and refusals. They are deliberately distinct from the native cases below, which have not run. No skipped or simulated case qualifies the plan. No scheduler replacements/fsync/reload, vendor suspend/resume, launch guard, task migration/freezer, independent observer, crash/reboot recovery or exact physical release is implemented or accepted by this subset. The existing owned-context factory still allocates SQL only. The fixture evaluator and application opening-proof contracts remain unchanged.
+
+Next prerequisite: an independently owned disposable environment with the privately pinned source kernel, Cronie/service-manager packages, manager/wrapper/config/library bytes and an authorized fictional vendor installation/license. Provider egress must be denied, ownership and resource budgets accepted, and no real data, socket or workload attached. Environment acquisition/provisioning requires separate scope; an existing customer VM must not be reused. A modern target cgroup-v2 environment cannot qualify this work. Retained source observations are historical until refreshed under separately accepted scope.
 
 ## Global Constraints
 
