@@ -61,7 +61,9 @@ final class LegacyCredentialVerifier
             $secret = strtoupper(trim($totpSecret ?? ''));
             $validFactor = preg_match('/^[A-Z2-7]{16,128}={0,6}$/', $secret) === 1;
             // Admission holds are independent of whether the credential bundle is valid.
-            $admissionBlocked = $existing && $existing->login_blocked && $existing->block_reason !== self::CREDENTIAL_BLOCK_REASON;
+            $admissionBlocked = $existing && $existing->login_blocked && !in_array($existing->block_reason, [
+                self::CREDENTIAL_BLOCK_REASON, 'Awaiting protected credential transfer',
+            ], true);
             $blocked = $admissionBlocked || !$supportedHash || ($requiresMfa && !$validFactor);
             if ($validFactor) {
                 DB::table('users')->where('id', $current->id)->update(['tfa_secret' => Crypt::encryptString($secret)]);

@@ -11,6 +11,7 @@ use App\Services\BillmanagerMigration\ImportContext;
 use App\Services\BillmanagerMigration\LegacyCredentialVerifier;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
@@ -32,6 +33,29 @@ class LoginAdmissionTest extends TestCase
         DB::table('billmanager_legacy_credentials')->where('user_id', $user->id)->update(['login_blocked' => true, 'block_reason' => 'Client admission held pending review']);
 
         return $user->fresh();
+    }
+
+    public function test_completed_credential_transfer_releases_only_its_temporary_block(): void
+    {
+        $user = User::factory()->create();
+        $id = DB::table('billmanager_imports')->insertGetId(['source_host' => '192.0.2.10', 'snapshot_sha256' => bin2hex(random_bytes(32)), 'status' => 'running']);
+        (new ImportContext($id, '192.0.2.10'))->recordMapping('users', (string) $user->id, 'users', $user->id);
+        DB::table('billmanager_legacy_credentials')->insert([
+            'user_id' => $user->id, 'credential' => Crypt::encryptString(''),
+            'password_fingerprint' => hash('sha256', $user->password),
+            'login_blocked' => true, 'block_reason' => 'Awaiting protected credential transfer',
+        ]);
+        $verifier = new LegacyCredentialVerifier;
+        $this->assertFalse($verifier->canAuthenticate($user));
+        $verifier->install($user, 'unsupported-hash', null, false);
+        $this->assertFalse($verifier->canAuthenticate($user));
+        DB::table('billmanager_legacy_credentials')->where('user_id', $user->id)->update([
+            'credential' => Crypt::encryptString(''),
+            'block_reason' => 'Awaiting protected credential transfer',
+        ]);
+        $verifier->install($user, crypt('legacy-passphrase', '$5$testsalt$'), null, false);
+        $this->assertTrue($verifier->canAuthenticate($user));
+        $this->assertTrue($verifier->verifyAndUpgrade($user, 'legacy-passphrase'));
     }
 
     public function test_credential_reimport_preserves_admission_block_and_factor(): void
@@ -99,6 +123,26 @@ class LoginAdmissionTest extends TestCase
         $token = UserSession::create(['user_id' => $user->id, 'ip_address' => '127.0.0.1', 'user_agent' => 'synthetic', 'last_activity' => now(), 'expires_at' => now()->addDay()]);
         Auth::logout();
         $this->withCookie('paymenter_remember', $token->ulid)->get('/')->assertRedirect('/');
+        $this->assertGuest();
+        $this->assertDatabaseMissing('user_sessions', ['user_id' => $user->id]);
+    }
+
+    public function test_remember_cookie_restores_admitted_user_on_protected_page(): void
+    {
+        $user = User::factory()->create();
+        $token = UserSession::create(['user_id' => $user->id, 'ip_address' => '127.0.0.1', 'user_agent' => 'synthetic', 'last_activity' => now(), 'expires_at' => now()->addDay()]);
+
+        $this->withCookie('paymenter_remember', $token->ulid)->get('/dashboard')->assertOk();
+        $this->assertAuthenticatedAs($user);
+        $this->assertDatabaseHas('user_sessions', ['ulid' => $token->ulid]);
+    }
+
+    public function test_protected_page_revokes_blocked_remember_cookie(): void
+    {
+        $user = $this->blockedUser();
+        $token = UserSession::create(['user_id' => $user->id, 'ip_address' => '127.0.0.1', 'user_agent' => 'synthetic', 'last_activity' => now(), 'expires_at' => now()->addDay()]);
+
+        $this->withCookie('paymenter_remember', $token->ulid)->get('/dashboard')->assertRedirect('/');
         $this->assertGuest();
         $this->assertDatabaseMissing('user_sessions', ['user_id' => $user->id]);
     }
