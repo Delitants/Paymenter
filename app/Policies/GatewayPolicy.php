@@ -4,6 +4,7 @@ namespace App\Policies;
 
 use App\Models\Gateway;
 use App\Models\User;
+use App\Services\Gateways\PaymentWriteGuard;
 
 class GatewayPolicy
 {
@@ -44,7 +45,7 @@ class GatewayPolicy
      */
     public function delete(User $user, Gateway $gateway): bool
     {
-        return $user->hasPermission('admin.gateways.delete');
+        return $user->hasPermission('admin.gateways.delete') && !(new PaymentWriteGuard)->hasParentPaymentHistory($gateway);
     }
 
     /**

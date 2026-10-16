@@ -28,7 +28,8 @@ class InvoiceTransactionPolicy extends BasePolicy
      */
     public function create(User $user): bool
     {
-        return $user->hasPermission('admin.invoice_transactions.create');
+        // Administrative receipts must use the audited manual-settlement service.
+        return false;
     }
 
     /**
@@ -36,7 +37,7 @@ class InvoiceTransactionPolicy extends BasePolicy
      */
     public function update(User $user, InvoiceTransaction $invoiceTransaction): bool
     {
-        return $this->adminPermission($user, 'admin.invoice_transactions.update');
+        return !$invoiceTransaction->isManaged() && $this->adminPermission($user, 'admin.invoice_transactions.update');
     }
 
     /**
@@ -44,7 +45,7 @@ class InvoiceTransactionPolicy extends BasePolicy
      */
     public function delete(User $user, InvoiceTransaction $invoiceTransaction): bool
     {
-        return $user->hasPermission('admin.invoice_transactions.delete');
+        return !$invoiceTransaction->isManaged() && $user->hasPermission('admin.invoice_transactions.delete');
     }
 
     /**

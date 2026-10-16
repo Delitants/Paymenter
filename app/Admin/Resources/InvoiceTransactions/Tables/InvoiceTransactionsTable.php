@@ -2,9 +2,11 @@
 
 namespace App\Admin\Resources\InvoiceTransactions\Tables;
 
+use App\Admin\Actions\PaymentActions;
 use App\Admin\Resources\InvoiceResource;
 use App\Enums\InvoiceTransactionStatus;
 use App\Models\InvoiceTransaction;
+use Filament\Actions\ActionGroup;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\DeleteBulkAction;
@@ -42,6 +44,7 @@ class InvoiceTransactionsTable
                     })
                     ->formatStateUsing(fn (InvoiceTransactionStatus $state): string => ucfirst($state->value))
                     ->label('Status'),
+                ...PaymentActions::columns(),
                 TextColumn::make('created_at')
                     ->dateTime()
                     ->sortable()
@@ -56,11 +59,12 @@ class InvoiceTransactionsTable
             ])
             ->defaultSort('created_at', 'desc')
             ->recordActions([
-                DeleteAction::make(),
+                ActionGroup::make(PaymentActions::transactionActions()),
+                DeleteAction::make()->visible(fn (InvoiceTransaction $record) => !$record->isManaged()),
             ])
             ->toolbarActions([
                 BulkActionGroup::make([
-                    DeleteBulkAction::make(),
+                    DeleteBulkAction::make()->authorizeIndividualRecords(),
                 ]),
             ]);
     }

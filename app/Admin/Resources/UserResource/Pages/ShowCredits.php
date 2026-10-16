@@ -3,7 +3,10 @@
 namespace App\Admin\Resources\UserResource\Pages;
 
 use App\Admin\Resources\UserResource;
+use App\Models\AccountWallet;
 use App\Models\Currency;
+use App\Services\Accounts\AccountFundingPolicy;
+use Filament\Actions\Action;
 use Filament\Actions\CreateAction;
 use Filament\Actions\DeleteAction;
 use Filament\Forms\Components\Select;
@@ -35,7 +38,7 @@ class ShowCredits extends ManageRelatedRecords
             ->components([
                 Select::make('currency_code')
                     ->options(function () {
-                        $existing_currencies = $this->getOwnerRecord()->credits->pluck('currency_code');
+                        $existing_currencies = $this->getOwnerRecord()->credits()->pluck('currency_code')->merge(AccountWallet::where('user_id', $this->getOwnerRecord()->id)->pluck('currency_code'));
 
                         return Currency::whereNotIn('code', $existing_currencies)->pluck('code', 'code');
                     })
@@ -66,18 +69,21 @@ class ShowCredits extends ManageRelatedRecords
             ->columns([
                 TextColumn::make('currency.code'),
                 TextColumn::make('formattedAmount')->label('Formatted Amount'),
-                TextInputColumn::make('amount')->label('Amount'),
+                TextInputColumn::make('amount')->label('Amount')->disabled(fn ($record) => AccountFundingPolicy::managedCredit($record)),
             ])
             ->filters([])
             ->headerActions([
                 CreateAction::make()->disabled(function () {
-                    $existing_currencies = $this->getOwnerRecord()->credits->pluck('currency_code');
+                    $existing_currencies = $this->getOwnerRecord()->credits()->pluck('currency_code')->merge(AccountWallet::where('user_id', $this->getOwnerRecord()->id)->pluck('currency_code'));
 
                     return count(Currency::whereNotIn('code', $existing_currencies)->pluck('code', 'code')) <= 0;
                 }),
             ])
             ->recordActions([
-                DeleteAction::make(),
+                Action::make('statement')->label('Account statement')->icon('ri-file-list-line')
+                    ->visible(fn ($record) => auth()->user()->fresh()->hasPermission('admin.account_funding.view') && AccountFundingPolicy::managedCredit($record))
+                    ->url(fn ($record) => route('account.funding', ['owner' => $record->user_id, 'currency' => $record->currency_code])),
+                DeleteAction::make()->visible(fn ($record) => !AccountFundingPolicy::managedCredit($record)),
             ]);
     }
 }

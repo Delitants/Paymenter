@@ -17,7 +17,7 @@
                         <h2 class="text-xl font-semibold">{{ __('dashboard.active_services') }}</h2>
                     </div>
                     <span class="bg-primary flex items-center justify-center font-semibold rounded-md size-5 text-sm text-white">
-                        {{ Auth::user()->services()->where('status', 'active')->count() }}
+                        {{ $activeServiceCount }}
                     </span>
                 </div>
                 <div class="space-y-4">
@@ -45,7 +45,7 @@
                         </a>
                     </div>
                     <span class="bg-primary flex items-center justify-center font-semibold rounded-md size-5 text-sm text-white">
-                        {{ Auth::user()->tickets()->where('status', '!=', 'closed')->count() }}
+                        {{ $openTicketCount }}
                     </span>
                 </div>
                 <div class="space-y-4">
@@ -71,7 +71,7 @@
                         <h2 class="text-xl font-semibold">{{ __('dashboard.unpaid_invoices') }}</h2>
                     </div>
                     <span class="bg-primary flex items-center justify-center font-semibold rounded-md size-5 text-sm text-white">
-                        {{ Auth::user()->invoices()->where('status', 'pending')->count() }}
+                        {{ $unpaidInvoiceCount }}
                     </span>
                 </div>
                 <div class="space-y-4">

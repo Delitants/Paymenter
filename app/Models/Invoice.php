@@ -4,10 +4,10 @@ namespace App\Models;
 
 use App\Classes\PDF;
 use App\Classes\Price;
-use App\Classes\Settings;
-use App\Enums\InvoiceTransactionStatus;
 use App\Models\Traits\HasProperties;
 use App\Observers\InvoiceObserver;
+use App\Services\Billing\InvoicePricing;
+use Brick\Math\BigDecimal;
 use Illuminate\Database\Eloquent\Attributes\ObservedBy;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -16,7 +16,7 @@ use OwenIt\Auditing\Contracts\Auditable;
 #[ObservedBy([InvoiceObserver::class])]
 class Invoice extends Model implements Auditable
 {
-    use HasFactory, HasProperties, Traits\Auditable;
+    use HasFactory, HasProperties, Traits\Auditable, Traits\GuardsMigrationWrites, Traits\GuardsPaymentWrites;
 
     public const STATUS_PENDING = 'pending';
 
@@ -28,6 +28,8 @@ class Invoice extends Model implements Auditable
 
     protected $casts = [
         'due_at' => 'date',
+        'pricing_tax_rate' => 'decimal:4',
+        'pricing_tax_inclusive' => 'boolean',
     ];
 
     public bool $send_create_email = true;
@@ -40,7 +42,7 @@ class Invoice extends Model implements Auditable
     public function total(): Attribute
     {
         return Attribute::make(
-            get: fn () => $this->items->sum(fn ($item) => $item->price * $item->quantity)
+            get: fn () => (float) (new InvoicePricing)->summary($this)->total
         );
     }
 
@@ -52,7 +54,11 @@ class Invoice extends Model implements Auditable
     public function formattedTotal(): Attribute
     {
         return Attribute::make(
-            get: fn () => new Price(['price' => $this->total, 'currency' => $this->currency, 'tax' => $this->tax])
+            get: function () {
+                $summary = (new InvoicePricing)->summary($this);
+
+                return new Price(['price' => $summary->total, 'currency' => $this->currency, 'tax_amount' => $summary->productTax]);
+            }
         );
     }
 
@@ -62,7 +68,11 @@ class Invoice extends Model implements Auditable
     public function formattedRemaining(): Attribute
     {
         return Attribute::make(
-            get: fn () => new Price(['price' => $this->remaining, 'currency' => $this->currency, 'tax' => $this->tax])
+            get: function () {
+                $summary = (new InvoicePricing)->summary($this);
+
+                return new Price(['price' => $summary->payable, 'currency' => $this->currency, 'tax_amount' => $summary->unpaidTax]);
+            }
         );
     }
 
@@ -72,7 +82,11 @@ class Invoice extends Model implements Auditable
     public function remaining(): Attribute
     {
         return Attribute::make(
-            get: fn () => $this->total - $this->transactions->where('status', InvoiceTransactionStatus::Succeeded)->sum('amount')
+            get: function () {
+                $summary = (new InvoicePricing)->summary($this);
+
+                return (float) (string) BigDecimal::of($summary->total)->minus($summary->paid);
+            }
         );
     }
 
@@ -82,19 +96,11 @@ class Invoice extends Model implements Auditable
      */
     public function tax(): Attribute
     {
-        if (config('settings.invoice_snapshot', true) && $this?->snapshot?->tax_name) {
-            return Attribute::make(
-                get: fn () => new TaxRate([
-                    'name' => $this->snapshot->tax_name,
-                    'rate' => $this->snapshot->tax_rate,
-                    'country' => $this->snapshot->tax_country,
-                ])
-            );
-        }
+        return Attribute::make(get: function () {
+            $context = (new InvoicePricing)->context($this);
 
-        return Attribute::make(
-            get: fn () => Settings::tax($this->user)
-        );
+            return $context['rate'] === '0.0000' ? 0 : new TaxRate(['name' => $context['name'], 'rate' => $context['rate'], 'country' => $context['country']]);
+        });
     }
 
     public function userProperties(): Attribute
@@ -156,6 +162,11 @@ class Invoice extends Model implements Auditable
     public function transactions()
     {
         return $this->hasMany(InvoiceTransaction::class);
+    }
+
+    public function paymentOperations()
+    {
+        return $this->hasMany(PaymentOperation::class);
     }
 
     public function snapshot()

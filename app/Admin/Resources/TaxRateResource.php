@@ -41,10 +41,11 @@ class TaxRateResource extends Resource
                     ->label('Rate')
                     ->mask(RawJs::make(
                         <<<'JS'
-                            $money($input, '.', '', 2)
+                            $money($input, '.', '', 4)
                         JS
                     ))
                     ->required()
+                    ->rules(['numeric', 'min:0', 'max:999.9999', 'decimal:0,4'])
                     ->suffix('%')
                     ->placeholder('Enter the rate of the tax rate'),
                 Select::make('country')

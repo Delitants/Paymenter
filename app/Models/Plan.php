@@ -19,10 +19,12 @@ class Plan extends Model implements Auditable
         'billing_period',
         'billing_unit',
         'sort',
+        'price_includes_tax',
     ];
 
     protected $casts = [
         'billing_period' => 'integer',
+        'price_includes_tax' => 'boolean',
     ];
 
     /**

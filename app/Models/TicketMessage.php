@@ -10,7 +10,7 @@ use OwenIt\Auditing\Contracts\Auditable;
 #[ObservedBy([TicketMessageObserver::class])]
 class TicketMessage extends Model implements Auditable
 {
-    use HasFactory, Traits\Auditable;
+    use HasFactory, Traits\Auditable, Traits\GuardsMigrationWrites;
 
     protected $fillable = [
         'ticket_id',
@@ -18,6 +18,13 @@ class TicketMessage extends Model implements Auditable
         'message',
         'ticket_mail_log_id',
     ];
+
+    protected $casts = ['legacy_author' => 'array'];
+
+    public function getAuthorNameAttribute(): string
+    {
+        return $this->legacy_author['name'] ?? $this->user?->name ?? 'Former user';
+    }
 
     public function ticket()
     {

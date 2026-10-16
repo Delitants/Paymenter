@@ -9,6 +9,8 @@ use App\Models\EmailLog;
 use App\Models\Extension;
 use App\Models\OauthClient;
 use App\Models\User;
+use App\Services\Accounts\AcceptedFundingReleaseAuthority;
+use App\Services\Accounts\OpeningAuthority;
 use App\Support\Passport\ScopeRegistry;
 use Closure;
 use Dedoc\Scramble\Scramble;
@@ -40,6 +42,13 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
+        $paths = array_map(fn ($key) => config('account-funding.' . $key), ['runtime_acceptance_path', 'runtime_signature_path', 'runtime_trust_path']);
+        $gid = config('account-funding.runtime_reader_gid');
+        if (!$this->app->bound(OpeningAuthority::class) && config('account-funding.enabled') === true && is_int($gid) && $gid >= 0 &&
+            count(array_filter($paths, fn ($path) => is_string($path) && $path !== '' && $path[0] === '/')) === 3) {
+            $this->app->singleton(OpeningAuthority::class, fn () => new AcceptedFundingReleaseAuthority(...$paths));
+        }
+
         // Service provider for settings
         $this->app->register(SettingsProvider::class);
 

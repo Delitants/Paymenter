@@ -2,6 +2,7 @@
 
 namespace App\Classes;
 
+use App\Models\IpAddress;
 use Exception;
 use Filament\Forms\Components\Checkbox;
 use Filament\Forms\Components\ColorPicker;
@@ -30,7 +31,7 @@ class FilamentInput
             $currentValue = $get($field) ?? $get('settings.' . $field);
 
             if (is_array($expectedValue)) {
-                // Handle operators like ['!=', 'value'] or ['!=', 'value1', 'value2']
+                // Handle operators like ['!=', 'value'], ['not_in', 'value1', 'value2'], ['==', 'value'], ['in', 'value1', 'value2']
                 $operator = $expectedValue[0];
                 $values = array_slice($expectedValue, 1);
 
@@ -38,8 +39,21 @@ class FilamentInput
                     // Return true when current value is NOT equal to any of the expected values
                     return !in_array($currentValue, $values, true);
                 }
+                if ($operator === 'not_in') {
+                    // Return true when current value is NOT in the list of values
+                    // Treat null/empty as "not set" which should NOT match the condition (field stays enabled)
+                    if ($currentValue === null || $currentValue === '') {
+                        return false;
+                    }
+
+                    return !in_array($currentValue, $values, true);
+                }
                 if ($operator === '==') {
                     // Return true when current value IS equal to one of the expected values
+                    return in_array($currentValue, $values, true);
+                }
+                if ($operator === 'in') {
+                    // Return true when current value IS in the list of values
                     return in_array($currentValue, $values, true);
                 }
             } else {
@@ -81,6 +95,7 @@ class FilamentInput
                     ->hintColor('primary')
                     ->live(condition: $setting->live ?? false)
                     ->default($setting->default ?? '')
+                    ->placeholder($setting->placeholder ?? 'Select an option')
                     ->suffix($setting->suffix ?? null)
                     ->prefix($setting->prefix ?? null)
                     ->hintActions(isset($setting->action) ? [($setting->action)::make()] : [])
@@ -105,12 +120,6 @@ class FilamentInput
                         $select->options(function ($get, $component) use ($poolField) {
                             $poolId = $get($poolField);
 
-                            \Illuminate\Support\Facades\Log::info('IP options callback', [
-                                'poolField' => $poolField,
-                                'poolId' => $poolId,
-                                'poolIdType' => gettype($poolId),
-                            ]);
-
                             if (empty($poolId) || $poolId === 'auto' || $poolId === 'disabled') {
                                 return ['auto' => 'Auto-select from pool'];
                             }
@@ -119,15 +128,12 @@ class FilamentInput
                                 return ['auto' => 'Auto-select from pool'];
                             }
 
-                            $ips = \App\Models\IpAddress::where('ip_pool_id', (int)$poolId)
+                            $ips = IpAddress::where('ip_pool_id', (int) $poolId)
                                 ->where('is_assigned', false)
-                                ->pluck('ip_address', 'ip_address')
+                                ->whereNull('assigned_to_id')
+                                ->whereNull('assigned_to_type')
+                                ->pluck('ip_address', 'id')
                                 ->toArray();
-
-                            \Illuminate\Support\Facades\Log::info('IPs fetched', [
-                                'poolId' => $poolId,
-                                'count' => count($ips),
-                            ]);
 
                             if (empty($ips)) {
                                 return ['auto' => 'Auto-select from pool', 'no_ips' => 'No IPs available in this pool'];
@@ -135,23 +141,37 @@ class FilamentInput
 
                             return ['auto' => 'Auto-select from pool'] + $ips;
                         })
-                        ->getOptionLabelUsing(function ($value) {
-                            if ($value === 'auto') return 'Auto-select from pool';
-                            if ($value === 'no_ips') return 'No IPs available';
-                            return $value;
-                        })
-                        ->getSearchResultsUsing(function ($search, $get, $component) use ($poolField) {
-                            $poolId = $get($poolField);
-                            if (empty($poolId) || $poolId === 'auto' || $poolId === 'disabled' || !is_numeric($poolId)) {
-                                return ['auto' => 'Auto-select from pool'];
-                            }
-                            $ips = \App\Models\IpAddress::where('ip_pool_id', (int)$poolId)
-                                ->where('is_assigned', false)
-                                ->where('ip_address', 'like', "%{$search}%")
-                                ->pluck('ip_address', 'ip_address')
-                                ->toArray();
-                            return ['auto' => 'Auto-select from pool'] + $ips;
-                        });
+                            ->getOptionLabelUsing(function ($value, $get) use ($poolField) {
+                                if ($value === 'auto') {
+                                    return 'Auto-select from pool';
+                                }
+                                if ($value === 'no_ips') {
+                                    return 'No IPs available';
+                                }
+                                $poolId = $get($poolField);
+                                if (!ctype_digit((string) $value) || !ctype_digit((string) $poolId)) {
+                                    return null;
+                                }
+
+                                return IpAddress::where('ip_pool_id', (int) $poolId)
+                                    ->whereKey((int) $value)->value('ip_address');
+                            })
+                            ->getSearchResultsUsing(function ($search, $get, $component) use ($poolField) {
+                                $poolId = $get($poolField);
+                                if (empty($poolId) || $poolId === 'auto' || $poolId === 'disabled' || !is_numeric($poolId)) {
+                                    return ['auto' => 'Auto-select from pool'];
+                                }
+                                // Don't cache search results - they're too specific
+                                $ips = IpAddress::where('ip_pool_id', (int) $poolId)
+                                    ->where('is_assigned', false)
+                                    ->whereNull('assigned_to_id')
+                                    ->whereNull('assigned_to_type')
+                                    ->where('ip_address', 'like', "%{$search}%")
+                                    ->pluck('ip_address', 'id')
+                                    ->toArray();
+
+                                return ['auto' => 'Auto-select from pool'] + $ips;
+                            });
                     }
                 } elseif (isset($setting->options)) {
                     // Only set static options if not using dynamic IP loading
@@ -196,96 +216,18 @@ class FilamentInput
                     $select->options([]);
                 }
 
-                // Handle visible_if condition - both server-side and client-side JavaScript for reactivity
+                // Handle visible_if condition - server-side only (no JavaScript for CSP compliance)
                 if (isset($setting->visible_if)) {
                     $select->visible(fn ($get) => self::evaluateCondition($get, $setting->visible_if));
-
-                    // Convert PHP condition to JavaScript for client-side reactivity
-                    $condition = $setting->visible_if;
-                    $jsConditions = [];
-                    foreach ($condition as $field => $expectedValue) {
-                        if (is_array($expectedValue) && $expectedValue[0] === '!=') {
-                            $values = array_slice($expectedValue, 1);
-                            if (count($values) > 1) {
-                                // Multiple values: field !== 'val1' && field !== 'val2'
-                                foreach ($values as $val) {
-                                    $jsConditions[] = "get('{$field}') !== '{$val}'";
-                                }
-                            } else {
-                                $jsConditions[] = "get('{$field}') !== '{$values[0]}'";
-                            }
-                        } elseif (is_array($expectedValue) && $expectedValue[0] === '==') {
-                            $values = array_slice($expectedValue, 1);
-                            if (count($values) > 1) {
-                                // Multiple values: field === 'val1' || field === 'val2'
-                                $orConditions = [];
-                                foreach ($values as $val) {
-                                    $orConditions[] = "get('{$field}') === '{$val}'";
-                                }
-                                $jsConditions[] = '(' . implode(' || ', $orConditions) . ')';
-                            } else {
-                                $jsConditions[] = "get('{$field}') === '{$values[0]}'";
-                            }
-                        } else {
-                            $jsConditions[] = "get('{$field}') === '{$expectedValue}'";
-                        }
-                    }
-                    $jsCondition = implode(' && ', $jsConditions);
-                    $select->visibleJs($jsCondition);
                 }
 
-                // Handle disabled_if condition - use JavaScript for client-side reactivity
-                if (isset($setting->disabled_if) || (isset($setting->disabled_when_strategy_not_specific) && $setting->disabled_when_strategy_not_specific)) {
-                    // Set initial disabled state based on current form values (server-side)
-                    if (isset($setting->disabled_if)) {
-                        $select->disabled(fn ($get) => self::evaluateCondition($get, $setting->disabled_if));
-                    } else {
-                        $select->disabled(fn ($get) => $get('settings.node_selection_strategy') !== 'specific');
-                    }
-
-                    // Build the JavaScript condition for client-side reactivity
-                    if (isset($setting->disabled_if)) {
-                        // Convert PHP condition to JS
-                        $condition = $setting->disabled_if;
-                        $jsConditions = [];
-                        foreach ($condition as $field => $expectedValue) {
-                            if (is_array($expectedValue) && $expectedValue[0] === '==') {
-                                $values = array_slice($expectedValue, 1);
-                                if (count($values) > 1) {
-                                    // Multiple values: field === 'val1' || field === 'val2'
-                                    $orConditions = [];
-                                    foreach ($values as $val) {
-                                        $orConditions[] = "get('{$field}') === '{$val}'";
-                                    }
-                                    $jsConditions[] = '(' . implode(' || ', $orConditions) . ')';
-                                } else {
-                                    $jsConditions[] = "get('{$field}') === '{$values[0]}'";
-                                }
-                            } elseif (is_array($expectedValue) && $expectedValue[0] === '!=') {
-                                $values = array_slice($expectedValue, 1);
-                                if (count($values) > 1) {
-                                    // Multiple values: field !== 'val1' && field !== 'val2'
-                                    foreach ($values as $val) {
-                                        $jsConditions[] = "get('{$field}') !== '{$val}'";
-                                    }
-                                } else {
-                                    $jsConditions[] = "get('{$field}') !== '{$values[0]}'";
-                                }
-                            } else {
-                                $jsConditions[] = "get('{$field}') === '{$expectedValue}'";
-                            }
-                        }
-                        $jsCondition = implode(' && ', $jsConditions);
-                    } else {
-                        // disabled_when_strategy_not_specific - use full field path
-                        $jsCondition = "get('settings.node_selection_strategy') !== 'specific'";
-                    }
-
-                    $select->disabledJs($jsCondition);
-                }
-                // Handle needs_strategy_watcher - add JavaScript watcher
-                elseif (isset($setting->needs_strategy_watcher) && $setting->needs_strategy_watcher) {
-                    $select->disabledJs("get('settings.node_selection_strategy') !== 'specific'");
+                // Handle disabled_if condition - server-side only (no JavaScript for CSP compliance)
+                if (isset($setting->disabled_if)) {
+                    $select->disabled(fn ($get) => self::evaluateCondition($get, $setting->disabled_if));
+                } elseif (isset($setting->disabled_when_strategy_not_specific) && $setting->disabled_when_strategy_not_specific) {
+                    $select->disabled(fn ($get) => $get('settings.node_selection_strategy') !== 'specific');
+                } elseif (isset($setting->needs_strategy_watcher) && $setting->needs_strategy_watcher) {
+                    $select->disabled(fn ($get) => $get('settings.node_selection_strategy') !== 'specific');
                 } else {
                     $select->disabled($setting->disabled ?? false);
                 }
@@ -410,7 +352,7 @@ class FilamentInput
                     ->rules($setting->validation ?? []);
                 break;
             case 'number':
-                return TextInput::make($setting->name)
+                $input = TextInput::make($setting->name)
                     ->label($setting->label ?? $setting->name)
                     ->helperText($setting->description ?? null)
                     ->placeholder($setting->placeholder ?? $setting->default ?? '')
@@ -424,9 +366,17 @@ class FilamentInput
                     ->default($setting->default ?? '')
                     ->suffix($setting->suffix ?? null)
                     ->prefix($setting->prefix ?? null)
-                    ->disabled($setting->disabled ?? false)
                     ->columnSpan($setting->column_span ?? 1)
                     ->rules($setting->validation ?? []);
+
+                // Handle disabled_if condition - server-side only (no JavaScript for CSP compliance)
+                if (isset($setting->disabled_if)) {
+                    $input->disabled(fn ($get) => self::evaluateCondition($get, $setting->disabled_if));
+                } else {
+                    $input->disabled($setting->disabled ?? false);
+                }
+
+                return $input;
 
                 break;
             case 'color':
@@ -514,6 +464,7 @@ class FilamentInput
                         if (isset($setting->options) && is_array($setting->options)) {
                             return $setting->options;
                         }
+
                         return [];
                     })
                     ->multiple()
@@ -547,6 +498,7 @@ class FilamentInput
             case 'text':
                 // Use key as name if name is empty (database storage format)
                 $fieldName = !empty($setting->name) ? $setting->name : $setting->key;
+
                 return TextInput::make($fieldName)
                     ->label($setting->label ?? $setting->key ?? $fieldName)
                     ->helperText($setting->description ?? null)

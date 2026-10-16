@@ -5,6 +5,7 @@ namespace App\Jobs\Server;
 use App\Helpers\ExtensionHelper;
 use App\Helpers\NotificationHelper;
 use App\Models\Service;
+use App\Services\BillmanagerMigration\MigrationHold;
 use Exception;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -30,6 +31,7 @@ class TerminateJob implements ShouldQueue
      */
     public function handle(): void
     {
+        MigrationHold::assertAllowed($this->service, 'TerminateJob');
         $data = [];
 
         try {

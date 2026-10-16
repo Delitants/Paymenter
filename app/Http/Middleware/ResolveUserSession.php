@@ -4,6 +4,7 @@ namespace App\Http\Middleware;
 
 use App\Actions\Auth\Logout;
 use App\Models\UserSession;
+use App\Services\BillmanagerMigration\LegacyCredentialVerifier;
 use Closure;
 use Filament\Facade\Filament;
 use Illuminate\Http\Request;
@@ -33,6 +34,13 @@ class ResolveUserSession
             if ($id) {
                 $token = UserSession::findValid($id);
             }
+        }
+
+        if ($token && !app(LegacyCredentialVerifier::class)->canAuthenticate($token->user)) {
+            // Revoke every device token, including one restored only from a cookie.
+            UserSession::where('user_id', $token->user_id)->delete();
+
+            return $this->fail($request);
         }
 
         if ($token) {
