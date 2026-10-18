@@ -7,8 +7,11 @@ use RuntimeException;
 final class RuntimeProofFile
 {
     /** @return array{bytes:string,sha256:string,device:int,inode:int} */
-    public static function read(string $path, int $readerGid): array
+    public static function read(string $path, int $readerGid, ?int $maximumBytes = null): array
     {
+        if ($maximumBytes !== null && ($maximumBytes < 1 || $maximumBytes >= PHP_INT_MAX)) {
+            throw new RuntimeException('Invalid runtime proof byte limit.');
+        }
         if ($readerGid < 0 || $path === '' || $path[0] !== '/' || str_contains($path, '://') || str_contains($path, "\0") ||
             array_intersect(explode('/', substr($path, 1)), ['', '.', '..'])) {
             throw new RuntimeException('An absolute ordinary runtime proof path and reader group are required.');
@@ -44,7 +47,13 @@ final class RuntimeProofFile
                     throw new RuntimeException('Runtime proof changed during open.');
                 }
             }
-            $bytes = stream_get_contents($file);
+            if ($maximumBytes !== null && $opened['size'] > $maximumBytes) {
+                throw new RuntimeException('Runtime proof byte limit exceeded.');
+            }
+            $bytes = $maximumBytes === null ? stream_get_contents($file) : stream_get_contents($file, $maximumBytes + 1);
+            if ($bytes !== false && $maximumBytes !== null && strlen($bytes) > $maximumBytes) {
+                throw new RuntimeException('Runtime proof byte limit exceeded.');
+            }
             $after = fstat($file);
             clearstatcache(true, $path);
             $named = @lstat($path);

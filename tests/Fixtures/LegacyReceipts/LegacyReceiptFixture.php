@@ -3,6 +3,7 @@
 namespace Tests\Fixtures\LegacyReceipts;
 
 use App\Services\BillmanagerMigration\Opening\CanonicalPolicy;
+use Tests\Fixtures\Opening\RuntimeFixture;
 
 final class LegacyReceiptFixture
 {
@@ -47,5 +48,30 @@ final class LegacyReceiptFixture
                 ]]]],
             'revoked_keys' => [], 'revoked_nonces' => [], 'retained_byte_limit' => 1048576, 'retained_observation_limit' => 100,
         ], ...$rootOverrides];
+    }
+
+    public static function withProtectedTrust(array $trust, \Closure $test): mixed
+    {
+        $root = RuntimeFixture::root();
+        $gid = RuntimeFixture::gid();
+        $directory = $root . '/legacy-' . bin2hex(random_bytes(8));
+        if (!mkdir($directory, 0750) || !chgrp($directory, $gid)) {
+            throw new \RuntimeException('Owned protected legacy fixture directory unavailable.');
+        }
+        $path = $directory . '/trust.json';
+        try {
+            file_put_contents($path, CanonicalPolicy::bytes($trust));
+            chmod($path, 0640);
+            chgrp($path, $gid);
+
+            return $test($path, $gid);
+        } finally {
+            foreach (glob($directory . '/*') as $owned) {
+                if (!is_dir($owned) || is_link($owned)) {
+                    unlink($owned);
+                }
+            }
+            rmdir($directory);
+        }
     }
 }
