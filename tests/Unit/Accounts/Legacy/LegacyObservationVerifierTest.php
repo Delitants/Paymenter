@@ -135,6 +135,30 @@ final class LegacyObservationVerifierTest extends TestCase
         $this->verify($payload, CanonicalPolicy::bytes($signature));
     }
 
+    public static function noncanonicalSignatureWrappers(): iterable
+    {
+        foreach (['leading-space', 'trailing-newline', 'reordered-keys', 'alternate-escape'] as $case) {
+            yield $case => [$case];
+        }
+    }
+
+    #[DataProvider('noncanonicalSignatureWrappers')]
+    public function test_original_signature_wrapper_must_be_canonical(string $case): void
+    {
+        $payload = Fixture::payload();
+        $signature = Fixture::signature($payload, self::$keys);
+        $altered = match ($case) {
+            'leading-space' => ' ' . $signature,
+            'trailing-newline' => $signature . "\n",
+            'reordered-keys' => json_encode(array_reverse(json_decode($signature, true, 512, JSON_THROW_ON_ERROR), true), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            'alternate-escape' => str_replace('fixture-key', 'fixture\\u002dkey', $signature),
+        };
+        self::assertNotSame($signature, $altered);
+        self::assertEquals(json_decode($signature, true, 512, JSON_THROW_ON_ERROR), json_decode($altered, true, 512, JSON_THROW_ON_ERROR));
+        $this->expectException(\RuntimeException::class);
+        $this->verify($payload, $altered);
+    }
+
     public function test_small_rsa_key_is_refused(): void
     {
         $keys = Fixture::keyPair(2048);

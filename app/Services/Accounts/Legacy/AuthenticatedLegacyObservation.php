@@ -2,6 +2,7 @@
 
 namespace App\Services\Accounts\Legacy;
 
+use App\Services\BillmanagerMigration\Opening\CanonicalPolicy;
 use App\Services\BillmanagerMigration\Opening\ProofSchema;
 use DateTimeImmutable;
 use RuntimeException;
@@ -30,6 +31,9 @@ final readonly class AuthenticatedLegacyObservation
         EffectIdentity::closed($signature, ['schema_version', 'key_id', 'algorithm', 'signature_b64']);
         if ($signature['schema_version'] !== 1 || $signature['algorithm'] !== 'rsa-sha256' || !is_string($signature['signature_b64'])) {
             throw new RuntimeException('Unsupported legacy signature.');
+        }
+        if (CanonicalPolicy::bytes($signature) !== $signatureBytes) {
+            throw new RuntimeException('Legacy signature JSON must be byte-canonical.');
         }
         LegacyTransportTrust::keyId($signature['key_id']);
         $policy = $trust->data;
