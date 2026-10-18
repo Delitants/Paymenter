@@ -104,7 +104,9 @@ public:
     }
     void current()const {
         guard(getpid()==process_,"resource-owned-process");dir_->unchanged();guard(!dir_->exists("qa.resources.failure.original"),"resource-creation-incomplete");
-        for(const auto& f:files_)guard(same_file(f.second,dir_->read(f.first,4096)),"resource-original-replaced");
+        std::vector<std::pair<std::string,size_t>> names;for(const auto& f:files_)names.push_back({f.first,4096});
+        auto originals=dir_->read_batch(names);size_t index=0;
+        for(const auto& f:files_)guard(same_file(f.second,originals[index++]),"resource-original-replaced");
     }
     File created_original()const{current();return file("qa.resources.created.original");}
     File complete_original()const{current();return file("qa.resources.complete.original");}

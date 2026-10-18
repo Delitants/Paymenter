@@ -132,15 +132,36 @@ public:
         if (fstatat(fd_.fd,n.c_str(),&s,AT_SYMLINK_NOFOLLOW)==0) return true;
         guard(errno==ENOENT,"qa-private-stat"); return false;
     }
-    File read(const std::string& n,size_t limit) const {
-        name(n); unchanged(); Fd file(openat(fd_.fd,n.c_str(),O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK));
-        struct stat before,after; guard(fstat(file.fd,&before)==0,"qa-private-stat"); custody(before,owner_);
+private:
+    File read_at(const std::string& n,size_t limit) const {
+        name(n);Fd file(openat(fd_.fd,n.c_str(),O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK));
+        struct stat before,after;guard(fstat(file.fd,&before)==0,"qa-private-stat");custody(before,owner_);
         guard(before.st_size>0 && static_cast<uint64_t>(before.st_size)<=limit,"qa-private-size");
         auto raw=bounded(file.fd,limit);
         guard(fstat(file.fd,&after)==0 && stamp(before)==stamp(after) && raw.size()==static_cast<uint64_t>(before.st_size),"qa-private-file-changed");
-        custody(after,owner_); unchanged(); return {raw,stamp(after)};
+        custody(after,owner_);return {raw,stamp(after)};
+    }
+public:
+    File read(const std::string& n,size_t limit) const {
+        unchanged();auto file=read_at(n,limit);unchanged();return file;
+    }
+    // Every file is still opened relative to the original held descriptor with
+    // NOFOLLOW, full custody, bounded bytes and unchanged nanosecond metadata.
+    // Revalidate path/ancestor custody around the complete bounded batch rather
+    // than walking the same directory ancestry twice for each immutable original.
+    std::vector<File> read_batch(const std::vector<std::pair<std::string,size_t>>& names) const {
+        guard(!names.empty() && names.size()<=128,"qa-private-batch-bound");unchanged();std::vector<File> files;
+        for(const auto& item:names){guard(item.second>0 && item.second<=65536,"qa-private-batch-bound");files.push_back(read_at(item.first,item.second));}
+        unchanged();return files;
     }
     void create(const std::string& n,const std::string& raw) const {publish(n,raw,4096);}
+    // Original process streams retain bounded framing even when the stream is empty.
+    void create_caller_reply(const std::string& name,const std::string& raw) const {
+        guard(name=="caller.F1.stdout" || name=="caller.F4.stdout","qa-private-caller-name");publish(name,raw,16384);
+    }
+    void create_capture(const std::string& name,const std::string& raw) const {
+        guard(name.find("capture.")==0 && name.size()>8,"qa-private-capture-name");publish(name,raw,32768);
+    }
     // Only the fixed retirement archive may exceed the 4 KiB control ceiling.
     void create_retirement_archive(const std::string& raw) const {publish("qa.retirement.original",raw,65536);}
 private:
@@ -221,6 +242,7 @@ class ProtectedAuthority: public FrameworkAuthority {
     const Clock::time_point deadline_;
     mutable std::mutex mutex_; mutable std::map<std::string,Intent> intents_;
     mutable bool held_=false;
+    mutable std::map<std::string,File> checkpoints_;
     void process() const { guard(getpid()==process_,"qa-private-process"); }
     static File original(const std::shared_ptr<PrivateDirectory>& dir,const std::string& name,
                          const File& authority,const std::string& digest_name) {
@@ -301,6 +323,44 @@ public:
               hex64(f.at("original_sha256")),"qa-private-barrier");
         guard(hash(dir_->read("barrier.original",65536).raw)==f.at("original_sha256"),"qa-private-barrier-original");
         guard(current_locked(g),"qa-private-barrier"); return true;
+    }
+    void record_refusal(const Request& r) const override {
+        process();std::lock_guard<std::mutex> lock(mutex_);base();
+        guard(r.identity && r.action=="paymenter.qa.transaction" && r.actor==lease_.actor && r.run_id==lease_.fields.at("run") &&
+            r.case_id=="F5" && r.nonce==hash(authority_.raw+"\nF5\n") && !dir_->exists("intent.v1"),"qa-private-refusal");
+        auto raw="paymenter-source-qa-refusal-v1\nrun="+r.run_id+"\ncase=F5\nnonce="+r.nonce+
+            "\npid="+std::to_string(process_)+"\nstart="+start_+"\nauthority_sha256="+hash(authority_.raw)+"\n";
+        try{dir_->create("refusal.F5.original",raw);base();}catch(...){held_=true;throw;}
+    }
+    void record_checkpoint(const Request& r,const Grant& g,Checkpoint stage) const override {
+        process();std::lock_guard<std::mutex> lock(mutex_);
+        guard(current_locked(g) && r.identity==intents_.at(g.case_id).session && r.run_id==g.run_id &&
+            r.case_id==g.case_id && r.nonce==g.nonce && r.actor==g.actor && r.action=="paymenter.qa.transaction","qa-private-checkpoint");
+        const std::string prefix="checkpoint."+g.case_id+".";
+        std::string label;
+        if(stage==Checkpoint::BusinessReturned)label="business";
+        else if(stage==Checkpoint::JournalReturned)label="journal";
+        else if(stage==Checkpoint::InjectingBusiness && g.mode==Mode::ThrowAfterBusiness)label="inject-business";
+        else if(stage==Checkpoint::InjectingJournal && g.mode==Mode::ThrowAfterJournal)label="inject-journal";
+        else if(stage==Checkpoint::BarrierEntered && g.mode==Mode::ObserveBeforeReturn)label="barrier";
+        else throw ProbeError("qa-private-checkpoint-stage");
+        auto writer=dir_->read("writer."+g.case_id+".original",4096);
+        auto w=parse(writer.raw,"paymenter-source-qa-writer-v1","run case nonce facts connection pid start intent_sha256");
+        guard(w.at("run")==g.run_id && w.at("case")==g.case_id && w.at("nonce")==g.nonce && w.at("facts")==g.facts_hash &&
+            w.at("pid")==std::to_string(process_) && w.at("start")==start_ &&
+            w.at("intent_sha256")==hash(intents_.at(g.case_id).original.raw),"qa-private-checkpoint-writer");
+        for(const auto& prior:checkpoints_)guard(same_file(prior.second,dir_->read(prior.first,4096)),"qa-private-checkpoint-changed");
+        bool business=checkpoints_.count(prefix+"business.original"),journal=checkpoints_.count(prefix+"journal.original");
+        guard((stage==Checkpoint::BusinessReturned && !business && !journal) ||
+            (stage==Checkpoint::JournalReturned && business && !journal && g.mode!=Mode::ThrowAfterBusiness) ||
+            (stage==Checkpoint::InjectingBusiness && business && !journal) ||
+            (stage==Checkpoint::InjectingJournal && business && journal) ||
+            (stage==Checkpoint::BarrierEntered && business && journal),"qa-private-checkpoint-order");
+        auto name=prefix+label+".original";
+        auto raw="paymenter-source-qa-checkpoint-v1\nrun="+g.run_id+"\ncase="+g.case_id+"\nnonce="+g.nonce+"\nfacts="+g.facts_hash+
+            "\nstage="+label+"\nwriter_sha256="+hash(writer.raw)+"\nintent_sha256="+hash(intents_.at(g.case_id).original.raw)+"\n";
+        try {dir_->create(name,raw);checkpoints_.emplace(name,dir_->read(name,4096));guard(current_locked(g),"qa-private-checkpoint");}
+        catch(...){held_=true;throw;}
     }
     void record_connection(const Request& r,const Grant& g,const std::string& connection) const override {
         process();

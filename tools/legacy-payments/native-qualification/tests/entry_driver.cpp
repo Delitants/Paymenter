@@ -15,6 +15,8 @@ public:
     }
     bool current(const Grant&) const override {return true;}
     bool barrier_released(const Grant&) const override {return true;}
+    void record_refusal(const Request&) const override {}
+    void record_checkpoint(const Request&,const Grant&,Checkpoint) const override {}
     void record_connection(const Request&,const Grant&,const std::string&) const override {}
 };
 std::shared_ptr<const FrameworkAuthority> OpenProtectedFrameworkAuthority(const std::string& path) {

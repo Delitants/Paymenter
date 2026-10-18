@@ -10,6 +10,7 @@ class ProbeError: public std::runtime_error {
 public:
     explicit ProbeError(const char* code): std::runtime_error(code) {}
 };
+enum class Checkpoint { BusinessReturned, JournalReturned, InjectingBusiness, InjectingJournal, BarrierEntered };
 enum class Mode { Normal, ThrowAfterBusiness, ThrowAfterJournal, ObserveBeforeReturn };
 struct Request {
     const void* identity;
@@ -34,6 +35,8 @@ public:
     virtual bool barrier_released(const Grant&) const = 0;
     // Retain this diagnostic only in the admitted source-private evidence file.
     // It describes a connection, never a transaction, commit or settlement.
+    virtual void record_refusal(const Request&) const = 0;
+    virtual void record_checkpoint(const Request&,const Grant&,Checkpoint) const = 0;
     virtual void record_connection(const Request&, const Grant&, const std::string&) const = 0;
 };
 

@@ -32,6 +32,12 @@ public:
     bool barrier_released(const Grant& g) const override {
         enabled();bool result=authority_->barrier_released(g);enabled();return result;
     }
+    void record_refusal(const Request& r) const override {
+        enabled();authority_->record_refusal(r);enabled();
+    }
+    void record_checkpoint(const Request& r,const Grant& g,Checkpoint stage) const override {
+        enabled();authority_->record_checkpoint(r,g,stage);enabled();
+    }
     void record_connection(const Request& r,const Grant& g,const std::string& id) const override {
         enabled();authority_->record_connection(r,g,id);enabled();
     }

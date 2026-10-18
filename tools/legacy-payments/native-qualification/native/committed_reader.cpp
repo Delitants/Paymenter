@@ -33,7 +33,7 @@ public:
         std::unique_ptr<MYSQL_RES,decltype(&mysql_free_result)> result(mysql_store_result(db_.get()),mysql_free_result);
         read_guard(bool(result),"reader-result");
         auto columns=mysql_num_fields(result.get());
-        read_guard(columns>0 && columns<=5 && mysql_num_rows(result.get())<=3,"reader-result-bound");
+        read_guard(columns>0 && columns<=5 && mysql_num_rows(result.get())<=33,"reader-result-bound");
         ReadRows rows;size_t total=0;MYSQL_ROW row;
         while((row=mysql_fetch_row(result.get()))!=nullptr) {
             auto lengths=mysql_fetch_lengths(result.get());read_guard(lengths!=nullptr,"reader-result");
@@ -57,7 +57,10 @@ void perform_native_read(const std::shared_ptr<PrivateDirectory>& dir,const std:
     for(const auto& name:{"read.started.original","read.original","read.complete.original","read.failure.original"})
         guard(!dir->exists(name),"reader-reused-operation");
     auto original=dir->read("read.approval.native.original",4096);
-    auto f=parse(original.raw,"paymenter-source-qa-read-approval-native-v1","intent kind run request boot case phase facts writer previous issued expires");
+    bool audit=original.raw.find("paymenter-source-qa-audit-approval-native-v1\n")==0;
+    auto f=parse(original.raw,audit?"paymenter-source-qa-audit-approval-native-v1":"paymenter-source-qa-read-approval-native-v1",
+        audit?"intent kind run request boot case phase facts writer previous issued expires facts_F1 facts_F2 facts_F3 facts_F4 business_sha256 journal_sha256":"intent kind run request boot case phase facts writer previous issued expires");
+    guard(!audit || f.at("kind")=="audit","reader-kind");
     guard(f.at("intent")=="observe-framework" && hex64(f.at("run")) && hex64(f.at("request")) && hex64(f.at("facts")),"reader-approval");
     auto issued=number(f.at("issued")),expires=number(f.at("expires"));auto now=now_seconds();
     guard(issued<expires && expires-issued<=30 && now>=issued && now<expires,"reader-expiry");
@@ -71,7 +74,7 @@ void perform_native_read(const std::shared_ptr<PrivateDirectory>& dir,const std:
     current();ReaderRequest request{f.at("run"),f.at("case"),f.at("facts"),f.at("writer"),{}};
     if(f.at("kind")=="channel")guard(f.at("case")=="none" && f.at("phase")=="none" && f.at("writer")=="none" && f.at("previous")=="none","reader-kind");
     else {
-        guard(f.at("kind")=="observation" && (f.at("phase")=="before" || f.at("phase")=="barrier" || f.at("phase")=="after" || f.at("phase")=="retired"),"reader-kind");
+        guard(((!audit && f.at("kind")=="observation") || (audit && f.at("kind")=="audit" && f.at("case")=="none" && f.at("writer")=="none")) && (f.at("phase")=="before" || f.at("phase")=="barrier" || f.at("phase")=="after" || f.at("phase")=="retired"),"reader-kind");
         if(f.at("previous")!="none") {
             std::istringstream values(f.at("previous"));std::string value;
             while(std::getline(values,value,','))request.previous.push_back(value);
@@ -87,12 +90,27 @@ void perform_native_read(const std::shared_ptr<PrivateDirectory>& dir,const std:
         CommittedRead reader(db,database,socket,end);std::string connection;ReadRows rows;
         auto started=now_seconds();
         if(f.at("kind")=="channel")connection=reader.channel().connection;
+        else if(audit) {
+            ReaderAuditRequest audit_request{request.run,{},request.previous,{}};
+            size_t schema_index=0;
+            for(const auto& table:{"business","journal"}) {
+                auto schema=dir->read(std::string("qa.schema.")+table+".original",4096);
+                guard(hash(schema.raw)==f.at(std::string(table)+"_sha256"),"reader-audit-schema-hash");
+                audit_request.definitions[schema_index++]=schema.raw;
+            }
+            for(const auto& id:{"F1","F2","F3","F4"})audit_request.facts[id]=f.at(std::string("facts_")+id);
+            auto result=reader.audit(audit_request);connection=result.connection;rows=result.rows;
+        }
         else {auto result=reader.observe(request);connection=result.connection;rows=result.rows;}
         auto finished=now_seconds();
         std::string raw="paymenter-source-qa-read-original-native-v1\nkind="+f.at("kind")+"\nrun="+f.at("run")+"\nrequest="+f.at("request")+
             "\nboot="+f.at("boot")+"\ncase="+f.at("case")+"\nphase="+f.at("phase")+"\nfacts="+f.at("facts")+"\nwriter="+f.at("writer")+
             "\nconnection="+connection+"\nstarted="+std::to_string(started)+"\nfinished="+std::to_string(finished)+
             "\nisolation=READ COMMITTED\nautocommit=1\ntransaction_open=0\napproval_sha256="+hash(original.raw)+"\n";
+        if(audit) {
+            for(const auto& id:{"F1","F2","F3","F4"})raw+=std::string("facts_")+id+"="+f.at(std::string("facts_")+id)+"\n";
+            for(const auto& table:{"business","journal"})raw+=std::string(table)+"_sha256="+f.at(std::string(table)+"_sha256")+"\n";
+        }
         for(const auto& row:rows)raw+="row="+row[0]+","+row[1]+","+row[2]+","+row[3]+","+row[4]+"\n";
         dir->create("read.original",raw);
         guard(same_file(credential,credential_file(credentials,owner)),"reader-credential-changed");current();

@@ -33,6 +33,14 @@ void replace_value(std::string& raw, const std::string& from, const std::string&
 int main(int argc, char** argv) {
     try {
         check(argc==3); std::string scenario=argv[1], root=argv[2];
+        if(scenario.find("batch-")==0) {
+            auto dir=std::make_shared<PrivateDirectory>(root,Owner{getuid(),getgid()});
+            if(scenario=="batch-symlink"){check(rename((root+"/registry.original").c_str(),(root+"/registry.old").c_str())==0);check(symlink("registry.old",(root+"/registry.original").c_str())==0);}
+            if(scenario=="batch-writable")check(chmod((root+"/registry.original").c_str(),0666)==0);
+            std::vector<std::pair<std::string,size_t>> names{{"authority.v1",4096},{"registry.original",scenario=="batch-bound"?1u:4096u}};
+            if(scenario=="batch-valid"){auto files=dir->read_batch(names);check(files.size()==2 && same_file(files[0],dir->read("authority.v1",4096)));}
+            else refuses([&]{dir->read_batch(names);});return 0;
+        }
         auto intent=contents(root+"/intent.v1");
         replace_value(intent,"pid=PID\n","pid="+std::to_string(getpid())+"\n");
         if (scenario=="wrong-pid") replace_value(intent,"pid="+std::to_string(getpid())+"\n","pid=1\n");
@@ -92,6 +100,26 @@ int main(int argc, char** argv) {
         auto grant=bridge->authorize(request);
         check(grant.mode==Mode::ObserveBeforeReturn && grant.actor=="fictional-admin");
         check(bridge->current(grant));
+        if(scenario.find("refusal-")==0) {
+            if(scenario!="refusal-with-intent")check(unlink((root+"/intent.v1").c_str())==0);
+            request.case_id="F5";request.nonce=hash(dir->read("authority.v1",4096).raw+"\nF5\n");
+            if(scenario=="refusal-wrong-nonce")request.nonce=std::string(64,'f');
+            if(scenario=="refusal-wrong-nonce" || scenario=="refusal-with-intent")refuses([&]{bridge->record_refusal(request);});
+            else {bridge->record_refusal(request);check(dir->exists("refusal.F5.original"));if(scenario=="refusal-replay")refuses([&]{bridge->record_refusal(request);});}
+            check(!dir->exists("writer.F5.original"));return 0;
+        }
+        if(scenario.find("checkpoint-")==0) {
+            if(scenario=="checkpoint-no-writer"){refuses([&]{bridge->record_checkpoint(request,grant,Checkpoint::BusinessReturned);});return 0;}
+            bridge->record_connection(request,grant,"21");
+            if(scenario=="checkpoint-order"){refuses([&]{bridge->record_checkpoint(request,grant,Checkpoint::JournalReturned);});return 0;}
+            if(scenario=="checkpoint-wrong-session"){auto wrong=request;wrong.identity=reinterpret_cast<void*>(2);refuses([&]{bridge->record_checkpoint(wrong,grant,Checkpoint::BusinessReturned);});return 0;}
+            if(scenario=="checkpoint-sync-failure"){fail_sync=true;refuses([&]{bridge->record_checkpoint(request,grant,Checkpoint::BusinessReturned);});fail_sync=false;check(!bridge->current(grant));return 0;}
+            bridge->record_checkpoint(request,grant,Checkpoint::BusinessReturned);check(dir->exists("checkpoint.F4.business.original"));
+            if(scenario=="checkpoint-duplicate")refuses([&]{bridge->record_checkpoint(request,grant,Checkpoint::BusinessReturned);});
+            if(scenario=="checkpoint-replace") {auto original=dir->read("checkpoint.F4.business.original",4096);check(rename((root+"/checkpoint.F4.business.original").c_str(),(root+"/checkpoint.old").c_str())==0);dir->create("checkpoint.F4.business.original",original.raw);refuses([&]{bridge->record_checkpoint(request,grant,Checkpoint::JournalReturned);});}
+            if(scenario=="checkpoint-journal"){bridge->record_checkpoint(request,grant,Checkpoint::JournalReturned);bridge->record_checkpoint(request,grant,Checkpoint::BarrierEntered);check(dir->exists("checkpoint.F4.barrier.original"));}
+            return 0;
+        }
         if (scenario=="clock-forward") { wall+=25; check(!bridge->current(grant)); return 0; }
         if (scenario=="clock-backward") { --wall; check(!bridge->current(grant)); return 0; }
         if (scenario=="forged-grant") {

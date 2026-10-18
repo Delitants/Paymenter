@@ -211,3 +211,21 @@ registered own action. No bootstrap failure is propagated into other SDK modules
 Actual SDK ordering, component lifetime and startup/recovery still require their
 separate approved native operation; local SDK doubles and static linking do not
 establish them.
+
+Post-effect checkpoint originals use purpose `paymenter-source-qa-checkpoint-v1`
+and fields `run case nonce facts stage writer_sha256 intent_sha256`. The fixed
+stages are `business`, `journal`, `inject-business` (F2), `inject-journal` (F3)
+and `barrier` (F4). Each records a successful Execute return or the immediately
+following own-action control point, not a transaction/commit. Publication checks
+request/session/thread/process/grant binding, predecessor order and unchanged
+prior checkpoint identities. Sync failure holds the bridge. The native controller
+requires the mode's exact set and rejects preexisting checkpoints before running.
+These retained control diagnostics add no SQL or financial authority.
+
+F5 has no business grant. The guarded own-action entry alone can write
+`refusal.F5.original`, purpose `paymenter-source-qa-refusal-v1`, fields
+`run case nonce pid start authority_sha256`. Its nonce is SHA256 of authority
+bytes followed by `\nF5\n`. The bridge verifies actor/action/run/process/runtime,
+current original authority and absence of an active intent before refusing the
+action. Independent before/after full-table audits are still required; this
+refusal file alone proves no database outcome.

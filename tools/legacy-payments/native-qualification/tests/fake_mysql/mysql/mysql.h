@@ -35,6 +35,7 @@ inline int mysql_real_query(MYSQL* db,const char* q,unsigned long n) {
     if(db->query=="SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED")return 0;
     if(db->query=="SELECT CONNECTION_ID(),@@session.tx_isolation,@@session.autocommit,DATABASE(),@@socket" ||
        db->query.find("SELECT TABLE_NAME,ENGINE FROM information_schema.TABLES ")==0 ||
+       db->query.find("SELECT 'present' FROM information_schema.")==0 || db->query.find("SHOW CREATE TABLE paymenter_qa_")==0 ||
        db->query.find("SELECT 'business',run_id,case_id,CAST(amount AS CHAR),facts_hash ")==0)return 0;
     return 1;
 }
@@ -43,9 +44,13 @@ inline MYSQL_RES* mysql_store_result(MYSQL* db) {
     if(db->query.find("SELECT CONNECTION_ID()")==0) {
         r->rows={{"12","READ-COMMITTED","1","qa",mysql_test_mode=="wrong-socket"?"/other.sock":"/fictional.sock"}};
         if(mysql_test_mode=="active-transaction")db->server_status=3;
+    } else if(db->query.find("SHOW CREATE TABLE ")==0) {
+        std::string table=db->query.substr(18);r->rows={{table,mysql_test_mode=="audit-schema-changed"?"changed schema":"fictional "+std::string(table=="paymenter_qa_business_v1"?"business":"journal")+" schema"}};
+    } else if(db->query.find("SELECT 'present'")==0) {
+        if(mysql_test_mode=="audit-trigger" && db->query.find("TRIGGERS")!=std::string::npos)r->rows={{"present"}};
     } else if(db->query.find("SELECT TABLE_NAME")==0)
         r->rows={{"paymenter_qa_business_v1","InnoDB"},{"paymenter_qa_journal_v1","InnoDB"}};
-    else r->rows={{"business",std::string(64,'a'),"F1","0.0100",std::string(64,'c')},{"journal",std::string(64,'a'),"F1","F1",std::string(64,'c')}};
+    else if(mysql_test_mode!="audit-empty") r->rows={{"business",std::string(64,'a'),"F1","0.0100",std::string(64,'c')},{"journal",std::string(64,'a'),"F1","F1",std::string(64,'c')}};
     return r;
 }
 inline unsigned mysql_num_fields(MYSQL_RES* r){return r->rows.empty()?5:r->rows[0].size();}

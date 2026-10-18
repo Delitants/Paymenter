@@ -1,3 +1,5 @@
+#ifndef PAYMENTER_QA_CONTROL_ISSUER_IMPLEMENTATION
+#define PAYMENTER_QA_CONTROL_ISSUER_IMPLEMENTATION
 // Standalone native control publisher; not linked into the SDK module.
 // Amalgamation deliberately shares the exact protected-file/parser/image logic.
 // Never compile this TU together with authority_bridge.cpp into the same binary.
@@ -63,8 +65,8 @@ struct NativeContext {
         guard(boot()==fields.at("boot"),"qa-native-boot");
         guard(now>=admitted.issued && now<admitted.expires && Clock::now()<deadline,"qa-native-expiry");
         guard(!dir->exists("retired.v1"),"qa-native-retired");
-        guard(same_file(approval,dir->read("approval.native.original",4096)) &&
-            same_file(registry,dir->read("registry.original",4096)) && same_file(build,dir->read("build.original",4096)),"qa-native-original-changed");
+        auto originals=dir->read_batch({{"approval.native.original",4096},{"registry.original",4096},{"build.original",4096}});
+        guard(same_file(approval,originals[0]) && same_file(registry,originals[1]) && same_file(build,originals[2]),"qa-native-original-changed");
         guard(same_file(module,images(fields.at("module_path"))) && same_file(runtime,images(fields.at("runtime_path"))),"qa-native-image-changed");
     }
     std::string authority() const {return encode_fields("paymenter-source-qa-authority-v1",fields,AUTH_FIELDS);}
@@ -194,4 +196,6 @@ int main(int argc,char**argv) {
     }catch(const paymenter_qa::ProbeError& e){std::cerr<<e.what()<<'\n';return 1;}
     catch(...){std::cerr<<"qa-native-issuer-failed\n";return 1;}
 }
+#endif
+
 #endif

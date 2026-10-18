@@ -111,6 +111,7 @@ class Probe {
         auto end=Clock::now()+std::chrono::seconds(5);
         if (c.deadline<end) end=c.deadline;
         if (c.grant.expires<end) end=c.grant.expires;
+        authority_->record_checkpoint(r,c.grant,Checkpoint::BarrierEntered);
         while (true) {
             validate_case_authority(r,c);
             require(Clock::now()<end, "qa-barrier-timeout");
@@ -135,6 +136,7 @@ public:
         require(session.auth.level()>=mgr_access::lvAdmin, "qa-actor-access");
         Request r=request(session);
         require(r.action==ACTION && r.run_id==operation_ && digest(r.nonce), "qa-request");
+        if(r.case_id=="F5") {authority_->record_refusal(r);throw ProbeError("qa-guard-case");}
         mode_for(r.case_id);
         Grant g=authority_->authorize(r);
         validate(r,g);
@@ -163,8 +165,13 @@ public:
             validate_context(r,*c);
             c->cache->Prepare(BUSINESS).Execute(g.run_id,g.case_id,"0.0100",g.facts_hash);
             validate_context(r,*c);
+            authority_->record_checkpoint(r,g,Checkpoint::BusinessReturned);
+            validate_context(r,*c);
             c->business_done=true;
-            if (g.mode==Mode::ThrowAfterBusiness) throw ProbeError("qa-injected-after-business");
+            if (g.mode==Mode::ThrowAfterBusiness) {
+                authority_->record_checkpoint(r,g,Checkpoint::InjectingBusiness);
+                throw ProbeError("qa-injected-after-business");
+            }
         } catch (...) {
             finish(r.identity);
             throw;
@@ -186,7 +193,12 @@ public:
             c->cache->Prepare(JOURNAL).Execute(c->grant.run_id,c->grant.case_id,
                                              c->grant.case_id,c->grant.facts_hash);
             validate_context(r,*c);
-            if (c->grant.mode==Mode::ThrowAfterJournal) throw ProbeError("qa-injected-after-journal");
+            authority_->record_checkpoint(r,c->grant,Checkpoint::JournalReturned);
+            validate_context(r,*c);
+            if (c->grant.mode==Mode::ThrowAfterJournal) {
+                authority_->record_checkpoint(r,c->grant,Checkpoint::InjectingJournal);
+                throw ProbeError("qa-injected-after-journal");
+            }
             if (c->grant.mode==Mode::ObserveBeforeReturn) barrier(r,*c);
             finish(r.identity);
         } catch (...) {

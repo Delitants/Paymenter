@@ -32,6 +32,7 @@ public:
     std::string grant_actor = "fictional-admin", grant_nonce = NONCE, grant_run = RUN;
     mutable int authorizations = 0;
     mutable std::vector<std::string> recorded_connections;
+    mutable std::vector<int> checkpoints;
     Clock::time_point expiry = Clock::now() + std::chrono::seconds(300);
     std::string operation_id() const override { return RUN; }
     Grant authorize(const Request&) const override {
@@ -47,6 +48,8 @@ public:
         if (revoke_release) valid=false;
         return release;
     }
+    void record_refusal(const Request&) const override {}
+    void record_checkpoint(const Request&,const Grant&,Checkpoint stage) const override { checkpoints.push_back(static_cast<int>(stage)); }
     void record_connection(const Request&, const Grant&, const std::string& id) const override {
         recorded_connections.push_back(id);
     }
@@ -92,7 +95,11 @@ int main(int argc,char** argv) {
             return 0;
         }
         Fixture f;
-        if (test=="normal") { f.execute(); f.after(); f.final(); exact_calls(); }
+        if (test=="checkpoint-normal") {f.execute();f.after();check(f.authority->checkpoints==std::vector<int>({0,1}));}
+        else if (test=="checkpoint-F2") {f.select("F2",Mode::ThrowAfterBusiness);refuses([&]{f.execute();});check(f.authority->checkpoints==std::vector<int>({0,2}));}
+        else if (test=="checkpoint-F3") {f.select("F3",Mode::ThrowAfterJournal);f.execute();refuses([&]{f.after();});check(f.authority->checkpoints==std::vector<int>({0,1,3}));}
+        else if (test=="checkpoint-sql-failed") {mgr_db::on_write()=[] {throw ProbeError("authored-write-failed");};refuses([&]{f.execute();});check(f.authority->checkpoints.empty());}
+        else if (test=="normal") { f.execute(); f.after(); f.final(); exact_calls(); }
         else if (test=="wrong-run") { f.request->params["qa_run"]=std::string(64,'d'); refuses([&]{f.execute();}); check(mgr_db::calls().empty()); }
         else if (test=="wrong-case") { f.request->params["qa_case"]="M1"; refuses([&]{f.execute();}); check(mgr_db::calls().empty()); }
         else if (test=="wrong-nonce") { f.request->params["qa_nonce"]=std::string(64,'d'); refuses([&]{f.execute();}); check(mgr_db::calls().empty()); }

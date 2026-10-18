@@ -10,8 +10,8 @@ int main(int argc,char**argv) {
         auto dir=std::make_shared<PrivateDirectory>(root,Owner{getuid(),getgid()});
         perform_native_read(dir,mysql_test_credential+(mode=="credential-symlink"?"-link":""),Owner{getuid(),getgid()},"qa","/fictional.sock",
             []{return "11111111-1111-1111-1111-111111111111";});
-        if(mode!="channel" && mode!="observation" && mode!="spaced-config")return 3;
-    } catch(const ProbeError&) {if(mode=="channel" || mode=="observation" || mode=="spaced-config")return 4;}
-    catch(const ReaderError&) {if(mode=="channel" || mode=="observation" || mode=="spaced-config")return 5;}
+        if(mode!="channel" && mode!="observation" && mode!="spaced-config" && mode!="audit" && mode!="audit-empty")return 3;
+    } catch(const ProbeError&) {if(mode=="channel" || mode=="observation" || mode=="spaced-config" || mode=="audit" || mode=="audit-empty")return 4;}
+    catch(const ReaderError&) {if(mode=="channel" || mode=="observation" || mode=="spaced-config" || mode=="audit" || mode=="audit-empty")return 5;}
     catch(const std::exception& e) {std::cerr<<e.what();return 6;}
 }

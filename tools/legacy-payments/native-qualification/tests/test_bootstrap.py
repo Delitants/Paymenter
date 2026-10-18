@@ -7,7 +7,7 @@ import unittest
 
 HERE = Path(__file__).resolve().parent
 NATIVE = HERE.parent / 'native'
-SCENARIOS = ('normal', 'missing-authority', 'null-authority', 'bad-operation',
+SCENARIOS = ('forward-checkpoints','refusal-active','refusal-closed','checkpoint-close-after-forward','normal', 'missing-authority', 'null-authority', 'bad-operation',
              'initialize-without-entry', 'duplicate-prepare', 'duplicate-initialize',
              'prepare-after-active', 'event-registration-failure', 'pending-action',
              'registration-reentrant', 'reentrant-prepare', 'revoked-before-register',

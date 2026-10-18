@@ -9,7 +9,7 @@
 using namespace paymenter_qa;
 std::shared_ptr<mgr_db::Cache> db(new mgr_db::Cache);
 static std::string scenario;
-static int opens=0,checks=0;
+static int opens=0,checks=0,checkpoint_calls=0,refusal_calls=0;
 static FrameworkBootstrap* owner=nullptr;
 void check(bool value) {if(!value)throw std::runtime_error("test assertion");}
 class Auth:public FrameworkAuthority {
@@ -26,6 +26,8 @@ public:
     }
     bool current(const Grant&) const override {return true;}
     bool barrier_released(const Grant&) const override {return true;}
+    void record_refusal(const Request&) const override {++refusal_calls;}
+    void record_checkpoint(const Request&,const Grant&,Checkpoint) const override {++checkpoint_calls;if(scenario=="checkpoint-close-after-forward")check(!owner->initialize());}
     void record_connection(const Request&,const Grant&,const std::string&) const override {}
 };
 namespace paymenter_qa {
@@ -93,6 +95,15 @@ int main(int argc,char**argv) {
             int status=0;check(waitpid(child,&status,0)==child && WIFEXITED(status) && WEXITSTATUS(status)==0);
             check(bootstrap.active());return 0;
         }
-        invoke(true);return 0;
+        if(scenario=="refusal-active" || scenario=="refusal-closed" || scenario=="checkpoint-close-after-forward") {
+            if(scenario=="refusal-closed")check(!bootstrap.initialize());
+            auto action=isp_api::test_actions().back();isp_api::Session request(*action);
+            request.params={{"qa_run",std::string(64,'a')},{"qa_case",scenario=="checkpoint-close-after-forward"?"F1":"F5"},{"qa_nonce",std::string(64,'b')}};
+            bool held=false;try{action->Execute(request);}catch(const ProbeError&){held=true;}check(held);
+            check(refusal_calls==(scenario=="refusal-active"?1:0));
+            check(checkpoint_calls==(scenario=="checkpoint-close-after-forward"?1:0));
+            check(mgr_db::calls().size()==(scenario=="checkpoint-close-after-forward"?1u:0u));return 0;
+        }
+        invoke(true);if(scenario=="forward-checkpoints")check(checkpoint_calls==2);return 0;
     } catch(const std::exception& e) {std::cerr<<e.what()<<'\n';return 1;}
 }

@@ -286,3 +286,12 @@ results do not establish framework transaction coupling or complete Task 3.
 
 The complete implementation remains tracked in
 [the source qualification plan](../../../docs/superpowers/plans/2026-10-18-source-payment-native-qualification.md).
+
+The native fixed framework controller and owned-child backend are documented in
+[native/controller_protocol.md](native/controller_protocol.md). Their local tests
+exercise actual macOS child pipes/waits and protected files, plus explicitly
+authored SDK/DB/peer boundaries. They do not establish genuine source SDK or
+financial acceptance. The runner consumes already admitted resource creation and
+loaded-module state, retains failures, and leaves every completed run fenced with
+retirement and qualification explicitly pending. The Python live capability and
+operator remain unavailable; no profile or test success can enable them.

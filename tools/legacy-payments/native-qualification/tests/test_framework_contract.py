@@ -7,6 +7,7 @@ import unittest
 HERE = Path(__file__).resolve().parent
 NATIVE = HERE.parent / 'native'
 SCENARIOS = (
+    'checkpoint-normal','checkpoint-F2','checkpoint-F3','checkpoint-sql-failed',
     'missing-authority', 'normal', 'wrong-run', 'wrong-case', 'wrong-nonce',
     'wrong-actor', 'wrong-role', 'expired', 'unbounded-expiry', 'missing-registry',
     'wrong-grant', 'phase-override', 'throw-after-journal', 'mode-mismatch',

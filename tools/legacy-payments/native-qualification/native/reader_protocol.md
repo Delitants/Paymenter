@@ -66,3 +66,24 @@ read. The trusted caller must verify every original's protected custody and
 hash, current revocation and actual process retirement; a copied text document
 is not a native receipt. No file is overwritten, retried or automatically
 removed, and no result releases a barrier or advances an operation.
+
+## Writer-free full-table audit
+
+The controller's initial/F5 and inter-case audits use a separate purpose,
+`paymenter-source-qa-audit-approval-native-v1`. It has the same fields as the
+read approval, then `facts_F1 facts_F2 facts_F3 facts_F4 business_sha256 journal_sha256`.
+Kind is `audit`, case/writer are `none`; phase is a closed observation phase.
+All four registered facts and the two copied original schema hashes are required.
+The protected directory also contains `qa.schema.business.original` and
+`qa.schema.journal.original`, whose bytes must match those hashes. The controller
+binds their original identities. No writer connection is invented before one exists.
+
+The reader checks the fixed InnoDB engines, no triggers or incoming/outgoing
+foreign keys, and exact SHOW CREATE bytes, then scans both entire QA tables in
+one fixed UNION ALL statement with LIMIT 33. Validation accepts at most eight
+unique original run/case/kind rows across F1–F4. Foreign rows, F5 rows, wrong facts,
+duplicates or changed definitions refuse. Sorted rows preserve split/absent
+states; only the outer fixed controller decides the expected state. Actual C API
+results remain bounded to 33 rows, five columns and 16 KiB; existing pair-mode
+validation still accepts at most two rows. Audit originals include the four facts
+and both schema hashes before the row lines, under the existing completion hash.
