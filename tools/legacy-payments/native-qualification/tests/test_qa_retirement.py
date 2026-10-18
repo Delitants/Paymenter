@@ -13,7 +13,7 @@ SCENARIOS=('complete','empty','split-owned','foreign-run','unknown-case','wrong-
            'delete-failure','drop-failure','unlock-failure','guard-held','guard-changed',
            'remaining-row','schema-after-delete','lock-failure','archive-replay',
            'invalid-run','invalid-case','duplicate-case','invalid-facts',
-           'archive-after-delete','drop-not-absent')
+           'archive-after-delete','drop-not-absent','large-schema')
 
 
 class QaRetirementTests(unittest.TestCase):

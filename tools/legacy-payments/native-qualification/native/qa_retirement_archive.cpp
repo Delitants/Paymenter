@@ -11,7 +11,7 @@ public:
     explicit ProtectedQaArchive(std::shared_ptr<PrivateDirectory> dir):dir_(dir){}
     void retain(const std::string& raw)override {
         current();guard(!original_ && !dir_->exists("qa.retirement.original"),"retirement-archive-reuse");
-        dir_->create("qa.retirement.original",raw);original_.reset(new File(dir_->read("qa.retirement.original",65536)));
+        dir_->create_retirement_archive(raw);original_.reset(new File(dir_->read("qa.retirement.original",65536)));
         guard(original_->raw==raw,"retirement-archive-write");current();
     }
     std::string reload()override {

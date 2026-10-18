@@ -1,3 +1,5 @@
+#ifndef PAYMENTER_QA_AUTHORITY_BRIDGE_IMPLEMENTATION
+#define PAYMENTER_QA_AUTHORITY_BRIDGE_IMPLEMENTATION
 #include "authority_bridge.hpp"
 #include <openssl/sha.h>
 #include <algorithm>
@@ -138,8 +140,12 @@ public:
         guard(fstat(file.fd,&after)==0 && stamp(before)==stamp(after) && raw.size()==static_cast<uint64_t>(before.st_size),"qa-private-file-changed");
         custody(after,owner_); unchanged(); return {raw,stamp(after)};
     }
-    void create(const std::string& n,const std::string& raw) const {
-        name(n); unchanged(); guard(!raw.empty() && raw.size()<=4096,"qa-private-size");
+    void create(const std::string& n,const std::string& raw) const {publish(n,raw,4096);}
+    // Only the fixed retirement archive may exceed the 4 KiB control ceiling.
+    void create_retirement_archive(const std::string& raw) const {publish("qa.retirement.original",raw,65536);}
+private:
+    void publish(const std::string& n,const std::string& raw,size_t maximum) const {
+        name(n); unchanged(); guard(!raw.empty() && raw.size()<=maximum,"qa-private-size");
         Fd file(openat(fd_.fd,n.c_str(),O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600));
         struct stat s; guard(fstat(file.fd,&s)==0,"qa-private-stat"); custody(s,owner_);
         size_t used=0;
@@ -387,3 +393,5 @@ std::shared_ptr<const FrameworkAuthority> OpenProtectedFrameworkAuthority(const 
 #endif
 }
 }
+
+#endif

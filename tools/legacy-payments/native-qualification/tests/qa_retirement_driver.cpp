@@ -12,6 +12,7 @@ struct TestDB:QaRetirementDatabase {
     void lock_qa_tables()override {++locks;locked=true;if(mode=="lock-failure")throw QaRetirementError("lock");}
     std::array<std::string,2> definitions()override {
         check(locked);
+        if(mode=="large-schema")return {{std::string(4096,'b'),std::string(4096,'j')}};
         return {{mode=="changed-schema" || (mode=="schema-after-delete" && erased)?"unexpected schema":"business definition","journal definition"}};
     }
     ReadRows all_qa_rows()override {check(locked);return data;}
@@ -38,6 +39,7 @@ int main(int argc,char**argv) {
     check(argc==3);std::string mode=argv[1],root=argv[2];
     auto dir=std::make_shared<PrivateDirectory>(root,Owner{getuid(),getgid()});ProtectedQaArchive durable(dir);FaultArchive archive(durable,mode);
     QaRetirementRegistry registry{RUN,{{"F1",FACTS}},{{"business definition","journal definition"}}};
+    if(mode=="large-schema")registry.definitions={{std::string(4096,'b'),std::string(4096,'j')}};
     if(mode=="invalid-run")registry.run="' OR 1=1";
     if(mode=="invalid-case")registry.cases[0].id="M1";
     if(mode=="duplicate-case")registry.cases.push_back(registry.cases[0]);
@@ -57,11 +59,12 @@ int main(int argc,char**argv) {
     if(mode=="invalid-run" || mode=="invalid-case" || mode=="duplicate-case" || mode=="invalid-facts") {
         check(!result.complete && db.locks==0 && db.erased==0 && db.dropped==0);return 0;
     }
-    bool good=mode=="complete" || mode=="empty" || mode=="split-owned";
+    bool good=mode=="complete" || mode=="empty" || mode=="split-owned" || mode=="large-schema";
     check(result.complete==good);
     if(good){check(result.archived && db.data.empty() && db.dropped==1 && db.unlocks==1 && !db.locked);
         check(durable.reload().find("run="+RUN+"\n")!=std::string::npos);
-        check(durable.reload().find("business_schema_hex=627573696e65737320646566696e6974696f6e\n")!=std::string::npos);
+        if(mode=="large-schema")check(durable.reload().size()>16384);
+        else check(durable.reload().find("business_schema_hex=627573696e65737320646566696e6974696f6e\n")!=std::string::npos);
         if(mode!="empty")check(durable.reload().find(",302e30313030,")!=std::string::npos);
         return 0;}
     check(!result.blocker.empty());

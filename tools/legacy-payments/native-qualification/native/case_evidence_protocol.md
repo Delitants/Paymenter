@@ -73,13 +73,14 @@ separate accepted operations under the source qualification plan.
 `qa_retirement.hpp` defines a fixed two-table policy. `qa_retirement_archive.cpp`
 provides a process-bound protected original archive; it has no CLI or SQL adapter.
 Compile the archive translation unit alone, since it includes the bridge. There
-is no production permissive guard or executable source cleanup path in this
-increment. A separate [native C API backend](retirement_sql_protocol.md) implements
-the fixed SQL operations but supplies neither resource authority nor a CLI.
+is no permissive guard. A separate [native C API backend](retirement_sql_protocol.md)
+implements the fixed SQL operations; the [resource tool](resource_custody_protocol.md)
+now supplies explicit root-only creation/retirement commands and a concrete guard,
+with actual source execution still gated.
 Database and guard doubles exercise policy ordering, not actual
 MariaDB lock/schema/DDL or module-unload behavior.
 
-A future native guard must establish original table absence/create receipts,
+The native guard must establish original table absence/create receipts,
 unchanged schema/resource custody, no triggers/native objects, actual SDK writer
 retirement and a fresh bounded cleanup approval. A supplied boolean, empty table,
 unload declaration or preparation profile supplies none of these facts. The

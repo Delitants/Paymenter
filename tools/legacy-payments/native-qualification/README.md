@@ -131,11 +131,16 @@ It binds immutable registry selectors, process/thread ownership and finite
 connection/I/O/lock deadlines; checks table engines, triggers and incoming/
 outgoing foreign keys; and uses one unchanged local session with explicit table
 locks. It rechecks schemas before erasure/drop and closes uncertain channels
-without reconnecting or retrying. No production guard, cleanup CLI or module
-unloader is supplied. Those remain blocked until the full issuer establishes
-original resource creation, writer retirement and supported native lock/DDL
-behavior. Authored C API tests and installed-header compilation do not qualify
-actual source cleanup. See the [backend contract](native/retirement_sql_protocol.md).
+without reconnecting or retrying. `native/resource_custody.cpp` now supplies the
+root-native fixed-table creator and concrete retirement guard. It binds actual
+producer identity, original table-absence/creation/schema records, immutable
+resource selectors, persistent revocation, actual old writer retirement and an
+unmapped replacement runtime before cleanup can use SQL. Its only public modes
+are explicitly approved creation/retirement; it performs no SDK activation or
+manager action. See the [custody protocol](native/resource_custody_protocol.md)
+and [backend contract](native/retirement_sql_protocol.md). Native lock/DDL,
+SDK writer/startup behavior and the full run controller remain unqualified;
+authored database tests and compilation do not qualify actual source cleanup.
 
 References are canonical absolute POSIX paths with exact byte length and SHA256.
 Pure parsing does not establish filesystem custody, source identity or original

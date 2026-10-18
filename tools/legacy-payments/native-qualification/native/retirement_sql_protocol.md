@@ -4,8 +4,11 @@
 [the existing retirement policy](case_evidence_protocol.md). Compile it alone;
 it includes the protected archive, bridge and policy. Do not separately compile
 those included translation units into the same binary. It is never linked into the SDK.
-It has no main, command interface, table creator, native resource issuer, module
-unloader or permissive guard. It cannot turn a preparation proposal into a run.
+The backend itself has no main, command interface, table creator, native resource
+issuer, module unloader or permissive guard. The separate
+[resource tool](resource_custody_protocol.md) supplies a concrete creator/guard and
+explicit root-only commands, with native execution still gated. Neither tool
+turns a preparation proposal into an admitted run.
 
 The trusted issuer must supply a qualified protected credential channel, immutable
 original resource registry, process-bound cleanup guard and monotonic deadline of
@@ -64,8 +67,8 @@ allocation until child exit. No unrelated connection or process is signalled.
 The C API tests are strict authored boundary doubles, not a live database.
 Installed-header object compilation checks source compatibility only. Actual
 lock retention, SQL/DDL behavior, resource creation and module/writer retirement
-must be established by the separately approved source-native packet before any
-cleanup CLI or full admitted-run factory is enabled.
+must be established by the separately approved source-native packet before that
+CLI is admitted to a live source operation or a full admitted-run factory is enabled.
 
 The SQL design follows the vendor documentation for
 [table locks](https://mariadb.com/docs/server/reference/sql-statements/transactions/lock-tables),
