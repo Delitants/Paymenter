@@ -10,6 +10,8 @@ use App\Models\Extension;
 use App\Models\OauthClient;
 use App\Models\User;
 use App\Services\Accounts\AcceptedFundingReleaseAuthority;
+use App\Services\Accounts\Legacy\LegacyClock;
+use App\Services\Accounts\Legacy\SystemLegacyClock;
 use App\Services\Accounts\OpeningAuthority;
 use App\Support\Passport\ScopeRegistry;
 use Closure;
@@ -42,6 +44,10 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
+        if (!$this->app->bound(LegacyClock::class)) {
+            $this->app->singleton(LegacyClock::class, fn () => new SystemLegacyClock);
+        }
+
         $paths = array_map(fn ($key) => config('account-funding.' . $key), ['runtime_acceptance_path', 'runtime_signature_path', 'runtime_trust_path']);
         $gid = config('account-funding.runtime_reader_gid');
         if (!$this->app->bound(OpeningAuthority::class) && config('account-funding.enabled') === true && is_int($gid) && $gid >= 0 &&

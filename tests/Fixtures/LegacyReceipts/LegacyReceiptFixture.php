@@ -2,11 +2,78 @@
 
 namespace Tests\Fixtures\LegacyReceipts;
 
+use App\Services\Accounts\Legacy\LegacyClock;
+use App\Services\Accounts\Legacy\LegacyReceiptInbox;
 use App\Services\BillmanagerMigration\Opening\CanonicalPolicy;
+use DateTimeImmutable;
 use Tests\Fixtures\Opening\RuntimeFixture;
 
 final class LegacyReceiptFixture
 {
+    private static ?array $ingress = null;
+
+    public static function withProtectedIngress(\Closure $test): mixed
+    {
+        if (self::$ingress !== null) {
+            throw new \RuntimeException('Nested ingress fixture refused.');
+        }
+        $keys = self::keyPair();
+        $original = config('legacy-payments');
+        $clockWasBound = app()->bound(LegacyClock::class);
+        $originalClock = $clockWasBound ? app(LegacyClock::class) : null;
+        try {
+            return self::withProtectedTrust(self::trust($keys), function ($path, $gid) use ($test, $keys) {
+                $clock = new class implements LegacyClock
+                {
+                    public DateTimeImmutable $value;
+
+                    public function __construct()
+                    {
+                        $this->value = new DateTimeImmutable('2026-01-01T00:01:00Z');
+                    }
+
+                    public function now(): DateTimeImmutable
+                    {
+                        return $this->value;
+                    }
+                };
+                app()->instance(LegacyClock::class, $clock);
+                config(['legacy-payments.receipt_ingress_enabled' => true, 'legacy-payments.trust_path' => $path, 'legacy-payments.trust_reader_gid' => $gid]);
+                self::$ingress = compact('keys', 'path', 'clock');
+                [$payload, $signature] = self::delivery();
+
+                return $test(new LegacyReceiptInbox($clock), $payload, $signature);
+            });
+        } finally {
+            self::$ingress = null; // Fictional private key never leaves memory.
+            config(['legacy-payments' => $original]);
+            app()->forgetInstance(LegacyClock::class);
+            if ($clockWasBound) {
+                app()->instance(LegacyClock::class, $originalClock);
+            }
+        }
+    }
+
+    public static function delivery(array $overrides = []): array
+    {
+        if (self::$ingress === null) {
+            throw new \RuntimeException('Active fictional ingress fixture required.');
+        }
+        $payload = self::payload($overrides);
+
+        return [$payload, self::signature($payload, self::$ingress['keys'])];
+    }
+
+    public static function replaceTrust(array $overrides): void
+    {
+        file_put_contents(self::$ingress['path'], CanonicalPolicy::bytes(self::trust(self::$ingress['keys'], $overrides)));
+    }
+
+    public static function advanceClock(string $time): void
+    {
+        self::$ingress['clock']->value = new DateTimeImmutable($time);
+    }
+
     public static function payload(array $rootOverrides = []): string
     {
         return CanonicalPolicy::bytes([...[
