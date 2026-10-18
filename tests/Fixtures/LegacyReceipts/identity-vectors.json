@@ -1,0 +1,82 @@
+[
+  {
+    "name": "ascii",
+    "identity": {
+      "source_instance": "fictional-source",
+      "merchant_binding": "merchant-a",
+      "source_payment": "001",
+      "effect_kind": "capture",
+      "economic_effect_id": "capture-01"
+    },
+    "economic": {
+      "source_account": "account-01",
+      "source_subaccount": "sub-01",
+      "parent_effect_key": null,
+      "wallet_currency": "USD",
+      "wallet_delta": "5.5001",
+      "wallet_components": [
+        {
+          "component_id": "a-capture",
+          "delta": "7.5001"
+        },
+        {
+          "component_id": "b-fee",
+          "delta": "-2.0000"
+        }
+      ],
+      "provider_currency": "EUR",
+      "provider_components": [
+        {
+          "component_id": "paid",
+          "amount": "7.123456789012345678"
+        }
+      ],
+      "allocation_rule": "original-allocation-v1",
+      "allocation_evidence_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "identity_bytes": "{\"economic_effect_id\":\"capture-01\",\"effect_kind\":\"capture\",\"merchant_binding\":\"merchant-a\",\"source_instance\":\"fictional-source\",\"source_payment\":\"001\"}",
+    "economic_bytes": "{\"allocation_evidence_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"allocation_rule\":\"original-allocation-v1\",\"parent_effect_key\":null,\"provider_components\":[{\"amount\":\"7.123456789012345678\",\"component_id\":\"paid\"}],\"provider_currency\":\"EUR\",\"source_account\":\"account-01\",\"source_subaccount\":\"sub-01\",\"wallet_components\":[{\"component_id\":\"a-capture\",\"delta\":\"7.5001\"},{\"component_id\":\"b-fee\",\"delta\":\"-2.0000\"}],\"wallet_currency\":\"USD\",\"wallet_delta\":\"5.5001\"}",
+    "effect_key": "2a439aeb0c2d87f48fe41aa777bd9d46efe9740aab6844e2f5afc4cd0c0c6e5a",
+    "economic_sha256": "c482ada438a01ca3dc4d17a3fb002c502adff9084527e712e728b7242afff453"
+  },
+  {
+    "name": "unicode-escaping",
+    "identity": {
+      "source_instance": "源/\"\\line separator ",
+      "merchant_binding": "merchant-a",
+      "source_payment": "001-Ä",
+      "effect_kind": "capture",
+      "economic_effect_id": "capture-01"
+    },
+    "economic": {
+      "source_account": "владелец",
+      "source_subaccount": "sub-01",
+      "parent_effect_key": null,
+      "wallet_currency": "USD",
+      "wallet_delta": "5.5001",
+      "wallet_components": [
+        {
+          "component_id": "a-capture",
+          "delta": "7.5001"
+        },
+        {
+          "component_id": "b-fee",
+          "delta": "-2.0000"
+        }
+      ],
+      "provider_currency": "EUR",
+      "provider_components": [
+        {
+          "component_id": "paid",
+          "amount": "7.123456789012345678"
+        }
+      ],
+      "allocation_rule": "règle/\"\\  ",
+      "allocation_evidence_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "identity_bytes": "{\"economic_effect_id\":\"capture-01\",\"effect_kind\":\"capture\",\"merchant_binding\":\"merchant-a\",\"source_instance\":\"源/\\\"\\\\line\\u2028separator\\u2029\",\"source_payment\":\"001-Ä\"}",
+    "economic_bytes": "{\"allocation_evidence_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"allocation_rule\":\"règle/\\\"\\\\\\u2028\\u2029\",\"parent_effect_key\":null,\"provider_components\":[{\"amount\":\"7.123456789012345678\",\"component_id\":\"paid\"}],\"provider_currency\":\"EUR\",\"source_account\":\"владелец\",\"source_subaccount\":\"sub-01\",\"wallet_components\":[{\"component_id\":\"a-capture\",\"delta\":\"7.5001\"},{\"component_id\":\"b-fee\",\"delta\":\"-2.0000\"}],\"wallet_currency\":\"USD\",\"wallet_delta\":\"5.5001\"}",
+    "effect_key": "dad15d0b616e44834b84de1636d28d2159ece479ea63a6e1674452a7a9038d4d",
+    "economic_sha256": "9cfd0e5932f07f9a0e00c0353986e99f1995d9489861d694ec46a2090cee14b0"
+  }
+]
