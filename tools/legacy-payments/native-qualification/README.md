@@ -31,6 +31,13 @@ native manual credit, provider validation or financial posting.
 - `protocol.parse_case` parses QA receipts that retain original evidence
   references. These receipts carry no success boolean or financial authority.
   Parsing a receipt does not read or qualify its referenced observations.
+- `native_metadata.parse_action_catalog` parses bounded original `actionlist`
+  XML and returns exact action names and an original-byte fingerprint. It rejects
+  empty CLI output, role warnings, duplicate entries, wrong routes, financial
+  receipts, DTDs and unknown shapes. Names (including group/`.one` companions)
+  establish presence only. They grant no invocation, hook, settlement or commit
+  authority. A wildcard catalog entry is never permission to register a wildcard
+  hook. Protected custody and source identity remain separate issuer obligations.
 
 References are canonical absolute POSIX paths with exact byte length and SHA256.
 Pure parsing does not establish filesystem custody, source identity or original
@@ -53,6 +60,12 @@ separately gated by the approved implementation plan's concrete operation
 packets. Unknown installation/unload behavior blocks source execution. No
 manager restart, direct balance repair, provider refund, customer-record reuse,
 hold release or billing handover is a fallback.
+
+Inspect version-matched vendor build targets before proposing installation.
+An `install` target can invoke a manager restart even when its name suggests
+only file installation. A load declaration, module destructor or global core
+deinitialization function does not establish safe unloading of one owned module.
+Keep vendor build files, native catalog originals and runtime evidence private.
 
 The complete implementation remains tracked in
 [the source qualification plan](../../../docs/superpowers/plans/2026-10-18-source-payment-native-qualification.md).

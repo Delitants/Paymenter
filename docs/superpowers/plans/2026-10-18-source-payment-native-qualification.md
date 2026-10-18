@@ -88,6 +88,12 @@ Source case ceiling: 30 seconds each and 600 seconds per packet; framework-only 
 
 **Consumes:** Admitted framework operation and protected run registry. **Produces:** Framework cases F1–F5 below through a test-only action `paymenter.qa.transaction` and `isp_api::Event` on that exact action.
 
+Prerequisite progress: the pure `native_metadata.py` parser and its refusal tests
+retain exact catalog action names and original-byte fingerprints. Action presence
+is distinct from human-readable `mgrctl -i` descriptions, supported invocation,
+safe loading/unloading and transaction acceptance. The native probe and protected
+issuer remain unimplemented; no native cases have been executed.
+
 - [ ] Write failing operation/protocol tests for wrong run/case, nested/reused context, explicit transaction calls, independent connection/cache, DDL inside a request, unexpected table names and a commit claim based on `Final`.
 - [ ] Implement `Execute(isp_api::Session&) const` and `AfterExecute(isp_api::Session&) const` using the supplied `db->Prepare(...).Execute(...)`. Pin required SDK access/session/build declarations before native compilation; unknown access or registration semantics block the operation.
 - [ ] Define the two QA tables outside request handling: both keyed by `(run_id, case_id)`; business row contains exact `DECIMAL(18,4)` amount, journal row contains that business key and immutable facts hash. No foreign key or trigger reaches a native business table. Neither table is a financial journal accepted by Paymenter.
