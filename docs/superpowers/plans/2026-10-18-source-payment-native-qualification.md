@@ -14,6 +14,12 @@
 
 ## Global constraints
 
+Lifecycle investigation: the vendor `ReloadMgr` helper is a manager-exit path,
+not a verified module-only unload. The proposed
+[maintenance constraint revision](../specs/2026-10-18-source-qa-lifecycle-decision.md)
+is awaiting an operator decision. This plan's existing no-restart constraint
+remains in force; no native startup/recovery acceptance is claimed.
+
 - BILLmanager remains the billing authority until a separate accepted handover. Source publication does not authorize deployment.
 - Source payment history remains history; it is not replayed as deposits.
 - The business effect and journal insert must commit together or both disappear. Native acceptance must prove this relationship; comments and a nonzero transaction count are insufficient.

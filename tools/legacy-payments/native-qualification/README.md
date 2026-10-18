@@ -92,6 +92,12 @@ only file installation. A load declaration, module destructor or global core
 deinitialization function does not establish safe unloading of one owned module.
 Keep vendor build files, native catalog originals and runtime evidence private.
 
+The vendor packaging helper named `ReloadMgr` is not an established hot-unload
+alternative: its retained implementation invokes the selected manager's `exit`
+action. The [lifecycle decision](../../../docs/superpowers/specs/2026-10-18-source-qa-lifecycle-decision.md)
+records the evidence limits and a proposed maintenance alternative. It is not
+execution approval. The original no-restart constraint remains active.
+
 ## Framework probe preparation
 
 `native/cache_probe.cpp` defines the exact own action `paymenter.qa.transaction`
