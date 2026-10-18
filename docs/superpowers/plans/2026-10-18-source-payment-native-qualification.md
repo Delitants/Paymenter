@@ -171,8 +171,10 @@ completed-read originals, including file identity across invocations. A withheld
 caller response must match the exact intent/nonce/facts and actual caller
 retirement. Fresh-reader reconciliation never invokes another payment. The
 retirement policy archives all QA definitions/rows, verifies the archive before
-deletion/drop, and holds unknown/foreign/schema/partial outcomes. Its guard/native
-SQL adapter and the full launcher's capture provenance remain unimplemented;
+deletion/drop, and holds unknown/foreign/schema/partial outcomes. Its native SQL
+adapter is implemented and checked against authored C API boundaries; original creation/writer-retirement guard and the full launcher's
+capture provenance remain unimplemented. Installed-header compilation does not
+qualify source lock/DDL behavior;
 authored DB/caller facts and protected documents alone clear no runtime case.
 
 **Consumes:** The admitted operation plan and fixed native case protocol. **Produces:** Root-private original evidence, exact process/resource identities, `RunReport`, and a separately derived `Qualification`.

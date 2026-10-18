@@ -125,11 +125,17 @@ fixed two-table policy and a protected durable original archive. The policy
 archives/reloads all definitions and rows before any erasure, holds foreign or
 changed resources, rechecks the archive before destructive steps, and requires
 unchanged schemas, empty tables, fresh table-absence verification and confirmed
-lock release. Unknown/partial cleanup never restores source data. There is no
-native SQL mutator, production permissive guard, cleanup CLI or module-unload
-implementation: those remain blocked until the full issuer establishes original
-resource ownership, writer retirement and supported native lock/DDL behavior.
-The policy's authored DB tests do not qualify actual source cleanup.
+lock release. Unknown/partial cleanup never restores source data.
+`native/qa_retirement_mysql.cpp` supplies the fixed native C API backend.
+It binds immutable registry selectors, process/thread ownership and finite
+connection/I/O/lock deadlines; checks table engines, triggers and incoming/
+outgoing foreign keys; and uses one unchanged local session with explicit table
+locks. It rechecks schemas before erasure/drop and closes uncertain channels
+without reconnecting or retrying. No production guard, cleanup CLI or module
+unloader is supplied. Those remain blocked until the full issuer establishes
+original resource creation, writer retirement and supported native lock/DDL
+behavior. Authored C API tests and installed-header compilation do not qualify
+actual source cleanup. See the [backend contract](native/retirement_sql_protocol.md).
 
 References are canonical absolute POSIX paths with exact byte length and SHA256.
 Pure parsing does not establish filesystem custody, source identity or original

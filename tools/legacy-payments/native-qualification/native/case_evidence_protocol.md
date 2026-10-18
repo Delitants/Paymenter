@@ -74,15 +74,18 @@ separate accepted operations under the source qualification plan.
 provides a process-bound protected original archive; it has no CLI or SQL adapter.
 Compile the archive translation unit alone, since it includes the bridge. There
 is no production permissive guard or executable source cleanup path in this
-increment. Database and guard doubles exercise policy ordering, not actual
+increment. A separate [native C API backend](retirement_sql_protocol.md) implements
+the fixed SQL operations but supplies neither resource authority nor a CLI.
+Database and guard doubles exercise policy ordering, not actual
 MariaDB lock/schema/DDL or module-unload behavior.
 
 A future native guard must establish original table absence/create receipts,
 unchanged schema/resource custody, no triggers/native objects, actual SDK writer
 retirement and a fresh bounded cleanup approval. A supplied boolean, empty table,
 unload declaration or preparation profile supplies none of these facts. The
-native adapter must lock only the two fixed QA tables, use finite I/O/lock
-deadlines and retain those locks through archive/delete/drop.
+native adapter locks only the two fixed QA tables, sets and verifies finite
+I/O/lock deadlines and keeps its explicit locks through archive/delete/drop.
+Actual installed-server semantics still require separate qualification.
 
 The policy snapshots both definitions and all bounded QA rows into
 `qa.retirement.original`, fsyncs file/directory, reloads it, and requires exact
