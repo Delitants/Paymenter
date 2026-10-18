@@ -10,7 +10,7 @@
 
 **Spec:** [Native legacy payment journal and Paymenter adapter](../specs/2026-10-17-legacy-payment-journal-design.md), especially Source recording and commit boundary and Native acceptance and delivery increments. The approved continuation is source qualification; target posting remains a later increment.
 
-**Status:** Task 1's generic preparation contracts and Task 2's generic framework probe are implemented and locally tested. Task 3 has local observation decoding, bounded byte capture, supplied-process-identity comparison and a root-backed C++ authority bridge; it remains incomplete. The Python admitted-run issuer/controller, live observer, process supervisor, resource retirement and acceptance derivation remain unimplemented. Source syntax-only checks passed for the probe and bridge, including the final bridge bytes; no source object/library build, loading, QA table/account/payment creation or native acceptance case has run. The probe has no automatic module entry. Local tests use authored SDK/runtime facts and real fixture files; installed-source syntax results establish declaration compatibility for the observed build only, not loader ABI, actual root-factory acceptance or native transaction coupling. The earlier diagnostic `payment.info` call returned `missed`; neither the exact missing object nor a usable payment lookup was established.
+**Status:** Task 1's generic preparation contracts and Task 2's generic framework probe are implemented and locally tested. Task 3 has local observation decoding, bounded byte capture, supplied-process-identity comparison, a root-backed C++ authority bridge and Python protected authority/case file publication; it remains incomplete. The full Python admitted-run controller, live observer, process supervisor, resource retirement and acceptance derivation remain unimplemented. Source syntax-only checks passed for the probe and bridge, including the final bridge bytes; no source object/library build, loading, QA table/account/payment creation or native acceptance case has run. The probe has no automatic module entry. Local tests use authored SDK/runtime facts and real fixture files; installed-source syntax results establish declaration compatibility for the observed build only, not loader ABI, actual root-factory/issuer acceptance or native transaction coupling. The earlier diagnostic `payment.info` call returned `missed`; neither the exact missing object nor a usable payment lookup was established.
 
 ## Global constraints
 
@@ -60,6 +60,7 @@ Create `tools/legacy-payments/native-qualification/`:
 | `native/cache_probe.cpp` | Own framework action and after-event; two fictional tables only. |
 | `native/authority_bridge.cpp`, `native/authority_bridge.hpp` | Root-backed factory and protected, process/request/case-bound framework authority; no automatic entry. |
 | `native/authority_protocol.md` | Closed control-file format, original custody and remaining issuer/verification requirements. |
+| `authority_issuer.py` | Explicit root approval, actual image-byte checks and fenced authority/case publication; file receipts only. |
 | `native/manual_probe.cpp` | Exact owned-record guard and after-event on the admitted original native manual-payment action. |
 | `observer.py` | Independent local-socket committed observations; no mutation interface. |
 | `execution.py` | Reserved operator and local capture/identity checks; live supervision, sequencing, retention and retirement remain pending. |
@@ -125,7 +126,7 @@ been executed.
 
 ## Task 3: Independent observation, supervision and recovery
 
-**Files:** `observer.py`, `execution.py`, `native/authority_bridge.*`, `native/authority_protocol.md`, `tests/test_observer.py`, `tests/test_operator.py`, `tests/authority_driver.cpp`, `tests/test_authority_bridge.py`.
+**Files:** `observer.py`, `execution.py`, `authority_issuer.py`, `native/authority_bridge.*`, `native/authority_protocol.md`, `tests/test_observer.py`, `tests/test_operator.py`, `tests/authority_driver.cpp`, `tests/test_authority_bridge.py`, `tests/test_authority_issuer.py`.
 
 Partial preparation: the decoder checks supplied framework observation documents;
 it uses frozen typed QA rows instead of mutable dictionaries. Manual rows refuse
@@ -134,8 +135,10 @@ exit and deadline facts. Neither establishes native provenance or performs live
 reads, supervision or cleanup. The protected bridge now binds root-owned originals,
 actual Linux module/process identity, actor and single-use F1–F4 grants. Local
 filesystem tests use authored runtime facts; the native root factory has only
-been syntax-checked. The Python issuer/controller and automatic module entry
-remain absent. The task's native requirements remain unchecked.
+been syntax-checked. Python authority/case publication is locally tested, including
+C++ control parsing, but has not run through its actual Linux/root entry. The full
+admitted-run controller and automatic module entry remain absent. The task's native
+requirements remain unchecked.
 
 **Consumes:** The admitted operation plan and fixed native case protocol. **Produces:** Root-private original evidence, exact process/resource identities, `RunReport`, and a separately derived `Qualification`.
 

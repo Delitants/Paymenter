@@ -111,9 +111,12 @@ it cannot be admitted as an install packet. It includes the two planned lifecycl
 phases, the recovery reservation, exact QA-table names and prohibited operations.
 The protected C++ authority bridge and closed control protocol are now implemented,
 with local filesystem/refusal tests and a syntax-only check of the final source
-bytes. The actual Linux root factory has not run. Next work is the Python
-admitted-run issuer/controller, native factory qualification, an actual candidate
-build and exact owned file preimages. There is no placeholder module hash or
+bytes. Python authority/case file issuance is also implemented and locally tested:
+it uses distinct root approvals, actual image bytes and durable revocation fences.
+It does not issue an AdmittedRun, load a module or resolve a case. The actual Linux
+root factory and issuer have not run. Next work is an actual candidate build,
+native factory/issuer qualification, the full admitted-run controller and exact
+owned file preimages. There is no placeholder module hash or
 usable install capability.
 
 The private issuer, installed-SDK object compilation/linking, actual independent read channel,

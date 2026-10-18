@@ -2,8 +2,9 @@
 
 This is native QA control, not a proposal profile, financial receipt or Python
 admitted-run issuer. The private issuer must validate explicit approval and
-original runtime/build/resource facts before writing it. That issuer and the
-automatic module entry are not implemented. Never create these controls from
+original runtime/build/resource facts before writing it. `authority_issuer.py`
+implements protected file issuance and one-case publication; the Python
+admitted-run executor and automatic module entry remain unimplemented. Never create these controls from
 `assess.ready`, `reviewed` labels, HTTP parameters or a fictional test fixture.
 Root file custody and matching hashes do not prove a database commit.
 
@@ -25,6 +26,34 @@ lowercase hex characters. Positive decimals have no leading zeroes and fit
 unsigned 64 bits.
 
 ## Immutable authority
+
+`issue_framework_authority(operation_directory)` requires Linux/root, the actual
+kernel boot, and three already protected originals. It has no public fact/owner/
+clock override and does not generate approval:
+
+| Original | Exact fields and role |
+| --- | --- |
+| `approval.original` | `purpose intent run boot actor issued expires registry_sha256 build_sha256 cases`; purpose `source-framework-authority-approval-v1`, intent `issue-framework-authority`. |
+| `registry.original` | `purpose run tables objects diagnostics`; purpose `source-framework-control-registry-v1`, the two fixed QA table names, no native objects, and exactly the four writer diagnostic names. |
+| `build.original` | `purpose run module runtime`; purpose `source-framework-control-build-v1`; each image has only `path sha256 bytes`. |
+
+These originals are closed bounded JSON documents, separate from preparation
+profiles. Every `cases` entry F1–F4 has exactly `nonce facts_hash`; all four nonces
+are distinct. Approval binds original registry/build bytes and a current window
+of at most 600 seconds. Image references bind canonical paths, SHA256 and at most
+16 MiB of actual non-writable, singly linked root-owned ELF file bytes. ELF magic
+is a file-format guard, not linking or loader compatibility proof. Runtime and
+module must be distinct images. Registry names are an allowed-resource list,
+not a claim that SQL schema/ownership/absence has been independently observed.
+
+Issuance first creates and synchronizes a `revoked.v1` fence, then the exclusive
+`issuance.original` receipt and `authority.v1`. It rechecks original file identities,
+image identities/content and wall/monotonic deadlines before removing only that
+exact fence. Any interrupted write retains the fence and original/partial files;
+a failed sync after fence removal attempts to restore and synchronize revocation.
+There is no overwrite, automatic retry or cleanup of failed evidence. Consumers
+must wait for successful issuance before any separately authorized module load.
+The receipt returned by Python is not an `AdmittedRun` or native acceptance.
 
 `authority.v1` starts with `paymenter-source-qa-authority-v1`, then these keys in
 this exact order:
@@ -54,6 +83,25 @@ The registry must register all four fixed diagnostic names before activation.
 Any existing diagnostic at factory open refuses operation reuse.
 
 ## Current case
+
+`issue_framework_case(operation_directory, case_id)` publishes exactly one
+explicitly approved F1–F4 intent. Its protected JSON original
+`case.F1.approval.original` (or corresponding F2–F4 name) has exactly:
+`purpose intent run case nonce facts_hash pid start_ticks boot issued expires authority_sha256`.
+Purpose is `source-framework-case-approval-v1`, intent `issue-framework-case`.
+It must match the original issued authority, case binding and current window of
+at most 30 seconds within the authority lifetime. The public entry has no manager
+checker, process-root or kernel-fact override.
+
+Before and during publication it checks the actual selected Linux process: root
+UIDs, PID/start, boot, executable path/device/inode, and the exact executable
+module mapping's path/device/inode. The bridge independently checks its own
+process/function mapping. Case publication uses a synchronized revocation fence,
+retains an exclusive `intent.F1.original` (or F2–F4), and refuses any outstanding
+`intent.v1`, reused case diagnostic/original or existing barrier/release. It never
+removes an earlier intent, advances a case sequence, invokes the manager, releases
+F4, resolves a result or retires resources. Those require the separate live
+observer/supervisor. Case approval is explicit protected policy, not SQL evidence.
 
 `intent.v1` starts with `paymenter-source-qa-intent-v1`, with ordered keys:
 `run case nonce facts pid start issued expires`.
@@ -97,3 +145,7 @@ are absent from the public factory. The sync-failure double wraps only `fsync`;
 the written/failed bytes remain real fixture files. These tests do not qualify
 Linux root acceptance, loader ABI, source evidence semantics, transaction coupling
 or retirement. Syntax-only checks establish none of those native outcomes.
+Python issuer tests likewise use actual files/image bytes with fictional boot and
+test-user ownership; case tests use an authored process check. A cross-language
+test feeds Python-issued authority bytes into the actual C++ bridge parser. This
+qualifies neither Linux/root issuer execution nor actual process/loader behavior.

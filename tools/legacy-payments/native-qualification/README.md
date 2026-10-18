@@ -117,8 +117,11 @@ native control checks, but has no automatic caller. Its Linux/root-only factory
 verifies the actual executable and loaded image. It does not issue a Python
 `AdmittedRun`, qualify source database facts or install a module. The
 [protected control protocol](native/authority_protocol.md) defines its files and
-original-evidence bindings. The issuer that validates those originals and creates
-the controls remains unimplemented. Its diagnostic recorder retains the writer's server
+original-evidence bindings. `authority_issuer.py` validates a distinct protected
+approval and closed registry/build originals against actual image bytes before
+publishing authority. Its case publisher checks the actual Linux manager identity
+and retains one-time intent originals. Neither issues an `AdmittedRun`, invokes
+a case, establishes DB facts or advances the native sequence. The bridge's diagnostic recorder retains the writer's server
 connection ID in the admitted source-private evidence file. A complete proposal,
 a Python type, a boolean, an HTTP
 parameter or a test double cannot establish its protected native facts.
@@ -156,6 +159,14 @@ link `libdl`. A separate installed-Linux syntax-only check passed, including the
 native factory branch, without executing that factory or producing/loading a
 library. Root custody, loader ABI, controller integration and native transaction
 qualification remain pending.
+
+The issuer writes under a synchronized revocation fence and retains failed or
+partial originals. Successful publication returns a file receipt, never native
+acceptance or installation permission. Its explicit approvals are not generated
+from preparation profiles. The full admitted-run controller, independent reader,
+case resolution and exact retirement remain unavailable. Issuer tests use actual
+fixture files and image hashes with authored boot/process facts; no source issuer
+or process-check acceptance is claimed.
 
 The complete implementation remains tracked in
 [the source qualification plan](../../../docs/superpowers/plans/2026-10-18-source-payment-native-qualification.md).
