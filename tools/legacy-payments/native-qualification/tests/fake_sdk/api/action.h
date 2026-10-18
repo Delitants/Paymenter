@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <functional>
 namespace mgr_access { static const int AccessAdmin = 29; static const int lvAdmin = 29; }
 namespace isp_api {
 class Session;
@@ -11,6 +12,8 @@ class Action;
 class Event;
 inline std::vector<Action*>& test_actions() { static std::vector<Action*> v; return v; }
 inline std::vector<Event*>& test_events() { static std::vector<Event*> v; return v; }
+inline bool& test_event_failure() {static bool v=false;return v;}
+inline std::function<void()>& test_event_hook() {static std::function<void()> v;return v;}
 class Action {
     std::string name_;
 public:
@@ -43,6 +46,8 @@ public:
     std::string action, name;
     Priority priority;
     Event(const std::string& a, const std::string& n, Priority p): action(a), name(n), priority(p) {
+        if(test_event_hook()) test_event_hook()();
+        if(test_event_failure()) throw std::runtime_error("fictional event registration failure");
         test_events().push_back(this);
     }
     virtual ~Event() {}

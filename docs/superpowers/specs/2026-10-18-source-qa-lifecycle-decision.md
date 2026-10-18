@@ -110,9 +110,13 @@ It now also references a built component library and a separate standalone nativ
 bridge fixture. The component has no automatic SDK module entry and was not
 installed or loaded into BILLmanager. Static checks found its strong imported
 symbols and direct dependencies in the manager's mapped libraries; this does not
-establish their global lookup scope during future SDK module startup.
-Its module-binary and private-issuer entries remain absent, with explicit blockers;
-it cannot be admitted as an install packet. It includes the two planned lifecycle
+establish their global lookup scope during future SDK module startup. A subsequent
+complete candidate now includes an opt-in fixed-directory SDK entry and a gate
+that keeps partial or failed registration inactive. Its installed-vendor build
+and static symbol checks passed, but it has not been loaded into BILLmanager.
+The actual module binary and standalone native control publisher now have private
+receipts; the full admitted-run controller, independent reader, sequencing and
+retirement still block installation admission. It includes the two planned lifecycle
 phases, the recovery reservation, exact QA-table names and prohibited operations.
 The protected C++ authority bridge and closed control protocol are now implemented,
 with local filesystem/refusal tests and a syntax-only check of the final source
@@ -123,12 +127,15 @@ root factory now passes a standalone owned-process fixture using real kernel/ima
 facts and fictional registry/connection/barrier originals. No vendor SDK library
 or native case ran in that fixture. The Python issuer remains unqualified; no
 Python 3 interpreter existed at the checked standard/previously proposed source
-paths, and no runtime was installed. Next work is the guarded SDK bootstrap and
-complete candidate, issuer/controller runtime qualification, the full admitted-run
-controller and exact owned file preimages. There is no placeholder module hash or
-usable install capability.
+paths, and no runtime was installed. A standalone C++ publisher now avoids that
+source interpreter dependency: native authority and case issuance, actual
+target/image binding, bridge consumption and replay refusal passed in a fresh
+Linux/root process using fictional controls, without SDK/SQL or manager activity.
+Next work is the independent reader, live case supervision/resolution, the full
+admitted-run controller and exact owned file preimages. The actual SDK
+startup/recovery path remains unqualified. There is no usable install capability.
 
-The private issuer, integrated SDK startup/linker scope, actual independent read channel,
+The full admitted-run controller, integrated SDK startup/linker scope, actual independent read channel,
 supervision and exact retirement remain separate implementation prerequisites.
 A maintenance decision does not make any of them qualified. The later manual
 payment packet needs its own fresh resources and separately reviewed lifecycle;

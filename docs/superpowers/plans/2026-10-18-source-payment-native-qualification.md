@@ -6,11 +6,11 @@
 
 **Architecture:** A test-only C++ module uses the installed global `std::shared_ptr<mgr_db::Cache> db` and its prepared statements inside framework-managed requests. An independent committed reader verifies outcomes; a private operation registry confines all native payment tests to freshly created owned records. Framework, manual-payment and provider-validation acceptance are distinct results.
 
-**Tech Stack:** Version-matched BILLmanager/COREmanager C++ SDK and vendor build settings; host Python 3.10+ standard library; the existing supported source runtime and configured local database credential channel. Install no packages or substitute SDK/runtime.
+**Tech Stack:** Version-matched BILLmanager/COREmanager C++ SDK and vendor build settings; host Python 3.10+ standard library; standalone source control publisher using existing C++/OpenSSL; the existing configured local database credential channel. Install no packages or substitute SDK/runtime.
 
 **Spec:** [Native legacy payment journal and Paymenter adapter](../specs/2026-10-17-legacy-payment-journal-design.md), especially Source recording and commit boundary and Native acceptance and delivery increments. The approved continuation is source qualification; target posting remains a later increment.
 
-**Status:** Task 1's generic preparation contracts and Task 2's generic framework probe are implemented and locally tested. Task 3 has local observation decoding, bounded byte capture, supplied-process-identity comparison, a root-backed C++ authority bridge and Python protected authority/case file publication; it remains incomplete. The full Python admitted-run controller, live observer, process supervisor, resource retirement and acceptance derivation remain unimplemented. The probe/bridge component library now builds against the installed SDK; its strong dynamic symbols and direct dependencies are available in the running manager's mapped libraries. A separate owned standalone Linux/root process passed the bridge factory, real image/process binding, protected controls, fork refusal and revocation checks. That fixture loaded only its own bridge DSO. No library was installed or loaded into BILLmanager, and no QA table/account/payment or native F/M case was created or run. The component has no automatic module entry. Static availability and standalone bridge execution do not qualify SDK startup, global symbol resolution, the Python issuer or native transaction coupling. The earlier diagnostic `payment.info` call returned `missed`; neither the exact missing object nor a usable payment lookup was established.
+**Status:** Task 1's generic preparation contracts and Task 2's generic framework probe are implemented and locally tested. Task 3 now also includes a guarded opt-in SDK bootstrap and standalone native authority/case publisher; it remains incomplete. The complete SDK candidate builds with the installed ABI/settings and passes static symbol/dependency availability checks against the running manager's mapped libraries. A fresh standalone Linux/root fixture passes native publication, actual target/image binding, bridge consumption, fork refusal, revocation and replay refusal with fictional records and no SDK/SQL. No library was installed or loaded into BILLmanager and no native F/M case ran. The full admitted-run controller, actual independent reader, live case sequencing/supervision, retirement and acceptance derivation remain unimplemented. Static availability and standalone native control execution do not qualify SDK startup, global linker scope or transaction coupling. The earlier diagnostic `payment.info` call returned `missed`; neither the exact missing object nor a usable payment lookup was established.
 
 ## Global constraints
 
@@ -23,12 +23,12 @@ initial load. It does not authorize executing either restart. No native
 startup/recovery acceptance is claimed.
 
 Maintenance preparation progress: a private installation/rollback package now
-binds original evidence and candidate sources, but remains non-admissible because
-the complete SDK module entry and Python admitted-run controller do not exist.
-The component candidate and separate standalone native factory fixture have
-source-private receipts. The native bridge factory passed in the standalone
-process, outside BILLmanager; the installed component and source issuer remain
-unqualified. No manager/SQL call or restart ran. The restart sequence must independently observe the old
+binds original evidence and actual guarded SDK candidate/native-publisher binaries,
+but remains non-admissible because the full admitted-run controller, independent
+reader and exact retirement are unfinished and SDK startup/recovery is unqualified.
+The native publisher/bridge path passed in a standalone source process outside
+BILLmanager; the complete candidate has not been installed or loaded. No
+manager/SQL call or restart ran. The restart sequence must independently observe the old
 PID/start identity gone and the replacement healthy; it cannot infer completion
 from `exit` or hide the vendor restart helper's repeated internal requests.
 
@@ -62,6 +62,8 @@ Create `tools/legacy-payments/native-qualification/`:
 | `native/authority_bridge.cpp`, `native/authority_bridge.hpp` | Root-backed factory and protected, process/request/case-bound framework authority; no automatic entry. |
 | `native/authority_protocol.md` | Closed control-file format, original custody and remaining issuer/verification requirements. |
 | `authority_issuer.py` | Explicit root approval, actual image-byte checks and fenced authority/case publication; file receipts only. |
+| `native/control_issuer.cpp` | Standalone source-native control publisher; shares protected bridge helpers by amalgamation, with no Python-runtime requirement. |
+| `native/bootstrap.*`, `native/module_entry.cpp` | Opt-in fixed-directory SDK entry and disabled-until-complete registration gate. |
 | `native/manual_probe.cpp` | Exact owned-record guard and after-event on the admitted original native manual-payment action. |
 | `observer.py` | Independent local-socket committed observations; no mutation interface. |
 | `execution.py` | Reserved operator and local capture/identity checks; live supervision, sequencing, retention and retirement remain pending. |
@@ -113,13 +115,13 @@ Prerequisite progress: the pure `native_metadata.py` parser and its refusal test
 retain exact catalog action names and original-byte fingerprints. Action presence
 is distinct from human-readable `mgrctl -i` descriptions, supported invocation,
 safe loading/unloading and transaction acceptance. The generic probe adapter is
-locally tested against authored SDK doubles. A component library compiled/linked
-against installed vendor libraries and passed static symbol-availability checks;
-the actual SDK registration/startup and protected admitted-run issuer remain
+locally tested against authored SDK doubles. A complete guarded SDK candidate
+compiled/linked against installed vendor libraries and passed static
+symbol-availability checks; the actual SDK registration/startup and full admitted-run issuer remain
 unqualified. No native framework/manual cases have been executed.
 
 - [x] Write failing operation/protocol tests for wrong run/case, nested/reused context, explicit transaction calls, independent connection/cache, DDL inside a request, unexpected table names and a commit claim based on `Final`.
-- [x] Implement `Execute(isp_api::Session&) const` and `AfterExecute(isp_api::Session&) const` using the supplied `db->Prepare(...).Execute(...)`. Pin required SDK access/session/build declarations before native compilation; unknown access or registration semantics block the operation. The explicit registration factory requires a private authority bridge; it has no automatic module entry.
+- [x] Implement `Execute(isp_api::Session&) const` and `AfterExecute(isp_api::Session&) const` using the supplied `db->Prepare(...).Execute(...)`. Pin required SDK access/session/build declarations before native compilation; unknown access or registration semantics block the operation. The explicit registration factory requires a private authority bridge; the separate opt-in entry now supplies a registration gate but has not run inside the actual SDK.
 - [x] Define the two QA tables outside request handling: both keyed by `(run_id, case_id)`; business row contains exact `DECIMAL(18,4)` amount, journal row contains that business key and immutable facts hash. No foreign key or trigger reaches a native business table. Neither table is a financial journal accepted by Paymenter.
 - [x] Implement bounded fixed phases `normal`, `throw_after_business`, `throw_after_journal`, `observe_before_return`. Only this own action may wait at the 5-second observer barrier. Throwing and barrier code stay in the QA module.
 - [x] Verify original/current cache connection object identity for diagnostics, but accept F1–F5 only from independently observed business/journal outcomes. Local protocol tests and compilation do not qualify native execution or server-connection identity.
@@ -127,7 +129,7 @@ unqualified. No native framework/manual cases have been executed.
 
 ## Task 3: Independent observation, supervision and recovery
 
-**Files:** `observer.py`, `execution.py`, `authority_issuer.py`, `native/authority_bridge.*`, `native/authority_protocol.md`, `tests/test_observer.py`, `tests/test_operator.py`, `tests/authority_driver.cpp`, `tests/test_authority_bridge.py`, `tests/test_authority_issuer.py`.
+**Files:** `observer.py`, `execution.py`, `authority_issuer.py`, `native/authority_bridge.*`, `native/authority_protocol.md`, `native/bootstrap.*`, `native/module_entry.cpp`, `native/control_issuer.cpp`, `tests/test_observer.py`, `tests/test_operator.py`, `tests/authority_driver.cpp`, `tests/test_authority_bridge.py`, `tests/test_authority_issuer.py`, `tests/test_bootstrap.py`, `tests/test_native_issuer.py`.
 
 Partial preparation: the decoder checks supplied framework observation documents;
 it uses frozen typed QA rows instead of mutable dictionaries. Manual rows refuse
@@ -139,10 +141,12 @@ filesystem tests use authored runtime facts. A separate source standalone fixtur
 now passes the actual Linux/root factory with real kernel/image facts; its registry,
 connection number and barrier remain fictional, with no SDK or SQL. Python authority/case publication is locally tested, including
 C++ control parsing, but has not run through its actual Linux/root entry. The full
-admitted-run controller and automatic module entry remain absent. The task's native
-requirements remain unchecked. Python 3 was absent at the standard and previously
-proposed interpreter paths checked on the source; a supported issuer runtime or
-native controller remains a prerequisite. No replacement runtime was installed.
+admitted-run controller remains absent. The opt-in SDK bootstrap has local
+registration-gate tests and an actual SDK build, but no manager startup acceptance.
+The task's native observation/retirement requirements remain unchecked. Source
+control publication now has a native backend: actual standalone Linux/root
+authority/case publication and bridge consumption passed without installing a
+replacement interpreter or runtime. This does not qualify native DB observations.
 
 **Consumes:** The admitted operation plan and fixed native case protocol. **Produces:** Root-private original evidence, exact process/resource identities, `RunReport`, and a separately derived `Qualification`.
 

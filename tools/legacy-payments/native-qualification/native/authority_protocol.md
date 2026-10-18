@@ -3,8 +3,9 @@
 This is native QA control, not a proposal profile, financial receipt or Python
 admitted-run issuer. The private issuer must validate explicit approval and
 original runtime/build/resource facts before writing it. `authority_issuer.py`
-implements protected file issuance and one-case publication; the Python
-admitted-run executor and automatic module entry remain unimplemented. Never create these controls from
+implements protected file issuance and one-case publication. A standalone native
+publisher and opt-in guarded SDK entry are also implemented; the full admitted-run
+executor and actual SDK startup remain unqualified. Never create these controls from
 `assess.ready`, `reviewed` labels, HTTP parameters or a fictional test fixture.
 Root file custody and matching hashes do not prove a database commit.
 
@@ -157,3 +158,56 @@ fictional writer/barrier, fork refusal and revocation checks. Its registry/build
 originals and connection number are explicitly fictional. It loads only its own
 bridge DSO, never BILLmanager or vendor SDK libraries. This does not qualify the
 Python issuer, SDK module startup, database observations or transaction coupling.
+
+## Standalone native publisher
+
+`native/control_issuer.cpp` is a separate Linux/root executable for hosts without
+a qualified Python 3 interpreter. It amalgamates `authority_bridge.cpp` to share
+the exact protected filesystem, parser, image and clock implementation; do not
+compile both translation units into one executable. It has no owner, boot, clock,
+target-check, SQL, shell or process-root override. It does not generate approvals,
+invoke the manager, install anything or grant an `AdmittedRun`.
+
+Select one publisher backend per fresh operation directory. Native originals are
+closed ordered ASCII records, not the Python JSON originals; `authority.v1` and
+`intent.v1` output formats are identical. Root approval is explicit policy, not DB
+schema, independent visibility, actor authentication or transaction evidence.
+
+| File | Purpose line and exact ordered keys |
+| --- | --- |
+| `approval.native.original` | `paymenter-source-qa-approve-authority-native-v1`; the same ordered keys as `authority.v1`, but `intent=issue-framework-authority`. |
+| `registry.original` | `paymenter-source-qa-registry-native-v1`; `run tables objects diagnostics`. |
+| `build.original` | `paymenter-source-qa-build-native-v1`; `run module_path module_sha256 runtime_path runtime_sha256`. |
+| `case.F1.approval.native.original` (or F2–F4) | `paymenter-source-qa-approve-case-native-v1`; `intent run case nonce facts pid start boot issued expires authority_sha256`, with `intent=issue-framework-case`. |
+
+The native registry requires exactly
+`tables=paymenter_qa_business_v1,paymenter_qa_journal_v1`, `objects=none`, and
+`diagnostics=writer.F1.original,writer.F2.original,writer.F3.original,writer.F4.original`.
+Its build values must match the authority approval and actual protected ELF bytes.
+Publication uses a durable `revoked.v1` fence and retains
+`issuance.native.original`; any failure preserves originals and refuses reuse.
+Case issuance checks the actual target's root UIDs, boot/PID/start, executable
+identity and executable module mapping before and during publication. It retains
+`intent.F1.original` (or F2–F4), refuses any outstanding intent and never advances
+or retires cases automatically. F5 and manual cases cannot be issued.
+
+Its only commands are `authority <protected-directory>` and
+`case <protected-directory> F1` (or F2–F4). These publish files only. A source-native
+standalone fixture has passed authority issuance, actual case-target checks,
+bridge grant consumption, revocation and repeated-issuance refusal without
+overwriting the original. Fixture resources and actor/connection/barrier facts
+are fictional; it loads no vendor SDK and performs no SQL. This qualifies the
+native control path, not SDK startup, independent observation or financial effects.
+
+## Guarded SDK entry
+
+`module_entry.cpp` is opt-in and requires the exact reviewed compile-time
+`PAYMENTER_QA_CONTROL_DIRECTORY`. `LIBRARY_ENTRY` opens protected authority;
+`MODULE_INIT` depends on `database` and calls the registration gate. The gate
+enables requests only after both own action and after-event registration succeed
+and authority is rechecked. Any failure, duplicate/reentrant initialization,
+destruction or forked use leaves requests disabled, including on a partially
+registered own action. No bootstrap failure is propagated into other SDK modules.
+Actual SDK ordering, component lifetime and startup/recovery still require their
+separate approved native operation; local SDK doubles and static linking do not
+establish them.

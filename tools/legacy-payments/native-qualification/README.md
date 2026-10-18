@@ -1,8 +1,9 @@
 # Source payment qualification contracts
 
-This directory contains **preparation contracts and generic probe code only**.
-It has no Python admitted-run issuer, automatic module entry, live observer/executor
-or acceptance summarizer. Source installation and native acceptance remain blocked;
+This directory contains preparation contracts and generic probe/control code.
+It includes a guarded opt-in SDK entry and standalone native control publisher,
+but no full admitted-run controller, live observer/executor or acceptance summarizer.
+Source installation and native framework/manual acceptance remain blocked;
 no shipped Python command installs a module or changes a payment.
 
 ```sh
@@ -22,7 +23,10 @@ invoked no manager or SQL action. The installed compiler and selected SDK header
 identities were pinned; the vendor string ABI was selected explicitly. This
 establishes syntax compatibility for that observed build only, not ABI linking,
 module loading or transaction behavior. Operational paths and originals remain
-private. Recheck the installed toolchain and vendor ABI before a real build.
+private. Subsequent component and guarded SDK candidate builds now pass static
+symbol/dependency availability checks; the native publisher-to-bridge path passes
+in an owned standalone Linux/root fixture. No SDK candidate has been installed or
+loaded into BILLmanager. Recheck identities before any subsequent build/startup.
 
 ## Interfaces
 
@@ -109,11 +113,14 @@ preparation. It is not approval to execute a restart or install a module.
 ## Framework probe preparation
 
 `native/cache_probe.cpp` defines the exact own action `paymenter.qa.transaction`
-and its after-event. `RegisterFrameworkProbe` has no automatic caller. It must
-only run inside a separately qualified SDK `MODULE_INIT`, after a protected,
+and its after-event. The optional `native/module_entry.cpp` supplies a guarded
+`LIBRARY_ENTRY` and database-dependent `MODULE_INIT`. It is excluded from the
+component build and refuses compilation without an explicit reviewed
+`PAYMENTER_QA_CONTROL_DIRECTORY` string; there is no environment/profile/HTTP
+override. It must only run inside a separately qualified SDK startup, after a protected,
 process-bound private issuer admits the exact operation. The root-backed
 `FrameworkAuthority` adapter in `native/authority_bridge.cpp` implements protected
-native control checks, but has no automatic caller. Its Linux/root-only factory
+native control checks. The opt-in entry calls its Linux/root-only factory, which
 verifies the actual executable and loaded image. It does not issue a Python
 `AdmittedRun`, qualify source database facts or install a module. The
 [protected control protocol](native/authority_protocol.md) defines its files and
@@ -121,10 +128,20 @@ original-evidence bindings. `authority_issuer.py` validates a distinct protected
 approval and closed registry/build originals against actual image bytes before
 publishing authority. Its case publisher checks the actual Linux manager identity
 and retains one-time intent originals. Neither issues an `AdmittedRun`, invokes
-a case, establishes DB facts or advances the native sequence. The bridge's diagnostic recorder retains the writer's server
+a case, establishes DB facts or advances the native sequence. The alternative
+`native/control_issuer.cpp` publishes the same bridge controls using the existing
+native runtime and distinct closed protected approvals. The bridge's diagnostic recorder retains the writer's server
 connection ID in the admitted source-private evidence file. A complete proposal,
 a Python type, a boolean, an HTTP
 parameter or a test double cannot establish its protected native facts.
+
+`native/bootstrap.cpp` keeps request authority disabled until both SDK action and
+after-event registration finish. Duplicate/reentrant initialization, revocation
+during registration, exceptions, destruction and forked use refuse activation.
+A partially registered action retains the disabled gate and cannot reach a SQL
+write. SDK calls and protected reads happen outside the bootstrap mutex. Local
+tests exercise the real bootstrap/probe against authored SDK/native facts; they
+do not qualify actual manager startup, dependency ordering or SDK retirement.
 
 The probe restricts requests to the admitted actor, run, case, nonce, process,
 thread and session. It rechecks authority after protected reads, pins the supplied
@@ -159,7 +176,8 @@ link `libdl`. Installed-Linux syntax checks were followed by an actual component
 library build against the installed SDK and static checks against the manager's
 mapped libraries. All strong imported symbols and direct dependency names were
 available; the component has no runtime search path or automatic module entry.
-It was not installed or loaded into BILLmanager.
+A subsequent complete SDK candidate includes the opt-in guarded entry and also
+passes those static checks. Neither was installed or loaded into BILLmanager.
 
 A separate owned standalone Linux/root fixture loaded only its own bridge DSO
 and passed the public factory, actual process/image binding, protected file/grant
@@ -175,9 +193,20 @@ acceptance or installation permission. Its explicit approvals are not generated
 from preparation profiles. The full admitted-run controller, independent reader,
 case resolution and exact retirement remain unavailable. Issuer tests use actual
 fixture files and image hashes with authored boot/process facts; no source issuer
-or process-check acceptance is claimed. Python 3 was absent at the standard and
-previously proposed source paths checked; a qualified issuer runtime or native
-controller remains necessary. No replacement runtime was installed.
+or process-check acceptance is claimed for the Python backend. Python 3 was absent
+at the standard and previously proposed source paths checked, so the source path
+now has a native publisher. It shares the exact protected bridge implementation
+by amalgamation: compile `control_issuer.cpp` alone, not together with
+`authority_bridge.cpp`. Its standalone Linux/root authority and case publication,
+actual target/image checks, bridge consumption and replay refusal passed with
+fictional records and no SDK/SQL. No replacement runtime was installed.
+
+The SDK build uses `cache_probe.cpp`, `authority_bridge.cpp`, `bootstrap.cpp` and
+`module_entry.cpp`, with the separately reviewed compile-time directory and
+installed vendor ABI/link settings. The standalone publisher is a distinct binary;
+never link it into the SDK module. See the protected protocol for exact native
+approval formats. Neither backend is the full admitted-run controller: independent
+DB observations, sequencing/resolution, retirement and SDK startup remain pending.
 
 The complete implementation remains tracked in
 [the source qualification plan](../../../docs/superpowers/plans/2026-10-18-source-payment-native-qualification.md).
