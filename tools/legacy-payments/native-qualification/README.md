@@ -1,7 +1,7 @@
 # Source payment qualification contracts
 
 This directory contains **preparation contracts and generic probe code only**.
-It has no private native issuer, automatic module entry, live observer/executor
+It has no Python admitted-run issuer, automatic module entry, live observer/executor
 or acceptance summarizer. Source installation and native acceptance remain blocked;
 no shipped Python command installs a module or changes a payment.
 
@@ -111,9 +111,14 @@ preparation. It is not approval to execute a restart or install a module.
 `native/cache_probe.cpp` defines the exact own action `paymenter.qa.transaction`
 and its after-event. `RegisterFrameworkProbe` has no automatic caller. It must
 only run inside a separately qualified SDK `MODULE_INIT`, after a protected,
-process-bound private issuer admits the exact operation. The abstract
-`FrameworkAuthority` interface in `cache_probe.hpp` has no production
-implementation here. Its diagnostic recorder must retain the writer's server
+process-bound private issuer admits the exact operation. The root-backed
+`FrameworkAuthority` adapter in `native/authority_bridge.cpp` implements protected
+native control checks, but has no automatic caller. Its Linux/root-only factory
+verifies the actual executable and loaded image. It does not issue a Python
+`AdmittedRun`, qualify source database facts or install a module. The
+[protected control protocol](native/authority_protocol.md) defines its files and
+original-evidence bindings. The issuer that validates those originals and creates
+the controls remains unimplemented. Its diagnostic recorder retains the writer's server
 connection ID in the admitted source-private evidence file. A complete proposal,
 a Python type, a boolean, an HTTP
 parameter or a test double cannot establish its protected native facts.
@@ -139,10 +144,18 @@ visibility still require native observations.
 `native/schema.sql` defines the two fixed InnoDB QA tables outside handlers and
 module startup. Existing table names must refuse the operation. The schema has
 no foreign keys or native customer/payment references. Its execution, engine and
-schema verification, resource ownership, exact retirement, private bridge,
-action metadata and installed-vendor compilation all require the concrete native
+schema verification, resource ownership, exact retirement, native bridge execution,
+action metadata and installed-vendor object compilation/linking all require the concrete native
 packet; none is supplied by these local tests. Paid fixture records and accounting
 audit are never cleanup targets of this probe.
+
+The bridge uses POSIX file APIs, Linux process/mapping metadata and OpenSSL's
+SHA256 API. No packages are installed by the harness. Local bridge tests compile
+against an existing OpenSSL discovered through `pkg-config`; Linux builds also
+link `libdl`. A separate installed-Linux syntax-only check passed, including the
+native factory branch, without executing that factory or producing/loading a
+library. Root custody, loader ABI, controller integration and native transaction
+qualification remain pending.
 
 The complete implementation remains tracked in
 [the source qualification plan](../../../docs/superpowers/plans/2026-10-18-source-payment-native-qualification.md).

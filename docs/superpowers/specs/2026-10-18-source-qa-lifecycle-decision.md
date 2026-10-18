@@ -109,11 +109,14 @@ The private package retains original evidence hashes and candidate source hashes
 Its module-binary and private-issuer entries remain absent, with explicit blockers;
 it cannot be admitted as an install packet. It includes the two planned lifecycle
 phases, the recovery reservation, exact QA-table names and prohibited operations.
-The next implementation work is the private native authority bridge and its
-protected registry/issuer, followed by an actual candidate build and exact owned
-file preimages. There is no placeholder module hash or usable install capability.
+The protected C++ authority bridge and closed control protocol are now implemented,
+with local filesystem/refusal tests and a syntax-only check of the final source
+bytes. The actual Linux root factory has not run. Next work is the Python
+admitted-run issuer/controller, native factory qualification, an actual candidate
+build and exact owned file preimages. There is no placeholder module hash or
+usable install capability.
 
-The private issuer, installed-SDK compilation, actual independent read channel,
+The private issuer, installed-SDK object compilation/linking, actual independent read channel,
 supervision and exact retirement remain separate implementation prerequisites.
 A maintenance decision does not make any of them qualified. The later manual
 payment packet needs its own fresh resources and separately reviewed lifecycle;
