@@ -120,6 +120,7 @@ public:
     PrivateDirectory(const std::string& path,Owner owner):path_(path),owner_(owner),
         fd_(directory_fd(path,owner,true)),dev_(status(fd_.fd).st_dev),ino_(status(fd_.fd).st_ino) {}
     int descriptor() const { return fd_.fd; }
+    const std::string& path() const { unchanged(); return path_; }
     void unchanged() const {
         Fd fresh(directory_fd(path_,owner_,true)); auto s=status(fresh.fd);
         guard(s.st_dev==dev_ && s.st_ino==ino_,"qa-private-directory-changed");
@@ -193,7 +194,7 @@ Lease lease(const File& file) {
     guard(issued<expires && expires-issued<=600 && expires<=INT64_MAX,"qa-private-expiry");
     return {f,actor(f.at("actor_hex")),issued,expires};
 }
-uint64_t now_seconds() { auto now=time(nullptr); guard(now>0,"qa-private-clock"); return static_cast<uint64_t>(now); }
+inline uint64_t now_seconds() { auto now=time(nullptr); guard(now>0,"qa-private-clock"); return static_cast<uint64_t>(now); }
 Mode case_mode(const std::string& c) {
     if (c=="F1") return Mode::Normal;
     if (c=="F2") return Mode::ThrowAfterBusiness;

@@ -108,6 +108,29 @@ custody. Native payment/subaccount tables have no read interface here. Protected
 read permits are separate from `AdmittedRun` and do not authorize module loading,
 DDL, business writes, barrier release, case sequencing or retirement.
 
+`native/case_evidence.cpp` binds complete protected reader originals to the
+currently issued native authority, exact original intent and writer diagnostic,
+and actual writer executable/module mapping. Seals retain file identities as
+well as hashes. Its F1–F4 outcome checks refuse split/dirty/stale/replayed or
+misbound data. A withheld response record must match the case nonce/facts/intent,
+complete owned-caller capture and actual original caller retirement. Recovery
+uses a new reader reserved after the withheld marker and compares the unchanged
+row keys/facts without invoking the SDK. The tool verifies a withholding decision
+recorded by the future launcher; it does not intercept an SDK response itself.
+No seal grants framework/manual/provider or financial acceptance. See the
+[case evidence and retirement protocol](native/case_evidence_protocol.md).
+
+`native/qa_retirement.hpp` and `native/qa_retirement_archive.cpp` provide a guarded
+fixed two-table policy and a protected durable original archive. The policy
+archives/reloads all definitions and rows before any erasure, holds foreign or
+changed resources, rechecks the archive before destructive steps, and requires
+unchanged schemas, empty tables, fresh table-absence verification and confirmed
+lock release. Unknown/partial cleanup never restores source data. There is no
+native SQL mutator, production permissive guard, cleanup CLI or module-unload
+implementation: those remain blocked until the full issuer establishes original
+resource ownership, writer retirement and supported native lock/DDL behavior.
+The policy's authored DB tests do not qualify actual source cleanup.
+
 References are canonical absolute POSIX paths with exact byte length and SHA256.
 Pure parsing does not establish filesystem custody, source identity or original
 actor authorization. Those checks belong to the future native issuer. A manual

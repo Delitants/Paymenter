@@ -14,6 +14,17 @@
 
 ## Global constraints
 
+Task 3 evidence/recovery preparation now also includes native protected
+writer/intent/read binding, original-identity seals, withheld caller-intent
+verification and fresh-reader reconciliation. The QA-only retirement policy and
+protected durable archive are tested, including foreign-row/schema/partial
+cleanup failures. There is still no native SQL mutator, permissive source guard,
+full admitted-run launcher or executable source cleanup. Standalone source-root
+file/recovery/archive fixtures use fictional DB/target/caller facts: they qualify
+file custody/build compatibility, not native transaction coupling, actual
+withholding of an SDK response or source table retirement. All real F/M cases,
+SDK startup/recovery and financial gates remain pending.
+
 Lifecycle investigation: the vendor `ReloadMgr` helper is a manager-exit path,
 not a verified module-only unload. The
 [maintenance constraint revision](../specs/2026-10-18-source-qa-lifecycle-decision.md)
@@ -70,6 +81,8 @@ Create `tools/legacy-payments/native-qualification/`:
 | `observer.py` | Supplied observation decoder and reserved live interface. |
 | `native/committed_reader.cpp`, `native/reader_core.hpp` | Standalone fixed local-socket C API channel and single-statement QA reader; no mutation interface. |
 | `native/reader_protocol.md` | Protected one-shot read approvals, retained originals and failure precedence. |
+| `native/case_evidence.cpp`, `native/case_evidence_protocol.md` | Protected writer/intent/read bindings, source-private case seals and collector-only recovery. |
+| `native/qa_retirement.hpp`, `native/qa_retirement_archive.cpp` | Guarded fixed-table retirement policy and durable originals; no source SQL/DDL adapter or cleanup CLI. |
 | `owned_process.py` | Bounded direct-child pipe transport and exact owned-child retirement; no issuer/case sequencing. |
 | `execution.py` | Reserved operator and local capture/identity checks; live supervision, sequencing, retention and retirement remain pending. |
 | `tests/test_*.py` | Offline refusal, parser, state-machine and operation-plan tests. |
@@ -152,6 +165,15 @@ The task's native observation/retirement requirements remain unchecked. Source
 control publication now has a native backend: actual standalone Linux/root
 authority/case publication and bridge consumption passed without installing a
 replacement interpreter or runtime. This does not qualify native DB observations.
+
+The native case evidence tool now validates and seals protected writer/intent and
+completed-read originals, including file identity across invocations. A withheld
+caller response must match the exact intent/nonce/facts and actual caller
+retirement. Fresh-reader reconciliation never invokes another payment. The
+retirement policy archives all QA definitions/rows, verifies the archive before
+deletion/drop, and holds unknown/foreign/schema/partial outcomes. Its guard/native
+SQL adapter and the full launcher's capture provenance remain unimplemented;
+authored DB/caller facts and protected documents alone clear no runtime case.
 
 **Consumes:** The admitted operation plan and fixed native case protocol. **Produces:** Root-private original evidence, exact process/resource identities, `RunReport`, and a separately derived `Qualification`.
 
