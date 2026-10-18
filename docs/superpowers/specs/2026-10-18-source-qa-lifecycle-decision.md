@@ -147,29 +147,41 @@ an expired module installed, external event handlers, or a successful synthetic
 suite cannot substitute for the required native transaction and retirement
 evidence.
 
-## Current executable-layout inspection
+## Current executable-layout verification
 
-Fresh static inspection of the current SDK candidate and four standalone tools
-found every strong imported symbol in the pinned provider sets. The candidate
-exports its SDK entry; the program artifacts have no RPATH/RUNPATH. The proposed
-owned library and XML registration paths are absent, with source-only originals
-retained. The observed manager PID/start/boot remained unchanged. These are
-preparation findings; no manager request, credential-content read, actual SQL,
-module installation/loading or restart ran in this inspection.
+The installed runtime uses a shared hard-linked executable, with a leaf alias
+for the CLI. Executable references now preserve that logical invocation name
+while pinning the resolved descriptor, bytes, link count, nanosecond metadata
+and protected directory identities. Traversed directories cannot disappear
+through lexical normalization before they are checked. The native SDK module
+image and every private control original retain single-link/no-alias custody.
+Vendor programs are neither copied nor relinked to satisfy the guard.
 
-The installed vendor executable layout exposes an admission blocker that the
-standalone single-link peers did not exercise. The manager's executable is a
-root-owned hard-linked wrapper, and the CLI's logical pathname resolves to that
-wrapper. The current native image guard requires a single link, and the direct
-child launcher refuses an executable leaf alias. Static import availability
-therefore does not make the maintenance packet installable.
+The corrected immutable local harness passed 539 tests at unchanged deadlines.
+A fresh source build produced the current SDK candidate, controller, reader,
+resource tool and authority publisher. All 22 actual Linux/root launch cases and
+27 executable-file cases passed. Static inspection of 32 exact ELF images found
+all strong imports for the five program artifacts and the SDK entry export;
+the artifacts have no RPATH/RUNPATH. Read-only inspection accepted the existing
+vendor executable layout without executing either vendor program. Exact owned
+installation-path absences remain retained and must be refreshed before writes.
 
-A bounded compatibility design is prepared for review: preserve the vendor files
-and logical invocation name, retain and recheck both executable alias and target
-identities, execute a pinned target descriptor, and bind the existing executable
-link count. Private approvals/controls keep their single-link and no-alias rules.
-No such guard change has been implemented or qualified yet. Corrected artifacts,
-including the older standalone authority publisher, will need fresh tests,
-source compilation and static inspection before a maintenance execution request.
-Startup/global lookup scope, actor/worker behavior, F1-F5, actual table lifecycle
-and retirement remain runtime acceptance requirements.
+The rebuilt authority publisher separately passed actual Linux/root publication,
+case consumption, fork refusal, revocation and replay refusal with an owned
+hard-linked peer and its own bridge library. Its registry, session and barrier
+facts were explicitly fictional. This verifies the current publisher artifact;
+it does not establish SDK loading, database sessions or transaction coupling.
+Current-reader metadata qualification is kept distinct from the historical
+reader's earlier connection evidence.
+
+One failed source fixture and its bounded timestamp observation are retained.
+Identical-byte writes can occur without changing tracked metadata within a
+filesystem clock tick; stat is not treated as a write-event log. The corrected
+fixture waits before its single rewrite, inside unchanged operation ceilings.
+Replacement checks continue to pin the original inode and alias descriptor.
+
+No manager request, credential-content read, actual SQL, SDK installation/load,
+restart, native financial operation or handover ran in this increment. The
+maintenance packet references actual current hashes but remains non-executable.
+Actual SDK global lookup scope, actor/worker behavior, owned-table lifecycle,
+F1-F5 and complete retirement remain runtime acceptance requirements.

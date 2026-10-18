@@ -246,7 +246,7 @@ inline bool resource_native_runtime(pid_t pid,const std::string& start,const Fie
     if(boot_id()!=f.at("boot") || target_start(pid)!=start)return false;
     const std::string base="/proc/"+std::to_string(pid);char path[PATH_MAX];auto count=readlink((base+"/exe").c_str(),path,sizeof(path));
     if(count<=0 || std::string(path,count)!=f.at("runtime_path"))return false;
-    const auto runtime=image(f.at("runtime_path"),true);struct stat actual;
+    const auto runtime=executable_image(f.at("runtime_path"),true);struct stat actual;
     if(hash(runtime.raw)!=f.at("runtime_sha256") || stat((base+"/exe").c_str(),&actual)!=0 || actual.st_dev!=runtime.identity.dev || actual.st_ino!=runtime.identity.ino)return false;
     std::istringstream status(system_file((base+"/status").c_str(),65536));std::string line;bool root=false;
     while(std::getline(status,line))if(line.compare(0,4,"Uid:")==0){std::istringstream values(line.substr(4));std::string a,b,c,d,extra;root=bool(values>>a>>b>>c>>d) && !(values>>extra) && a=="0" && b=="0" && c=="0" && d=="0";}
@@ -276,7 +276,7 @@ int main(int argc,char**argv) {
         guard(argc==3 && geteuid()==0 && getegid()==0,"resource-linux-root-required");
         auto dir=std::make_shared<PrivateDirectory>(argv[2],Owner{0,0});struct statfs fs;
         guard(fstatfs(dir->descriptor(),&fs)==0 && (fs.f_type==0xEF53 || fs.f_type==0x58465342 || fs.f_type==0x01021994),"resource-filesystem");
-        ResourceHooks hooks{Owner{0,0},boot_id,[](const std::string& path){return image(path,true);},resource_native_runtime,resource_native_retired,real("/proc/self/exe"),process_start};
+        ResourceHooks hooks{Owner{0,0},boot_id,native_images(dir),resource_native_runtime,resource_native_retired,real("/proc/self/exe"),process_start};
         NativeQaResourceFactory factory(dir,hooks);std::string mode=argv[1];
         if(mode=="create")factory.create(PAYMENTER_QA_CREDENTIAL_FILE,PAYMENTER_QA_DATABASE,PAYMENTER_QA_SOCKET);
         else if(mode=="retire")factory.retire(PAYMENTER_QA_CREDENTIAL_FILE,PAYMENTER_QA_DATABASE,PAYMENTER_QA_SOCKET);

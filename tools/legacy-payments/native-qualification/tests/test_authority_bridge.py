@@ -11,7 +11,7 @@ import unittest
 
 HERE = Path(__file__).resolve().parent
 NATIVE = HERE.parent / 'native'
-SCENARIOS = ('batch-valid','batch-symlink','batch-writable','batch-bound','checkpoint-business','checkpoint-no-writer','checkpoint-order','checkpoint-journal','checkpoint-duplicate','checkpoint-replace','checkpoint-wrong-session','checkpoint-sync-failure','refusal-valid','refusal-wrong-nonce','refusal-with-intent','refusal-replay','valid', 'prepare-only', 'unknown-field', 'duplicate-field', 'expired',
+SCENARIOS = ('program-reference-binding','batch-valid','batch-symlink','batch-writable','batch-bound','checkpoint-business','checkpoint-no-writer','checkpoint-order','checkpoint-journal','checkpoint-duplicate','checkpoint-replace','checkpoint-wrong-session','checkpoint-sync-failure','refusal-valid','refusal-wrong-nonce','refusal-with-intent','refusal-replay','valid', 'prepare-only', 'unknown-field', 'duplicate-field', 'expired',
              'future', 'unbounded', 'wrong-actor', 'wrong-action', 'wrong-run',
              'wrong-nonce', 'wrong-case', 'wrong-pid', 'wrong-start', 'wrong-facts',
              'intent-replaced', 'authority-replaced', 'registry-changed', 'build-changed',

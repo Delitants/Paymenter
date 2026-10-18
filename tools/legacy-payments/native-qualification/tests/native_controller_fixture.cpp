@@ -3,14 +3,27 @@
 #define PAYMENTER_QA_CONTROLLER_NO_MAIN
 #include "../native/run_controller.cpp"
 #include <iostream>
+#include <fstream>
 using namespace paymenter_qa;
 void check(bool value){if(!value)throw std::runtime_error("assertion");}
 int main(int argc,char**argv){try {
     check(argc==3);const std::string mode=argv[1],root=argv[2],run(64,'a'),boot="11111111-1111-1111-1111-111111111111";
     auto dir=std::make_shared<PrivateDirectory>(root,Owner{getuid(),getgid()});auto now=now_seconds();
     auto write=[&](const std::string& n,const std::string& raw){dir->create(n,raw);};
-    auto images=[&](const std::string& path){return dir->read(path.substr(path.rfind('/')+1),16777216);};
+    auto images=[&](const std::string& path){
+        if(mode=="caller-alias" && path==root+"/caller.image") {
+            ProgramImage reference(path,getuid(),getgid());std::ifstream in(reference.target_path(),std::ios::binary);
+            std::string raw(std::istreambuf_iterator<char>(in),{});reference.unchanged();return File{raw,stamp(reference.status()),reference.binding()};
+        }
+        return dir->read(path.substr(path.rfind('/')+1),16777216);
+    };
     for(const auto& name:{"module","runtime","resource","self","caller","reader"})write(std::string(name)+".image",std::string("\177ELF")+name);
+    if(mode=="caller-alias") {
+        check(unlink((root+"/caller.image").c_str())==0);
+        // Fictional ELF and transport, with an actual file alias/custody path.
+        std::ofstream out(root+"/caller.target",std::ios::binary);out<<std::string("\177ELFcaller");out.close();
+        check(bool(out) && chmod((root+"/caller.target").c_str(),0755)==0 && symlink("caller.target",(root+"/caller.image").c_str())==0);
+    }
     auto image_fields=[&](Fields& f,const std::string& role,const std::string& file){f[role+"_path"]=root+"/"+file+".image";f[role+"_sha256"]=hash(images(f.at(role+"_path")).raw);};
     auto registry="paymenter-source-qa-registry-native-v1\nrun="+run+"\ntables=paymenter_qa_business_v1,paymenter_qa_journal_v1\nobjects=none\ndiagnostics="+REGISTRY_DIAGNOSTICS+"\n";write("registry.original",registry);
     Fields build{{"run",run}};image_fields(build,"module","module");image_fields(build,"runtime","runtime");
@@ -55,7 +68,9 @@ int main(int argc,char**argv){try {
                 rd->create("read.started.original","paymenter-source-qa-read-started-native-v1\nrequest="+af.at("request")+"\napproval_sha256="+hash(approval_.raw)+"\n");
                 rd->create("read.original",raw);rd->create("read.complete.original","paymenter-source-qa-read-complete-native-v1\nrequest="+af.at("request")+"\noriginal_sha256="+hash(raw)+"\n");r.stdout_bytes="native-read-retained\n";
             } else {
-                ++caller_count;check(cmd.argv.size()==9 && cmd.argv.at(4)=="xml" && cmd.argv.at(5)=="paymenter.qa.transaction");
+                ++caller_count;
+                if(mode=="caller-alias"){ProgramImage reference(cmd.path,getuid(),getgid());check(cmd.program_binding==reference.binding() && cmd.argv[0]==root+"/caller.image");}
+                check(cmd.argv.size()==9 && cmd.argv.at(4)=="xml" && cmd.argv.at(5)=="paymenter.qa.transaction");
                 auto id=cmd.argv.at(7).substr(8);auto nonce_=cmd.argv.at(8).substr(9);r.stdout_bytes="<fictional-local-boundary/>\n";
                 if(id=="F5") {
                     write("refusal.F5.original","paymenter-source-qa-refusal-v1\nrun="+run+"\ncase=F5\nnonce="+nonce_+"\npid=2\nstart=99\nauthority_sha256="+hash(authority.raw)+"\n");
@@ -74,7 +89,7 @@ int main(int argc,char**argv){try {
             }
             return r;
         }};
-    bool good=mode=="normal" || mode=="large-reply";
+    bool good=mode=="normal" || mode=="large-reply" || mode=="caller-alias";
     try {NativeFrameworkBackend backend(dir,hooks);FixedFrameworkSequence sequence(backend);sequence.run();reached=true;}catch(const std::exception& e){if(good)std::cerr<<e.what()<<'\n';}
     check(reached==good);if(good)check(caller_count==5 && dir->exists("controller.complete.original") && dir->exists("revoked.v1") && !dir->exists("controller.failure.original"));
     else if(mode=="wrong-producer")check(launches==0 && !dir->exists("controller.started.original"));

@@ -42,7 +42,8 @@ These originals are closed bounded JSON documents, separate from preparation
 profiles. Every `cases` entry F1–F4 has exactly `nonce facts_hash`; all four nonces
 are distinct. Approval binds original registry/build bytes and a current window
 of at most 600 seconds. Image references bind canonical paths, SHA256 and at most
-16 MiB of actual non-writable, singly linked root-owned ELF file bytes. ELF magic
+16 MiB of actual non-writable root-owned ELF file bytes. The SDK module stays singly linked;
+executable references use the bounded program policy below. ELF magic
 is a file-format guard, not linking or loader compatibility proof. Runtime and
 module must be distinct images. Registry names are an allowed-resource list,
 not a claim that SQL schema/ownership/absence has been independently observed.
@@ -229,3 +230,10 @@ bytes followed by `\nF5\n`. The bridge verifies actor/action/run/process/runtime
 current original authority and absence of an active intent before refusing the
 action. Independent before/after full-table audits are still required; this
 refusal file alone proves no database outcome.
+
+For native executable roles, the [program reference policy](program_image_protocol.md)
+permits existing protected vendor hard links and a bound owned leaf alias. The
+full reference and target bytes are revalidated; same-target alias replacement
+still refuses. The approved SDK module keeps the strict no-alias/single-link
+image policy. This exception concerns program layout, never private control
+originals or table/transaction qualification.

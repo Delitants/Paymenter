@@ -1,6 +1,7 @@
 // Single-threaded native launcher. No shell, inherited environment, process-group
 // signals or manager retirement authority. Linux fexecve uses the pinned image.
 #pragma once
+#include "program_image.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cerrno>
@@ -23,7 +24,11 @@
 namespace paymenter_qa {
 class ChildError:public std::runtime_error {public:explicit ChildError(const char* s):std::runtime_error(s){}};
 inline void child_guard(bool v,const char* s){if(!v)throw ChildError(s);}
-struct NativeChildCommand {std::string path;std::vector<std::string> argv,environment;uid_t uid;gid_t gid;std::string expected_identity;};
+struct NativeChildCommand {
+    std::string path;std::vector<std::string> argv,environment;uid_t uid;gid_t gid;std::string expected_identity,program_binding;
+    NativeChildCommand(std::string p,std::vector<std::string> a,std::vector<std::string> e,uid_t u,gid_t g,std::string i,std::string binding=""):
+        path(std::move(p)),argv(std::move(a)),environment(std::move(e)),uid(u),gid(g),expected_identity(std::move(i)),program_binding(std::move(binding)){}
+};
 struct NativeChildResult {
     pid_t pid=-1,parent=-1,group=-1,session=-1;
     std::string start,boot,stdout_bytes,stderr_bytes,failure;
@@ -47,16 +52,8 @@ inline bool child_same_image(const struct stat& a,const struct stat& b) {
     return times && a.st_dev==b.st_dev && a.st_ino==b.st_ino && a.st_mode==b.st_mode && a.st_uid==b.st_uid &&
         a.st_gid==b.st_gid && a.st_nlink==b.st_nlink && a.st_size==b.st_size;
 }
-inline std::string child_image_identity(const struct stat& s) {
-#ifdef __APPLE__
-    auto mt=s.st_mtimespec,ct=s.st_ctimespec;
-#else
-    auto mt=s.st_mtim,ct=s.st_ctim;
-#endif
-    return std::to_string(s.st_dev)+":"+std::to_string(s.st_ino)+":"+std::to_string(s.st_mode)+":"+
-        std::to_string(s.st_uid)+":"+std::to_string(s.st_gid)+":"+std::to_string(s.st_size)+":"+
-        std::to_string(mt.tv_sec)+":"+std::to_string(mt.tv_nsec)+":"+std::to_string(ct.tv_sec)+":"+std::to_string(ct.tv_nsec);
-}
+inline std::string child_image_identity(const struct stat& s) {return program_file_identity(s);}
+
 #ifdef __linux__
 inline std::string child_proc_file(const std::string& path,size_t bound) {
     ChildFd fd(open(path.c_str(),O_RDONLY|O_CLOEXEC|O_NOFOLLOW));child_guard(fd.value>=0,"child-kernel-file");
@@ -93,14 +90,14 @@ inline std::vector<int> child_open_descriptors() {
 class NativeOwnedChild {
     using Mono=std::chrono::steady_clock;
     const NativeChildCommand command_;const Mono::time_point end_;const size_t out_limit_,err_limit_;
-    const pid_t owner_=getpid();ChildFd image_;struct stat stamp_;bool consumed_=false;
+    const pid_t owner_=getpid();std::unique_ptr<ProgramImage> program_;ChildFd image_;struct stat stamp_;bool consumed_=false;
     static void pipe_pair(ChildFd& r,ChildFd& w) {
         int p[2];child_guard(pipe(p)==0,"child-pipe");r.reset(p[0]);w.reset(p[1]);
         child_guard(fcntl(r.value,F_SETFD,FD_CLOEXEC)==0 && fcntl(w.value,F_SETFD,FD_CLOEXEC)==0,"child-pipe");
     }
     void unchanged()const {
-        struct stat a,b;child_guard(getpid()==owner_ && fstat(image_.value,&a)==0 && lstat(command_.path.c_str(),&b)==0 &&
-            child_same_image(stamp_,a) && child_same_image(stamp_,b),"child-image-changed");
+        try{program_->unchanged();}catch(const ProgramImageError&){throw ChildError("child-image-changed");}
+        struct stat a;child_guard(getpid()==owner_ && fstat(image_.value,&a)==0 && child_same_image(stamp_,a),"child-image-changed");
     }
     static bool limit(int kind,rlim_t value){
         struct rlimit inherited;if(getrlimit(kind,&inherited)!=0)return false;
@@ -132,8 +129,10 @@ public:
         }
         for(const auto& value:command_.environment){auto at=value.find('=');child_guard(at>0 && at!=std::string::npos && keys.insert(value.substr(0,at)).second,"child-environment");}
         child_guard(size<=16384 && command_.path.find('\0')==std::string::npos,"child-command");
-        image_.reset(open(command_.path.c_str(),O_RDONLY|O_NOFOLLOW|O_CLOEXEC));
-        child_guard(fstat(image_.value,&stamp_)==0 && S_ISREG(stamp_.st_mode) && stamp_.st_nlink==1 &&
+        try{program_.reset(new ProgramImage(command_.path,command_.uid,command_.gid));}catch(const ProgramImageError&){throw ChildError("child-image");}
+        child_guard(command_.program_binding.empty()?!program_->alias():command_.program_binding==program_->binding(),"child-program-binding");
+        image_.reset(fcntl(program_->descriptor(),F_DUPFD_CLOEXEC,3));
+        child_guard(image_.value>=0 && fstat(image_.value,&stamp_)==0 && S_ISREG(stamp_.st_mode) && stamp_.st_nlink>0 &&
             stamp_.st_uid==command_.uid && stamp_.st_gid==command_.gid && !(stamp_.st_mode&0022) && (stamp_.st_mode&0111) &&
             stamp_.st_size>0 && stamp_.st_size<=16777216 && child_image_identity(stamp_)==command_.expected_identity,"child-image");unchanged();
     }

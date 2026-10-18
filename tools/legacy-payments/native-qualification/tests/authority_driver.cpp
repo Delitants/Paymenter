@@ -41,6 +41,10 @@ int main(int argc, char** argv) {
             if(scenario=="batch-valid"){auto files=dir->read_batch(names);check(files.size()==2 && same_file(files[0],dir->read("authority.v1",4096)));}
             else refuses([&]{dir->read_batch(names);});return 0;
         }
+        if(scenario=="program-reference-binding") {
+            auto dir=std::make_shared<PrivateDirectory>(root,Owner{getuid(),getgid()});auto original=dir->read("registry.original",4096),changed=original;
+            changed.program_binding="different-program-reference";check(!same_file(original,changed));return 0;
+        }
         auto intent=contents(root+"/intent.v1");
         replace_value(intent,"pid=PID\n","pid="+std::to_string(getpid())+"\n");
         if (scenario=="wrong-pid") replace_value(intent,"pid="+std::to_string(getpid())+"\n","pid=1\n");

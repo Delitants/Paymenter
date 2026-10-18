@@ -121,3 +121,11 @@ explicitly says `retired=0` and `qualification=not-issued`. Actual framework
 qualification still needs native SDK/caller/session evidence, the approved
 unload/restart/retirement checks and full review. Manual coupling, provider
 validation, financial posting and billing handover remain separate gates.
+
+Executable references also bind the original logical leaf, target, link count
+and protected directory identities. The original logical argv[0] is preserved
+for a vendor CLI implemented by a shared wrapper; Linux executes its pinned
+resolved descriptor. `capture.image.<role>.original` retains each genuine
+reference, and command originals bind its hash. See
+[program reference custody](program_image_protocol.md). Root module files and
+all private control originals retain their stricter single-link/no-alias checks.

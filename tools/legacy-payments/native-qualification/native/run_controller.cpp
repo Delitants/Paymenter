@@ -52,15 +52,20 @@ class NativeFrameworkBackend:public FrameworkRunBackend {
     }
     NativeChildCommand command(const std::string& role,std::vector<std::string> argv)const {
         auto path=fields_.at(role+"_path");argv.insert(argv.begin(),path);
-        struct stat s;guard(lstat(path.c_str(),&s)==0,"controller-command-image");
-        auto pinned=images_.at(path);guard(stamp(s)==pinned.identity,"controller-command-image");
-        return {path,argv,{"PATH=/usr/bin:/bin","LANG=C","LC_ALL=C","LD_LIBRARY_PATH=/usr/local/mgr5/lib"},hooks_.owner.uid,hooks_.owner.gid,child_image_identity(s)};
+        auto pinned=images_.at(path);struct stat s;
+        if(pinned.program_binding.empty())guard(lstat(path.c_str(),&s)==0,"controller-command-image");
+        else {
+            ProgramImage reference(path,hooks_.owner.uid,hooks_.owner.gid);reference.unchanged();s=reference.status();
+            guard(reference.binding()==pinned.program_binding,"controller-command-reference");
+        }
+        guard(stamp(s)==pinned.identity,"controller-command-image");
+        return {path,argv,{"PATH=/usr/bin:/bin","LANG=C","LC_ALL=C","LD_LIBRARY_PATH=/usr/local/mgr5/lib"},hooks_.owner.uid,hooks_.owner.gid,child_image_identity(s),pinned.program_binding};
     }
     NativeChildResult launch(const std::string& label,const NativeChildCommand& command_,Clock::time_point end,const std::function<void()>& during) {
         check();guard(active_children_<2 && output_bytes_<=1048576-24576,"controller-budget");
         const auto image_=hooks_.images(command_.path);auto before="paymenter-source-qa-owned-command-v1\nrun="+run()+"\nslot="+label+"\nboot="+fields_.at("boot")+
             "\nparent="+std::to_string(process_)+"\nparent_start="+self_start_+"\nimage_sha256="+hash(image_.raw)+"\nimage_identity="+resource_identity(image_)+
-            "\nargv_hex="+hex_bytes(packed(command_.argv))+"\nenvironment_hex="+hex_bytes(packed(command_.environment))+"\n";
+            "\nprogram_reference_sha256="+hash(image_.program_binding)+"\nargv_hex="+hex_bytes(packed(command_.argv))+"\nenvironment_hex="+hex_bytes(packed(command_.environment))+"\n";
         put("capture."+label+".command.original",before);++active_children_;
         NativeChildResult result;
         try{result=hooks_.child(command_,std::min(end,end_),during);}catch(...){--active_children_;throw;}
@@ -152,7 +157,12 @@ public:
         for(const auto& id:{"F1","F2","F3","F4"})for(const auto& prefix:{"intent.","writer.","case."})guard(!dir_->exists(std::string(prefix)+id+(std::string(prefix)=="case."?".approval.native.original":".original")),"controller-reused");
         for(const auto& id:{"F1","F2","F3","F4"})for(const auto& stage:{"business","journal","inject-business","inject-journal","barrier"})
             guard(!dir_->exists(std::string("checkpoint.")+id+"."+stage+".original"),"controller-reused-checkpoint");
-        current();put("controller.started.original","paymenter-source-qa-controller-started-v1\nrun="+run()+"\napproval_sha256="+hash(approval_.raw)+"\npid="+std::to_string(process_)+"\nstart="+self_start_+"\n");current();
+        current();
+        for(const auto& role:{"self","caller","reader","resource"}) {
+            auto ref=images_.at(fields_.at(std::string(role)+"_path")).program_binding;
+            if(!ref.empty()){auto name=std::string("capture.image.")+role+".original";dir_->create_capture(name,ref);remember(dir_,name,32768);}
+        }
+        put("controller.started.original","paymenter-source-qa-controller-started-v1\nrun="+run()+"\napproval_sha256="+hash(approval_.raw)+"\npid="+std::to_string(process_)+"\nstart="+self_start_+"\n");current();
     }
     void current()override{check();}
     FrameworkRows audit(const std::string& slot)override{return read("audit."+slot,"none","after",true);}
@@ -249,8 +259,8 @@ public:
     }
 };
 #ifdef __linux__
-inline ControllerHooks native_controller_hooks() {
-    return {Owner{0,0},boot_id,[](const std::string& p){return image(p,true);},native_target,native_child_gone,real("/proc/self/exe"),process_start,
+inline ControllerHooks native_controller_hooks(const std::shared_ptr<PrivateDirectory>& dir) {
+    return {Owner{0,0},boot_id,native_images(dir),native_target,native_child_gone,real("/proc/self/exe"),process_start,
         [](const NativeChildCommand& c,Clock::time_point end,const std::function<void()>& during){NativeOwnedChild child(c,end);return child.run(during);}};
 }
 #endif
@@ -260,7 +270,7 @@ int main(int argc,char**argv){using namespace paymenter_qa;try{
 #ifdef __linux__
     guard(argc==2 && geteuid()==0 && getegid()==0,"controller-linux-root-required");auto dir=std::make_shared<PrivateDirectory>(argv[1],Owner{0,0});
     struct statfs fs;guard(fstatfs(dir->descriptor(),&fs)==0 && (fs.f_type==0xEF53 || fs.f_type==0x58465342 || fs.f_type==0x01021994),"controller-filesystem");
-    auto hooks=native_controller_hooks();NativeFrameworkBackend backend(dir,hooks);FixedFrameworkSequence sequence(backend);sequence.run();
+    auto hooks=native_controller_hooks(dir);NativeFrameworkBackend backend(dir,hooks);FixedFrameworkSequence sequence(backend);sequence.run();
     std::cout<<"native-framework-evidence-retained\n";return 0;
 #else
     (void)argc;(void)argv;throw ProbeError("controller-linux-root-required");

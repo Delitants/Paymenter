@@ -29,6 +29,6 @@ class NativeControllerBindingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='controller-operation-',dir=HERE) as tmp:
             r=subprocess.run([str(self.binary),m,tmp],capture_output=True,timeout=25)
             self.assertEqual(0,r.returncode,r.stderr.decode(errors='replace'))
-for m in ('normal','large-reply','wrong-producer','reused-reader','injection-not-reached','visible-barrier','missing-barrier','F5-mutated','capture-overflow','lost-native-child'):
+for m in ('caller-alias','normal','large-reply','wrong-producer','reused-reader','injection-not-reached','visible-barrier','missing-barrier','F5-mutated','capture-overflow','lost-native-child'):
     def run(self,m=m):self.scenario(m)
     setattr(NativeControllerBindingTests,'test_'+m.replace('-','_'),run)

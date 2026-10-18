@@ -6,7 +6,7 @@ import unittest
 
 HERE=Path(__file__).resolve().parent
 NATIVE=HERE.parent/'native'
-CASES=('invalid-image','inherited-limits','fd-closed','capture','timeout','overflow','stderr-overflow','nonzero','exec-failure',
+CASES=('alias-relative-argv0','alias-binding-replaced','alias-missing-binding','alias-capture','alias-argv0','alias-replaced','link-count-changed','hardlink-capture','invalid-image','inherited-limits','fd-closed','capture','timeout','overflow','stderr-overflow','nonzero','exec-failure',
        'callback-failure','descendant-pipe','image-replaced','one-shot','closed-stdin')
 class NativeOwnedChildTests(unittest.TestCase):
     @classmethod

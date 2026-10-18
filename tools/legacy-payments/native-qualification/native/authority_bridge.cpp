@@ -1,6 +1,7 @@
 #ifndef PAYMENTER_QA_AUTHORITY_BRIDGE_IMPLEMENTATION
 #define PAYMENTER_QA_AUTHORITY_BRIDGE_IMPLEMENTATION
 #include "authority_bridge.hpp"
+#include "program_image.hpp"
 #include <openssl/sha.h>
 #include <algorithm>
 #include <cerrno>
@@ -94,7 +95,11 @@ int directory_fd(const std::string& path,Owner owner,bool private_leaf) {
         return next;
     } catch (...) { if (next>=0) close(next); throw; }
 }
-struct File { std::string raw; Stamp identity; };
+struct File {
+    std::string raw;Stamp identity;std::string program_binding;
+    File():identity{}{}
+    File(std::string data,Stamp id,std::string program=""):raw(std::move(data)),identity(id),program_binding(std::move(program)){}
+};
 void custody(const struct stat& s,Owner owner) {
     guard(S_ISREG(s.st_mode) && s.st_uid==owner.uid && s.st_gid==owner.gid &&
           (s.st_mode&07777)==0600 && s.st_nlink==1,"qa-private-file");
@@ -229,7 +234,7 @@ Mode case_mode(const std::string& c) {
     if (c=="F4") return Mode::ObserveBeforeReturn;
     throw ProbeError("qa-private-case");
 }
-bool same_file(const File& a,const File& b) { return a.identity==b.identity && a.raw==b.raw; }
+bool same_file(const File& a,const File& b) { return a.identity==b.identity && a.raw==b.raw && a.program_binding==b.program_binding; }
 class ProtectedAuthority: public FrameworkAuthority {
     struct Intent {
         File original; Grant grant; uint64_t issued,expires;
@@ -405,6 +410,13 @@ File image(const std::string& path,bool contents) {
     auto raw=contents?bounded(fd.fd,16777216):std::string();
     guard(fstat(fd.fd,&b)==0 && stamp(a)==stamp(b),"qa-native-image-changed"); return {raw,stamp(a)};
 }
+File executable_image(const std::string& path,bool contents) {
+    try {
+        ProgramImage program(path,0,0);auto raw=contents?bounded(program.descriptor(),16777216):std::string();program.unchanged();
+        return {raw,stamp(program.status()),program.binding()};
+    }catch(const ProgramImageError&){throw ProbeError("qa-native-program-image");}
+}
+
 void mapped(uintptr_t address,const std::string& path,const Stamp& file) {
     std::istringstream lines(system_file("/proc/self/maps",1048576)); std::string line;
     while (std::getline(lines,line)) {
@@ -436,14 +448,15 @@ std::shared_ptr<const FrameworkAuthority> OpenProtectedFrameworkAuthority(const 
     auto module=real(info.dli_fname),executable=real("/proc/self/exe"),boot=boot_id(),start=process_start();
     guard(module!=executable && module==base.fields.at("module_path") && executable==base.fields.at("runtime_path") &&
           boot==base.fields.at("boot"),"qa-native-binding");
-    auto mod=image(module,true),exe=image(executable,true);
+    auto mod=image(module,true),exe=executable_image(executable,true);
     guard(hash(mod.raw)==base.fields.at("module_sha256") && hash(exe.raw)==base.fields.at("runtime_sha256"),"qa-native-build");
     mapped(address,module,mod.identity); pid_t process=getpid();
-    auto mod_stamp=mod.identity,exe_stamp=exe.identity;
-    auto check=[module,executable,boot,start,mod_stamp,exe_stamp,address,process] {
+    auto mod_stamp=mod.identity,exe_stamp=exe.identity;auto exe_binding=exe.program_binding;
+    auto check=[module,executable,boot,start,mod_stamp,exe_stamp,exe_binding,address,process] {
         if (geteuid()!=0 || getegid()!=0 || getpid()!=process || boot_id()!=boot || process_start()!=start ||
             real("/proc/self/exe")!=executable) return false;
-        if (!(image(module,false).identity==mod_stamp) || !(image(executable,false).identity==exe_stamp)) return false;
+        auto current_exe=executable_image(executable,false);
+        if (!(image(module,false).identity==mod_stamp) || !(current_exe.identity==exe_stamp) || current_exe.program_binding!=exe_binding) return false;
         mapped(address,module,mod_stamp); return true;
     };
     auto result=std::make_shared<ProtectedAuthority>(dir,raw,start,check);

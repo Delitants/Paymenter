@@ -144,12 +144,20 @@ std::string target_start(pid_t pid) {
     for(int i=0;i<20;++i)guard(bool(fields>>value),"qa-native-target");
     number(value);return value;
 }
+inline ImageReader native_images(const std::shared_ptr<PrivateDirectory>& dir) {
+    auto approval=dir->read("approval.native.original",4096);auto f=parse(approval.raw,"paymenter-source-qa-approve-authority-native-v1",AUTH_FIELDS);
+    auto module=f.at("module_path");
+    return [dir,approval,module](const std::string& path) {
+        guard(same_file(approval,dir->read("approval.native.original",4096)),"qa-native-image-approval");
+        return path==module?image(path,true):executable_image(path,true);
+    };
+}
 inline bool native_target(pid_t pid,const std::string& start,const Fields& fields) {
     if(boot_id()!=fields.at("boot") || target_start(pid)!=start)return false;
     const std::string base="/proc/"+std::to_string(pid);
     char exe[PATH_MAX];auto length=readlink((base+"/exe").c_str(),exe,sizeof(exe));
     if(length<=0 || std::string(exe,static_cast<size_t>(length))!=fields.at("runtime_path"))return false;
-    auto runtime=image(fields.at("runtime_path"),false);struct stat actual;
+    auto runtime=executable_image(fields.at("runtime_path"),false);struct stat actual;
     if(stat((base+"/exe").c_str(),&actual)!=0 || actual.st_dev!=runtime.identity.dev || actual.st_ino!=runtime.identity.ino)return false;
     std::istringstream status(system_file((base+"/status").c_str(),65536));std::string line;bool root=false;
     while(std::getline(status,line))if(line.compare(0,4,"Uid:")==0) {
@@ -185,7 +193,7 @@ int main(int argc,char**argv) {
         auto dir=std::make_shared<PrivateDirectory>(argv[2],Owner{0,0});
         struct statfs fs;guard(fstatfs(dir->descriptor(),&fs)==0 &&
             (fs.f_type==0xEF53 || fs.f_type==0x58465342 || fs.f_type==0x01021994),"qa-native-filesystem");
-        NativeControlIssuer issuer(dir,boot_id,[](const std::string& path){return image(path,true);},native_target);
+        NativeControlIssuer issuer(dir,boot_id,native_images(dir),native_target);
         if(std::string(argv[1])=="authority" && argc==3){issuer.issue_authority();std::cout<<"native-authority-published\n";}
         else if(std::string(argv[1])=="case" && argc==4){issuer.issue_case(argv[3]);std::cout<<"native-case-published\n";}
         else throw ProbeError("qa-native-arguments");
