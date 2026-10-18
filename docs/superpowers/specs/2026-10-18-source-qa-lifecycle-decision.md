@@ -1,8 +1,8 @@
 # Source QA module lifecycle decision
 
-Status: proposed constraint revision, awaiting the operator's decision. This
-document authorizes no source command, deployment or restart. Native inline
-execution remains the selected implementation method.
+Status: operator approved the two-restart approach for preparing the installation
+and rollback package on 2026-10-18. This document authorizes no source deployment
+or restart. Native inline execution remains the selected implementation method.
 
 ## Finding
 
@@ -20,6 +20,15 @@ the manager has been established from the inspected evidence. This does not
 assert that no such method exists. `LoadModule`, component destructors, global
 module deinitialization and XML cache refresh do not establish that method.
 
+The installed client API additionally documents that an `exit` request does not
+guarantee subsequent requests execute after the restart. Its `Client::Restart`
+routine waits for that boundary. Static analysis of the matching installed CLI
+and vendor library establishes that the CLI special command `restart` delegates
+to this routine. It initially requests `func=exit`, retains the returned PID,
+then polls `func=exit&pid=` with increasing sleeps. Do not count that helper as
+one internal manager request or assume it fits a short native-case deadline.
+It has not been executed in this preparation.
+
 Private evidence retains the vendor archive fingerprint, selected helper bytes,
 installed-read originals and failure analysis. Captured installed helper bytes
 match the retained vendor package. The one-shot SSH collector nevertheless
@@ -28,9 +37,9 @@ transport warning. The runner did not preserve the SSH exit code separately, so
 the original attempt remains failed and was not retried. Offline byte comparison
 does not qualify native lifecycle or process recovery.
 
-## Decision requested
+## Approved preparation decision
 
-Permit a revision of the current no-restart framework-test constraint to use a
+Prepare a revision of the current no-restart framework-test constraint to use a
 maintenance procedure with two planned BILLmanager manager restarts: one to load
 the owned framework QA module, one after removing its registration to unload it.
 This decision permits preparing the revised implementation and concrete operation
@@ -69,13 +78,49 @@ The following limits belong in that revised packet:
    ambiguous recovery stops automatic work. No unbounded restart loop, database
    restore, direct balance repair or unrelated-file rollback is authorized.
 
+## Preparation progress
+
+The installed startup libraries and wrapper/CLI fingerprints match the retained
+vendor package. The compiler launcher resolves to a separately installed GCC
+toolchain; its actual target was fingerprinted instead of treating the launcher
+symlink as a qualified executable. A narrowed compiler-link check refused an
+out-of-scope target; that failure is retained, not overwritten by the subsequent
+metadata-only link read and exact-target fingerprint.
+
+The generic adapter passed one syntax-only check against the installed SDK on
+2026-10-18. That check used the observed compiler, the vendor-compatible legacy
+libstdc++ string ABI setting, pinned SDK headers, CPU/address-space/output limits,
+and a separate owned compiler session. It exited zero in one second and the owned
+caller was reaped. Its only compiler diagnostic was the expected pragma warning
+from combining the owned header and source through stdin. File-size allowance
+was zero; no source files, object, library or module entry were produced, and no
+manager or SQL action ran. Syntax compatibility is not ABI linking, native
+transaction behavior or startup/recovery qualification.
+
+The prepared private sequence uses one admitted `exit` request per lifecycle
+phase, waits independently for the original PID/start identity to disappear,
+then permits one fixed read-only `actionlist` getter to warm the manager and
+observes the replacement identity and required modules. CLI completion is never
+the restart-completion test. A PID reused with a different start time is handled
+as a different process, not signalled. The startup/worker recovery assumptions
+still require native qualification before the package can be executed.
+
+The private package retains original evidence hashes and candidate source hashes.
+Its module-binary and private-issuer entries remain absent, with explicit blockers;
+it cannot be admitted as an install packet. It includes the two planned lifecycle
+phases, the recovery reservation, exact QA-table names and prohibited operations.
+The next implementation work is the private native authority bridge and its
+protected registry/issuer, followed by an actual candidate build and exact owned
+file preimages. There is no placeholder module hash or usable install capability.
+
 The private issuer, installed-SDK compilation, actual independent read channel,
 supervision and exact retirement remain separate implementation prerequisites.
 A maintenance decision does not make any of them qualified. The later manual
 payment packet needs its own fresh resources and separately reviewed lifecycle;
 this proposal does not authorize it.
 
-If the no-restart constraint remains, native installation stays blocked. Leaving
+Until the concrete restart operation is separately accepted, native installation
+stays blocked. Leaving
 an expired module installed, external event handlers, or a successful synthetic
 suite cannot substitute for the required native transaction and retirement
 evidence.

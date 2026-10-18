@@ -10,15 +10,25 @@
 
 **Spec:** [Native legacy payment journal and Paymenter adapter](../specs/2026-10-17-legacy-payment-journal-design.md), especially Source recording and commit boundary and Native acceptance and delivery increments. The approved continuation is source qualification; target posting remains a later increment.
 
-**Status:** Task 1's generic preparation contracts and Task 2's generic framework probe are implemented and locally tested. Task 3 has local observation decoding, bounded byte capture and supplied-process-identity comparison only; it remains incomplete. The protected native issuer/bridge, live observer, process supervisor, resource retirement and acceptance derivation remain unimplemented. No source compilation/loading, QA table/account/payment creation or native acceptance case has run. The probe has no automatic module entry. Local compilation uses authored SDK doubles and does not qualify the installed vendor SDK or ABI. Retained installed declarations support a candidate, not runtime acceptance. The earlier diagnostic `payment.info` call returned `missed`; neither the exact missing object nor a usable payment lookup was established.
+**Status:** Task 1's generic preparation contracts and Task 2's generic framework probe are implemented and locally tested. Task 3 has local observation decoding, bounded byte capture and supplied-process-identity comparison only; it remains incomplete. The protected native issuer/bridge, live observer, process supervisor, resource retirement and acceptance derivation remain unimplemented. One source SDK syntax-only compilation passed; no object/library build, loading, QA table/account/payment creation or native acceptance case has run. The probe has no automatic module entry. Local tests use authored SDK doubles; the separate installed-SDK syntax result establishes declaration compatibility for the observed build only, not ABI linking or runtime acceptance. The earlier diagnostic `payment.info` call returned `missed`; neither the exact missing object nor a usable payment lookup was established.
 
 ## Global constraints
 
 Lifecycle investigation: the vendor `ReloadMgr` helper is a manager-exit path,
-not a verified module-only unload. The proposed
+not a verified module-only unload. The
 [maintenance constraint revision](../specs/2026-10-18-source-qa-lifecycle-decision.md)
-is awaiting an operator decision. This plan's existing no-restart constraint
-remains in force; no native startup/recovery acceptance is claimed.
+was approved for package preparation on 2026-10-18. It permits preparing two
+planned manager restarts, with the second reserved for recovery after a failed
+initial load. It does not authorize executing either restart. No native
+startup/recovery acceptance is claimed.
+
+Maintenance preparation progress: a private installation/rollback package now
+binds original evidence and candidate sources, but remains non-admissible because
+the loadable module and protected native issuer/bridge do not exist. One
+installed-SDK syntax-only compilation passed without producing a binary or
+calling the manager/SQL. The restart sequence must independently observe the old
+PID/start identity gone and the replacement healthy; it cannot infer completion
+from `exit` or hide the vendor restart helper's repeated internal requests.
 
 - BILLmanager remains the billing authority until a separate accepted handover. Source publication does not authorize deployment.
 - Source payment history remains history; it is not replayed as deposits.
@@ -99,7 +109,8 @@ retain exact catalog action names and original-byte fingerprints. Action presenc
 is distinct from human-readable `mgrctl -i` descriptions, supported invocation,
 safe loading/unloading and transaction acceptance. The generic probe adapter is
 locally tested against authored SDK doubles; its protected native issuer and
-actual vendor compilation/registration remain unqualified. No native cases have
+installed-vendor object compilation/linking and registration remain unqualified.
+A separate syntax-only check passed without producing a binary. No native cases have
 been executed.
 
 - [x] Write failing operation/protocol tests for wrong run/case, nested/reused context, explicit transaction calls, independent connection/cache, DDL inside a request, unexpected table names and a commit claim based on `Final`.

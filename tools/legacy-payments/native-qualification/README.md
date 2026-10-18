@@ -16,6 +16,14 @@ request guards and emitted calls. The doubles implement no database transactions
 or vendor lifecycle. These tests do not qualify installed SDK/ABI compatibility,
 framework transactions, native manual credit, provider validation or posting.
 
+A separate private preparation on 2026-10-18 passed one syntax-only compilation
+of this adapter against the installed SDK. It produced no object/library and
+invoked no manager or SQL action. The installed compiler and selected SDK header
+identities were pinned; the vendor string ABI was selected explicitly. This
+establishes syntax compatibility for that observed build only, not ABI linking,
+module loading or transaction behavior. Operational paths and originals remain
+private. Recheck the installed toolchain and vendor ABI before a real build.
+
 ## Interfaces
 
 - `admission.parse_profile` parses a closed, bounded profile with four original
@@ -95,8 +103,8 @@ Keep vendor build files, native catalog originals and runtime evidence private.
 The vendor packaging helper named `ReloadMgr` is not an established hot-unload
 alternative: its retained implementation invokes the selected manager's `exit`
 action. The [lifecycle decision](../../../docs/superpowers/specs/2026-10-18-source-qa-lifecycle-decision.md)
-records the evidence limits and a proposed maintenance alternative. It is not
-execution approval. The original no-restart constraint remains active.
+records the evidence limits and the maintenance approach approved for package
+preparation. It is not approval to execute a restart or install a module.
 
 ## Framework probe preparation
 
