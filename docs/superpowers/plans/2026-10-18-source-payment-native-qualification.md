@@ -10,7 +10,7 @@
 
 **Spec:** [Native legacy payment journal and Paymenter adapter](../specs/2026-10-17-legacy-payment-journal-design.md), especially Source recording and commit boundary and Native acceptance and delivery increments. The approved continuation is source qualification; target posting remains a later increment.
 
-**Status:** Written for review; no harness implemented, compilation/loading performed, source table/account/payment created or test executed by this plan. Retained installed declarations support a candidate, not runtime acceptance. The diagnostic `payment.info` call returned `missed`; neither the exact missing object nor a usable payment lookup was established.
+**Status:** Task 1's generic preparation contracts are implemented and locally tested. The native issuer, probe, observer, executor and acceptance derivation remain unimplemented. No source compilation/loading, QA table/account/payment creation or native acceptance case has run. Retained installed declarations support a candidate, not runtime acceptance. The earlier diagnostic `payment.info` call returned `missed`; neither the exact missing object nor a usable payment lookup was established.
 
 ## Global constraints
 
@@ -76,11 +76,11 @@ Source case ceiling: 30 seconds each and 600 seconds per packet; framework-only 
 
 **Consumes:** Retained public SDK declarations and the approved architecture. **Produces:** The immutable types and signatures above; `build_operation_plan(profile: Profile, evidence: dict) -> OperationPlan`, containing fixed operation enums and owned-resource references, never arbitrary command strings.
 
-- [ ] Write failing tests rejecting malformed/oversize profiles, unknown fields, stale boot/build or authority, missing original evidence, reused registry IDs, customer/cohort records, missing fixture notification isolation and unqualified install/unload methods. Assert exact blockers and zero executor calls.
-- [ ] Run `python3 -m unittest discover -s tools/legacy-payments/native-qualification/tests -p 'test_*.py'`; expect the missing admission behavior to fail.
-- [ ] Implement the closed contracts. A native evidence packet must resolve the `missed` response and establish supported read/create/manual-credit calls, original actor authorization, currency/amount mapping and safe fixture retirement before the manual packet can be ready. Do not guess alternative action names, module values or status codes.
-- [ ] Test the concrete wrong-namespace payment-header case: installed declarations belong to the version-matched vendor include tree; missing public-example paths are not accepted as absent SDK functionality. Explicitly reject `ValidateAuth`, capability flags, `SetInfo`, `GetSuccessPage`, paid status, `TransactionCount` or a successful `payment.info` read as settlement/commit proof.
-- [ ] Run the complete new harness test suite; expect zero failures/skips, then commit `Define closed source payment qualification admission`.
+- [x] Write failing tests rejecting malformed/oversize profiles, unknown fields, stale boot/build or authority, missing original evidence, reused registry IDs, customer/cohort records, missing fixture notification isolation and unqualified install/unload methods. Assert exact blockers and zero executor calls.
+- [x] Run `python3 -m unittest discover -s tools/legacy-payments/native-qualification/tests -p 'test_*.py'`; expect the missing admission behavior to fail.
+- [x] Implement the closed preparation contracts. `assess` checks hash-bound proposal completeness only; its `ready` result grants no execution authority. The protected native issuer remains unavailable. Before any manual admission it must establish supported read/create/manual-credit calls, original actor authorization, currency/amount mapping, fixture isolation and safe retirement from original evidence. Do not guess action names, module values or status codes.
+- [x] Test the concrete wrong-namespace payment-header case: installed declarations belong to the version-matched vendor include tree; missing public-example paths are not accepted as absent SDK functionality. Explicitly reject `ValidateAuth`, capability flags, `SetInfo`, `GetSuccessPage`, paid status, `TransactionCount` or a successful `payment.info` read as settlement/commit proof.
+- [x] Run the complete new harness test suite; expect zero failures/skips, then commit `Define closed source payment qualification admission`.
 
 ## Task 2: Framework-managed cache probe
 
