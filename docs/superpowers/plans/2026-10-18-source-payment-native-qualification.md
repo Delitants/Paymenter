@@ -10,7 +10,7 @@
 
 **Spec:** [Native legacy payment journal and Paymenter adapter](../specs/2026-10-17-legacy-payment-journal-design.md), especially Source recording and commit boundary and Native acceptance and delivery increments. The approved continuation is source qualification; target posting remains a later increment.
 
-**Status:** Task 1's generic preparation contracts and Task 2's generic framework probe are implemented and locally tested. Task 3 has local observation decoding, bounded byte capture, supplied-process-identity comparison, a root-backed C++ authority bridge and Python protected authority/case file publication; it remains incomplete. The full Python admitted-run controller, live observer, process supervisor, resource retirement and acceptance derivation remain unimplemented. Source syntax-only checks passed for the probe and bridge, including the final bridge bytes; no source object/library build, loading, QA table/account/payment creation or native acceptance case has run. The probe has no automatic module entry. Local tests use authored SDK/runtime facts and real fixture files; installed-source syntax results establish declaration compatibility for the observed build only, not loader ABI, actual root-factory/issuer acceptance or native transaction coupling. The earlier diagnostic `payment.info` call returned `missed`; neither the exact missing object nor a usable payment lookup was established.
+**Status:** Task 1's generic preparation contracts and Task 2's generic framework probe are implemented and locally tested. Task 3 has local observation decoding, bounded byte capture, supplied-process-identity comparison, a root-backed C++ authority bridge and Python protected authority/case file publication; it remains incomplete. The full Python admitted-run controller, live observer, process supervisor, resource retirement and acceptance derivation remain unimplemented. The probe/bridge component library now builds against the installed SDK; its strong dynamic symbols and direct dependencies are available in the running manager's mapped libraries. A separate owned standalone Linux/root process passed the bridge factory, real image/process binding, protected controls, fork refusal and revocation checks. That fixture loaded only its own bridge DSO. No library was installed or loaded into BILLmanager, and no QA table/account/payment or native F/M case was created or run. The component has no automatic module entry. Static availability and standalone bridge execution do not qualify SDK startup, global symbol resolution, the Python issuer or native transaction coupling. The earlier diagnostic `payment.info` call returned `missed`; neither the exact missing object nor a usable payment lookup was established.
 
 ## Global constraints
 
@@ -24,10 +24,11 @@ startup/recovery acceptance is claimed.
 
 Maintenance preparation progress: a private installation/rollback package now
 binds original evidence and candidate sources, but remains non-admissible because
-the loadable module and Python admitted-run issuer/controller do not exist. The
-protected bridge is implemented but has not executed through its native root
-factory. Installed-source syntax-only checks passed without producing a source
-binary or calling the manager/SQL. The restart sequence must independently observe the old
+the complete SDK module entry and Python admitted-run controller do not exist.
+The component candidate and separate standalone native factory fixture have
+source-private receipts. The native bridge factory passed in the standalone
+process, outside BILLmanager; the installed component and source issuer remain
+unqualified. No manager/SQL call or restart ran. The restart sequence must independently observe the old
 PID/start identity gone and the replacement healthy; it cannot infer completion
 from `exit` or hide the vendor restart helper's repeated internal requests.
 
@@ -112,10 +113,10 @@ Prerequisite progress: the pure `native_metadata.py` parser and its refusal test
 retain exact catalog action names and original-byte fingerprints. Action presence
 is distinct from human-readable `mgrctl -i` descriptions, supported invocation,
 safe loading/unloading and transaction acceptance. The generic probe adapter is
-locally tested against authored SDK doubles; its protected native issuer and
-installed-vendor object compilation/linking and registration remain unqualified.
-A separate syntax-only check passed without producing a binary. No native cases have
-been executed.
+locally tested against authored SDK doubles. A component library compiled/linked
+against installed vendor libraries and passed static symbol-availability checks;
+the actual SDK registration/startup and protected admitted-run issuer remain
+unqualified. No native framework/manual cases have been executed.
 
 - [x] Write failing operation/protocol tests for wrong run/case, nested/reused context, explicit transaction calls, independent connection/cache, DDL inside a request, unexpected table names and a commit claim based on `Final`.
 - [x] Implement `Execute(isp_api::Session&) const` and `AfterExecute(isp_api::Session&) const` using the supplied `db->Prepare(...).Execute(...)`. Pin required SDK access/session/build declarations before native compilation; unknown access or registration semantics block the operation. The explicit registration factory requires a private authority bridge; it has no automatic module entry.
@@ -134,11 +135,14 @@ until their original schema is qualified. The collector checks supplied pipe,
 exit and deadline facts. Neither establishes native provenance or performs live
 reads, supervision or cleanup. The protected bridge now binds root-owned originals,
 actual Linux module/process identity, actor and single-use F1–F4 grants. Local
-filesystem tests use authored runtime facts; the native root factory has only
-been syntax-checked. Python authority/case publication is locally tested, including
+filesystem tests use authored runtime facts. A separate source standalone fixture
+now passes the actual Linux/root factory with real kernel/image facts; its registry,
+connection number and barrier remain fictional, with no SDK or SQL. Python authority/case publication is locally tested, including
 C++ control parsing, but has not run through its actual Linux/root entry. The full
 admitted-run controller and automatic module entry remain absent. The task's native
-requirements remain unchecked.
+requirements remain unchecked. Python 3 was absent at the standard and previously
+proposed interpreter paths checked on the source; a supported issuer runtime or
+native controller remains a prerequisite. No replacement runtime was installed.
 
 **Consumes:** The admitted operation plan and fixed native case protocol. **Produces:** Root-private original evidence, exact process/resource identities, `RunReport`, and a separately derived `Qualification`.
 

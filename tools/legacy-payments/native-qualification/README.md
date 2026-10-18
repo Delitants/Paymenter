@@ -147,18 +147,27 @@ visibility still require native observations.
 `native/schema.sql` defines the two fixed InnoDB QA tables outside handlers and
 module startup. Existing table names must refuse the operation. The schema has
 no foreign keys or native customer/payment references. Its execution, engine and
-schema verification, resource ownership, exact retirement, native bridge execution,
-action metadata and installed-vendor object compilation/linking all require the concrete native
+schema verification, resource ownership, exact retirement, integrated native bridge execution,
+action metadata and SDK startup all require the concrete native
 packet; none is supplied by these local tests. Paid fixture records and accounting
 audit are never cleanup targets of this probe.
 
 The bridge uses POSIX file APIs, Linux process/mapping metadata and OpenSSL's
 SHA256 API. No packages are installed by the harness. Local bridge tests compile
 against an existing OpenSSL discovered through `pkg-config`; Linux builds also
-link `libdl`. A separate installed-Linux syntax-only check passed, including the
-native factory branch, without executing that factory or producing/loading a
-library. Root custody, loader ABI, controller integration and native transaction
-qualification remain pending.
+link `libdl`. Installed-Linux syntax checks were followed by an actual component
+library build against the installed SDK and static checks against the manager's
+mapped libraries. All strong imported symbols and direct dependency names were
+available; the component has no runtime search path or automatic module entry.
+It was not installed or loaded into BILLmanager.
+
+A separate owned standalone Linux/root fixture loaded only its own bridge DSO
+and passed the public factory, actual process/image binding, protected file/grant
+checks, fictional writer/barrier diagnostics, fork refusal and revocation. It
+ran no SDK, SQL or manager action. This qualifies that standalone bridge path,
+not the future combined module's startup/global symbol scope, source issuer,
+controller integration or native transaction coupling. Original artifacts and
+failed attempts remain private.
 
 The issuer writes under a synchronized revocation fence and retains failed or
 partial originals. Successful publication returns a file receipt, never native
@@ -166,7 +175,9 @@ acceptance or installation permission. Its explicit approvals are not generated
 from preparation profiles. The full admitted-run controller, independent reader,
 case resolution and exact retirement remain unavailable. Issuer tests use actual
 fixture files and image hashes with authored boot/process facts; no source issuer
-or process-check acceptance is claimed.
+or process-check acceptance is claimed. Python 3 was absent at the standard and
+previously proposed source paths checked; a qualified issuer runtime or native
+controller remains necessary. No replacement runtime was installed.
 
 The complete implementation remains tracked in
 [the source qualification plan](../../../docs/superpowers/plans/2026-10-18-source-payment-native-qualification.md).

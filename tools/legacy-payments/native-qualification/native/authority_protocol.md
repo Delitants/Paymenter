@@ -149,3 +149,11 @@ Python issuer tests likewise use actual files/image bytes with fictional boot an
 test-user ownership; case tests use an authored process check. A cross-language
 test feeds Python-issued authority bytes into the actual C++ bridge parser. This
 qualifies neither Linux/root issuer execution nor actual process/loader behavior.
+
+A separate source-native fixture now exercises the public C++ factory in an owned
+standalone Linux/root process. It uses real kernel boot/PID/start, executable and
+loaded-function image facts with protected root-owned files, and passes grant,
+fictional writer/barrier, fork refusal and revocation checks. Its registry/build
+originals and connection number are explicitly fictional. It loads only its own
+bridge DSO, never BILLmanager or vendor SDK libraries. This does not qualify the
+Python issuer, SDK module startup, database observations or transaction coupling.

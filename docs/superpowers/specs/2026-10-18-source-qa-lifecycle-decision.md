@@ -106,6 +106,11 @@ as a different process, not signalled. The startup/worker recovery assumptions
 still require native qualification before the package can be executed.
 
 The private package retains original evidence hashes and candidate source hashes.
+It now also references a built component library and a separate standalone native
+bridge fixture. The component has no automatic SDK module entry and was not
+installed or loaded into BILLmanager. Static checks found its strong imported
+symbols and direct dependencies in the manager's mapped libraries; this does not
+establish their global lookup scope during future SDK module startup.
 Its module-binary and private-issuer entries remain absent, with explicit blockers;
 it cannot be admitted as an install packet. It includes the two planned lifecycle
 phases, the recovery reservation, exact QA-table names and prohibited operations.
@@ -114,12 +119,16 @@ with local filesystem/refusal tests and a syntax-only check of the final source
 bytes. Python authority/case file issuance is also implemented and locally tested:
 it uses distinct root approvals, actual image bytes and durable revocation fences.
 It does not issue an AdmittedRun, load a module or resolve a case. The actual Linux
-root factory and issuer have not run. Next work is an actual candidate build,
-native factory/issuer qualification, the full admitted-run controller and exact
-owned file preimages. There is no placeholder module hash or
+root factory now passes a standalone owned-process fixture using real kernel/image
+facts and fictional registry/connection/barrier originals. No vendor SDK library
+or native case ran in that fixture. The Python issuer remains unqualified; no
+Python 3 interpreter existed at the checked standard/previously proposed source
+paths, and no runtime was installed. Next work is the guarded SDK bootstrap and
+complete candidate, issuer/controller runtime qualification, the full admitted-run
+controller and exact owned file preimages. There is no placeholder module hash or
 usable install capability.
 
-The private issuer, installed-SDK object compilation/linking, actual independent read channel,
+The private issuer, integrated SDK startup/linker scope, actual independent read channel,
 supervision and exact retirement remain separate implementation prerequisites.
 A maintenance decision does not make any of them qualified. The later manual
 payment packet needs its own fresh resources and separately reviewed lifecycle;
