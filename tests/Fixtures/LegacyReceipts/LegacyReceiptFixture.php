@@ -16,4 +16,36 @@ final class LegacyReceiptFixture
                 'validation_ref' => 'validation-one', 'validator_sha256' => str_repeat('c', 64), 'credential_version' => 'credential-one', 'commit_binding_ref' => 'unproven-commit-reference'],
         ], ...$rootOverrides]);
     }
+
+    public static function keyPair(int $bits = 3072): array
+    {
+        $key = openssl_pkey_new(['private_key_bits' => $bits, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
+        if (!$key || !openssl_pkey_export($key, $private)) {
+            throw new \RuntimeException('Fictional in-memory key generation failed.');
+        }
+
+        return ['private_pem' => $private, 'public_pem' => openssl_pkey_get_details($key)['key']];
+    }
+
+    public static function signature(string $payload, array $keyPair): string
+    {
+        if (!openssl_sign($payload, $signature, $keyPair['private_pem'], OPENSSL_ALGO_SHA256)) {
+            throw new \RuntimeException('Fictional signature generation failed.');
+        }
+
+        return CanonicalPolicy::bytes(['schema_version' => 1, 'key_id' => 'fixture-key', 'algorithm' => 'rsa-sha256', 'signature_b64' => base64_encode($signature)]);
+    }
+
+    public static function trust(array $keyPair, array $rootOverrides = []): array
+    {
+        return [...[
+            'schema_version' => 1, 'purpose' => 'legacy-receipt-trust',
+            'keys' => ['fixture-key' => ['issuer' => 'fictional-source', 'public_key' => $keyPair['public_pem'],
+                'purposes' => ['legacy-payment-observation'], 'sources' => [[
+                    'source_instance' => 'fictional-source', 'merchant_binding' => 'merchant-a',
+                    'effect_kinds' => ['capture', 'refund', 'reversal', 'chargeback', 'manual_settlement', 'manual_unsettlement', 'manual_restore'],
+                ]]]],
+            'revoked_keys' => [], 'revoked_nonces' => [], 'retained_byte_limit' => 1048576, 'retained_observation_limit' => 100,
+        ], ...$rootOverrides];
+    }
 }
