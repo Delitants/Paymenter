@@ -76,6 +76,38 @@ Python's standard library when this directory is on the import path. Tests cover
 fresh interpreter startup from the harness directory as well as actual local
 pipe output. No native process is started or signalled by these modules.
 
+The separate `owned_process.py` transport starts and supervises an explicitly
+supplied direct child. It is compatible with source Python 2.7 and performs no
+I/O at import. Its trusted single-threaded caller must pin arguments/environment,
+provide execution authority and durably retain the returned original bytes.
+It bounds stdin, both output streams and elapsed time, and checks actual Linux
+boot/PID/start/PPID/session before signalling only its own unreaped child. Unknown
+identity is held; process groups, descendants and manager processes are never
+signal targets. Local macOS pipe tests do not qualify Linux identity checks.
+The reserved `Operator` does not yet call this transport.
+
+`native/committed_reader.cpp` is a standalone source-native C API collector,
+compiled separately from the SDK module and without separately compiling its
+amalgamated `authority_bridge.cpp`. It requires exact reviewed compile-time
+`PAYMENTER_QA_CREDENTIAL_FILE`, `PAYMENTER_QA_DATABASE` and `PAYMENTER_QA_SOCKET`
+strings. Its only argument is the protected operation directory; no SQL, remote
+host, database or credential override comes from a request. It reads the existing
+root-private password-only client file itself, refusing includes/extra options,
+and never exports that value or loads client defaults. Local sockets only,
+disabled reconnect/local infile, fixed per-I/O timeouts and the outer owned-child
+supervisor bound the channel. The [reader protocol](native/reader_protocol.md)
+defines exclusive permits, originals and failure precedence.
+
+`native/reader_core.hpp` enforces single use, session-variable and C API
+server-status checks, distinct writer/previous-reader identities, two InnoDB QA
+tables and one fixed UNION ALL statement for the matching business/journal pair.
+One statement avoids a misleading split caused by separate autocommit SELECTs
+straddling a commit. Pair, absent and split observations remain observations,
+never acceptance. Table-engine checks do not establish complete schema/resource
+custody. Native payment/subaccount tables have no read interface here. Protected
+read permits are separate from `AdmittedRun` and do not authorize module loading,
+DDL, business writes, barrier release, case sequencing or retirement.
+
 References are canonical absolute POSIX paths with exact byte length and SHA256.
 Pure parsing does not establish filesystem custody, source identity or original
 actor authorization. Those checks belong to the future native issuer. A manual
@@ -190,8 +222,9 @@ failed attempts remain private.
 The issuer writes under a synchronized revocation fence and retains failed or
 partial originals. Successful publication returns a file receipt, never native
 acceptance or installation permission. Its explicit approvals are not generated
-from preparation profiles. The full admitted-run controller, independent reader,
-case resolution and exact retirement remain unavailable. Issuer tests use actual
+from preparation profiles. The full admitted-run controller, integration of the
+standalone reader with original writer/case facts, case resolution and exact
+retirement remain unavailable. Issuer tests use actual
 fixture files and image hashes with authored boot/process facts; no source issuer
 or process-check acceptance is claimed for the Python backend. Python 3 was absent
 at the standard and previously proposed source paths checked, so the source path
@@ -205,8 +238,17 @@ The SDK build uses `cache_probe.cpp`, `authority_bridge.cpp`, `bootstrap.cpp` an
 `module_entry.cpp`, with the separately reviewed compile-time directory and
 installed vendor ABI/link settings. The standalone publisher is a distinct binary;
 never link it into the SDK module. See the protected protocol for exact native
-approval formats. Neither backend is the full admitted-run controller: independent
-DB observations, sequencing/resolution, retirement and SDK startup remain pending.
+approval formats. Neither backend is the full admitted-run controller: framework
+QA-row observations, sequencing/resolution, retirement and SDK startup remain pending.
+
+The standalone source reader separately passed two fresh local-socket sessions,
+actual READ COMMITTED/autocommit/no-open-transaction checks and permit replay
+refusal. It issued only metadata SELECTs and session settings, with no QA/customer
+row reads, DDL or business writes. The owned transport passed source Python 2.7
+stream/exit capture, bounded timeout/overflow, stdin/EOF and no-child spawn refusal.
+The initial credential-spacing refusal remains retained; its syntax fix has a
+regression test and qualified in a fresh reader-only source operation. These
+results do not establish framework transaction coupling or complete Task 3.
 
 The complete implementation remains tracked in
 [the source qualification plan](../../../docs/superpowers/plans/2026-10-18-source-payment-native-qualification.md).

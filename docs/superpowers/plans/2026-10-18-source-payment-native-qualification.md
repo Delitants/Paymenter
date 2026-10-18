@@ -10,7 +10,7 @@
 
 **Spec:** [Native legacy payment journal and Paymenter adapter](../specs/2026-10-17-legacy-payment-journal-design.md), especially Source recording and commit boundary and Native acceptance and delivery increments. The approved continuation is source qualification; target posting remains a later increment.
 
-**Status:** Task 1's generic preparation contracts and Task 2's generic framework probe are implemented and locally tested. Task 3 now also includes a guarded opt-in SDK bootstrap and standalone native authority/case publisher; it remains incomplete. The complete SDK candidate builds with the installed ABI/settings and passes static symbol/dependency availability checks against the running manager's mapped libraries. A fresh standalone Linux/root fixture passes native publication, actual target/image binding, bridge consumption, fork refusal, revocation and replay refusal with fictional records and no SDK/SQL. No library was installed or loaded into BILLmanager and no native F/M case ran. The full admitted-run controller, actual independent reader, live case sequencing/supervision, retirement and acceptance derivation remain unimplemented. Static availability and standalone native control execution do not qualify SDK startup, global linker scope or transaction coupling. The earlier diagnostic `payment.info` call returned `missed`; neither the exact missing object nor a usable payment lookup was established.
+**Status:** Task 1's generic preparation contracts and Task 2's generic framework probe are implemented and locally tested. Task 3 includes a guarded opt-in SDK bootstrap, standalone native authority/case publisher, independent native read-only collector and bounded direct-child transport; it remains incomplete. The complete SDK candidate builds with the installed ABI/settings and passes static symbol/dependency availability checks against the running manager's mapped libraries. A fresh standalone Linux/root fixture passes native publication, actual target/image binding, bridge consumption, fork refusal, revocation and replay refusal with fictional records and no SDK/SQL. The standalone reader separately verified two fresh source local-socket connections, actual READ COMMITTED/autocommit/no-open-transaction state and replay refusal; no QA/customer rows were read. Source Python 2.7 direct-child tests passed original stream/exit capture, timeout, overflow, stdin/EOF and no-child spawn refusal. No library was installed or loaded into BILLmanager and no native F/M case ran. The full admitted-run controller, original-writer binding, live QA-row observation/case sequencing, retirement and acceptance derivation remain unfinished. Static availability and standalone native execution do not qualify SDK startup, global linker scope or transaction coupling. The earlier diagnostic `payment.info` call returned `missed`; neither the exact missing object nor a usable payment lookup was established.
 
 ## Global constraints
 
@@ -24,11 +24,13 @@ startup/recovery acceptance is claimed.
 
 Maintenance preparation progress: a private installation/rollback package now
 binds original evidence and actual guarded SDK candidate/native-publisher binaries,
-but remains non-admissible because the full admitted-run controller, independent
-reader and exact retirement are unfinished and SDK startup/recovery is unqualified.
+but remains non-admissible because the full admitted-run controller, original
+writer/QA observation integration and exact retirement are unfinished and SDK
+startup/recovery is unqualified.
 The native publisher/bridge path passed in a standalone source process outside
 BILLmanager; the complete candidate has not been installed or loaded. No
-manager/SQL call or restart ran. The restart sequence must independently observe the old
+manager call or restart ran. The separate reader ran metadata-only SELECTs and
+session settings, with no business writes or DDL. The restart sequence must independently observe the old
 PID/start identity gone and the replacement healthy; it cannot infer completion
 from `exit` or hide the vendor restart helper's repeated internal requests.
 
@@ -65,7 +67,10 @@ Create `tools/legacy-payments/native-qualification/`:
 | `native/control_issuer.cpp` | Standalone source-native control publisher; shares protected bridge helpers by amalgamation, with no Python-runtime requirement. |
 | `native/bootstrap.*`, `native/module_entry.cpp` | Opt-in fixed-directory SDK entry and disabled-until-complete registration gate. |
 | `native/manual_probe.cpp` | Exact owned-record guard and after-event on the admitted original native manual-payment action. |
-| `observer.py` | Independent local-socket committed observations; no mutation interface. |
+| `observer.py` | Supplied observation decoder and reserved live interface. |
+| `native/committed_reader.cpp`, `native/reader_core.hpp` | Standalone fixed local-socket C API channel and single-statement QA reader; no mutation interface. |
+| `native/reader_protocol.md` | Protected one-shot read approvals, retained originals and failure precedence. |
+| `owned_process.py` | Bounded direct-child pipe transport and exact owned-child retirement; no issuer/case sequencing. |
 | `execution.py` | Reserved operator and local capture/identity checks; live supervision, sequencing, retention and retirement remain pending. |
 | `tests/test_*.py` | Offline refusal, parser, state-machine and operation-plan tests. |
 | `README.md` | Build/operation prerequisites, acceptance boundaries and rollback instructions. |
