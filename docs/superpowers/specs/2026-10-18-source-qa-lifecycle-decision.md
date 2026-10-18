@@ -146,3 +146,30 @@ stays blocked. Leaving
 an expired module installed, external event handlers, or a successful synthetic
 suite cannot substitute for the required native transaction and retirement
 evidence.
+
+## Current executable-layout inspection
+
+Fresh static inspection of the current SDK candidate and four standalone tools
+found every strong imported symbol in the pinned provider sets. The candidate
+exports its SDK entry; the program artifacts have no RPATH/RUNPATH. The proposed
+owned library and XML registration paths are absent, with source-only originals
+retained. The observed manager PID/start/boot remained unchanged. These are
+preparation findings; no manager request, credential-content read, actual SQL,
+module installation/loading or restart ran in this inspection.
+
+The installed vendor executable layout exposes an admission blocker that the
+standalone single-link peers did not exercise. The manager's executable is a
+root-owned hard-linked wrapper, and the CLI's logical pathname resolves to that
+wrapper. The current native image guard requires a single link, and the direct
+child launcher refuses an executable leaf alias. Static import availability
+therefore does not make the maintenance packet installable.
+
+A bounded compatibility design is prepared for review: preserve the vendor files
+and logical invocation name, retain and recheck both executable alias and target
+identities, execute a pinned target descriptor, and bind the existing executable
+link count. Private approvals/controls keep their single-link and no-alias rules.
+No such guard change has been implemented or qualified yet. Corrected artifacts,
+including the older standalone authority publisher, will need fresh tests,
+source compilation and static inspection before a maintenance execution request.
+Startup/global lookup scope, actor/worker behavior, F1-F5, actual table lifecycle
+and retirement remain runtime acceptance requirements.
