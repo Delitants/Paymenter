@@ -1,8 +1,8 @@
 # Source payment qualification contracts
 
 This directory contains **preparation contracts and generic probe code only**.
-It has no private native issuer, automatic module entry, observer, executor or
-acceptance summarizer. Source installation and native acceptance remain blocked;
+It has no private native issuer, automatic module entry, live observer/executor
+or acceptance summarizer. Source installation and native acceptance remain blocked;
 no shipped Python command installs a module or changes a payment.
 
 ```sh
@@ -41,6 +41,28 @@ framework transactions, native manual credit, provider validation or posting.
   establish presence only. They grant no invocation, hook, settlement or commit
   authority. A wildcard catalog entry is never permission to register a wildcard
   hook. Protected custody and source identity remain separate issuer obligations.
+- `observer.decode_observation` checks a supplied framework-only document against
+  supplied expected runtime, boot, request, writer, facts and time-window data.
+  It rejects a writer/read connection collision, reused reader IDs, claimed
+  dirty/repeatable reads, an active transaction, and stale or mismatched data.
+  Frozen QA rows preserve pair, absent and split outcomes for later analysis.
+  Native payment/subaccount rows are unsupported. The decoder does not read the
+  database or prove the supplied isolation, timing, identity or original custody.
+- `execution.BoundedCollector` retains bounded stdout/stderr bytes, requires
+  both EOFs, exit zero, no stderr and no declared deadline expiry before decoding
+  a bound case receipt. Malformed, lost, oversized or partial output is terminal;
+  its retained bounded prefix remains available. This is an in-memory capture
+  check, not process supervision or durable evidence storage. Its 1 MiB combined
+  per-capture limit does not establish the aggregate operation budget.
+- `execution.same_process` compares supplied run/boot/PID/start/role metadata.
+  It performs no OS lookup and grants no signalling authority. `Operator.execute`
+  and `CommittedObserver.read` always refuse with `native-issuer-unavailable`,
+  including for objects made by bypassing the reserved capability constructor.
+
+The execution module is named `execution.py` because `operator.py` would shadow
+Python's standard library when this directory is on the import path. Tests cover
+fresh interpreter startup from the harness directory as well as actual local
+pipe output. No native process is started or signalled by these modules.
 
 References are canonical absolute POSIX paths with exact byte length and SHA256.
 Pure parsing does not establish filesystem custody, source identity or original

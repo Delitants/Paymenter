@@ -10,7 +10,7 @@
 
 **Spec:** [Native legacy payment journal and Paymenter adapter](../specs/2026-10-17-legacy-payment-journal-design.md), especially Source recording and commit boundary and Native acceptance and delivery increments. The approved continuation is source qualification; target posting remains a later increment.
 
-**Status:** Task 1's generic preparation contracts and Task 2's generic framework probe are implemented and locally tested. The protected native issuer/bridge, observer, executor and acceptance derivation remain unimplemented. No source compilation/loading, QA table/account/payment creation or native acceptance case has run. The probe has no automatic module entry. Local compilation uses authored SDK doubles and does not qualify the installed vendor SDK or ABI. Retained installed declarations support a candidate, not runtime acceptance. The earlier diagnostic `payment.info` call returned `missed`; neither the exact missing object nor a usable payment lookup was established.
+**Status:** Task 1's generic preparation contracts and Task 2's generic framework probe are implemented and locally tested. Task 3 has local observation decoding, bounded byte capture and supplied-process-identity comparison only; it remains incomplete. The protected native issuer/bridge, live observer, process supervisor, resource retirement and acceptance derivation remain unimplemented. No source compilation/loading, QA table/account/payment creation or native acceptance case has run. The probe has no automatic module entry. Local compilation uses authored SDK doubles and does not qualify the installed vendor SDK or ABI. Retained installed declarations support a candidate, not runtime acceptance. The earlier diagnostic `payment.info` call returned `missed`; neither the exact missing object nor a usable payment lookup was established.
 
 ## Global constraints
 
@@ -43,11 +43,11 @@ Create `tools/legacy-payments/native-qualification/`:
 | `native/cache_probe.cpp` | Own framework action and after-event; two fictional tables only. |
 | `native/manual_probe.cpp` | Exact owned-record guard and after-event on the admitted original native manual-payment action. |
 | `observer.py` | Independent local-socket committed observations; no mutation interface. |
-| `operator.py` | Bounded process supervision, case sequencing, evidence retention and exact retirement. |
+| `execution.py` | Reserved operator and local capture/identity checks; live supervision, sequencing, retention and retirement remain pending. |
 | `tests/test_*.py` | Offline refusal, parser, state-machine and operation-plan tests. |
 | `README.md` | Build/operation prerequisites, acceptance boundaries and rollback instructions. |
 
-All Python modules are importable by adding this directory to the test path; importing them performs no I/O. Native headers and libraries remain private vendor dependencies, never copied into the fork.
+All Python modules are importable by adding this directory to the test path; importing them performs no I/O. The planned `operator.py` is named `execution.py` to avoid shadowing Python's standard library; a fresh-interpreter regression test reproduced that failure before the rename. Native headers and libraries remain private vendor dependencies, never copied into the fork.
 
 `parse_profile(raw: bytes) -> Profile` accepts at most 65,536 bytes, rejects duplicate keys, unknown fields and floats. Define frozen dataclasses: `EvidenceRef(path: str, sha256: str, bytes: int)`; `Profile(schema_version: int, mode: str, run_id: str, runtime: EvidenceRef, build: EvidenceRef, registry: EvidenceRef, authority: EvidenceRef, expires_at: str)`; and `Decision(ready: bool, blockers: tuple[str,...], framework_atomicity: bool, manual_atomicity: bool, provider_validation: bool, financial_posting_ready: bool)`. Version is exactly 1, mode is `framework` or `manual`, run ID is 64 lowercase-hex characters and expiry is canonical UTC `YYYY-MM-DDTHH:MM:SSZ`. Fixed limits below are compiled policy, not configurable increases. References bind original bytes and protected file identity. No executable command, SQL, callback URL, credentials or permissive override is accepted from a profile.
 
@@ -105,7 +105,13 @@ been executed.
 
 ## Task 3: Independent observation, supervision and recovery
 
-**Files:** `observer.py`, `operator.py`, `tests/test_observer.py`, `tests/test_operator.py`.
+**Files:** `observer.py`, `execution.py`, `tests/test_observer.py`, `tests/test_operator.py`.
+
+Partial preparation: the decoder checks supplied framework observation documents;
+it uses frozen typed QA rows instead of mutable dictionaries. Manual rows refuse
+until their original schema is qualified. The collector checks supplied pipe,
+exit and deadline facts. Neither establishes native provenance or performs live
+reads, supervision or cleanup. The task's native requirements remain unchecked.
 
 **Consumes:** The admitted operation plan and fixed native case protocol. **Produces:** Root-private original evidence, exact process/resource identities, `RunReport`, and a separately derived `Qualification`.
 
