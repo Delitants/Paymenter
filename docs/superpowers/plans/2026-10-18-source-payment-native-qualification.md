@@ -10,7 +10,7 @@
 
 **Spec:** [Native legacy payment journal and Paymenter adapter](../specs/2026-10-17-legacy-payment-journal-design.md), especially Source recording and commit boundary and Native acceptance and delivery increments. The approved continuation is source qualification; target posting remains a later increment.
 
-**Status:** Task 1's generic preparation contracts are implemented and locally tested. The native issuer, probe, observer, executor and acceptance derivation remain unimplemented. No source compilation/loading, QA table/account/payment creation or native acceptance case has run. Retained installed declarations support a candidate, not runtime acceptance. The earlier diagnostic `payment.info` call returned `missed`; neither the exact missing object nor a usable payment lookup was established.
+**Status:** Task 1's generic preparation contracts and Task 2's generic framework probe are implemented and locally tested. The protected native issuer/bridge, observer, executor and acceptance derivation remain unimplemented. No source compilation/loading, QA table/account/payment creation or native acceptance case has run. The probe has no automatic module entry. Local compilation uses authored SDK doubles and does not qualify the installed vendor SDK or ABI. Retained installed declarations support a candidate, not runtime acceptance. The earlier diagnostic `payment.info` call returned `missed`; neither the exact missing object nor a usable payment lookup was established.
 
 ## Global constraints
 
@@ -91,15 +91,17 @@ Source case ceiling: 30 seconds each and 600 seconds per packet; framework-only 
 Prerequisite progress: the pure `native_metadata.py` parser and its refusal tests
 retain exact catalog action names and original-byte fingerprints. Action presence
 is distinct from human-readable `mgrctl -i` descriptions, supported invocation,
-safe loading/unloading and transaction acceptance. The native probe and protected
-issuer remain unimplemented; no native cases have been executed.
+safe loading/unloading and transaction acceptance. The generic probe adapter is
+locally tested against authored SDK doubles; its protected native issuer and
+actual vendor compilation/registration remain unqualified. No native cases have
+been executed.
 
-- [ ] Write failing operation/protocol tests for wrong run/case, nested/reused context, explicit transaction calls, independent connection/cache, DDL inside a request, unexpected table names and a commit claim based on `Final`.
-- [ ] Implement `Execute(isp_api::Session&) const` and `AfterExecute(isp_api::Session&) const` using the supplied `db->Prepare(...).Execute(...)`. Pin required SDK access/session/build declarations before native compilation; unknown access or registration semantics block the operation.
-- [ ] Define the two QA tables outside request handling: both keyed by `(run_id, case_id)`; business row contains exact `DECIMAL(18,4)` amount, journal row contains that business key and immutable facts hash. No foreign key or trigger reaches a native business table. Neither table is a financial journal accepted by Paymenter.
-- [ ] Implement bounded fixed phases `normal`, `throw_after_business`, `throw_after_journal`, `observe_before_return`. Only this own action may wait at the 5-second observer barrier. Throwing and barrier code stay in the QA module.
-- [ ] Verify original/current cache connection identity for diagnostics, but accept F1–F5 only from independently observed business/journal outcomes. Local protocol tests and compilation do not qualify native execution.
-- [ ] Run the complete new harness tests; expect zero failures/skips, then commit `Add test-only framework cache qualification probe`.
+- [x] Write failing operation/protocol tests for wrong run/case, nested/reused context, explicit transaction calls, independent connection/cache, DDL inside a request, unexpected table names and a commit claim based on `Final`.
+- [x] Implement `Execute(isp_api::Session&) const` and `AfterExecute(isp_api::Session&) const` using the supplied `db->Prepare(...).Execute(...)`. Pin required SDK access/session/build declarations before native compilation; unknown access or registration semantics block the operation. The explicit registration factory requires a private authority bridge; it has no automatic module entry.
+- [x] Define the two QA tables outside request handling: both keyed by `(run_id, case_id)`; business row contains exact `DECIMAL(18,4)` amount, journal row contains that business key and immutable facts hash. No foreign key or trigger reaches a native business table. Neither table is a financial journal accepted by Paymenter.
+- [x] Implement bounded fixed phases `normal`, `throw_after_business`, `throw_after_journal`, `observe_before_return`. Only this own action may wait at the 5-second observer barrier. Throwing and barrier code stay in the QA module.
+- [x] Verify original/current cache connection object identity for diagnostics, but accept F1–F5 only from independently observed business/journal outcomes. Local protocol tests and compilation do not qualify native execution or server-connection identity.
+- [x] Run the complete new harness tests; expect zero failures/skips, then commit `Add test-only framework cache qualification probe`.
 
 ## Task 3: Independent observation, supervision and recovery
 
