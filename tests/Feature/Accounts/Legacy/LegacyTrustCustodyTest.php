@@ -9,6 +9,9 @@ use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use Tests\Fixtures\LegacyReceipts\LegacyReceiptFixture as Fixture;
+use Tests\Fixtures\LegacyReceipts\ProofReadBarrier;
+
+require_once dirname(__DIR__, 3) . '/Fixtures/LegacyReceipts/ProofReadBarrier.php';
 
 #[Group('opening-native')]
 final class LegacyTrustCustodyTest extends TestCase
@@ -66,42 +69,33 @@ final class LegacyTrustCustodyTest extends TestCase
         });
     }
 
-    public function test_growth_during_a_real_descriptor_read_is_denied(): void
+    public function test_growth_or_replacement_after_held_metadata_is_denied(): void
     {
-        Fixture::withProtectedTrust(Fixture::trust(Fixture::keyPair()), function ($path, $gid) {
-            file_put_contents($path, str_repeat('x', 67108864));
-            $pid = pcntl_fork();
-            self::assertGreaterThanOrEqual(0, $pid);
-            if ($pid === 0) {
-                try {
-                    RuntimeProofFile::read($path, $gid, 67108864);
-                    exit(0);
-                } catch (RuntimeException) {
-                    exit(17);
-                }
-            }
-            $stopped = false;
-            $deadline = hrtime(true) + 5000000000;
-            try {
-                while (hrtime(true) < $deadline && is_dir('/proc/' . $pid . '/fd')) {
-                    foreach (glob('/proc/' . $pid . '/fd/*') as $fd) {
-                        if (@readlink($fd) === $path) {
-                            posix_kill($pid, SIGSTOP);
-                            pcntl_waitpid($pid, $status, WUNTRACED);
-                            $stopped = pcntl_wifstopped($status);
-                            break 2;
-                        }
+        foreach (['grow', 'replace'] as $mutation) {
+            Fixture::withProtectedTrust(Fixture::trust(Fixture::keyPair()), function ($path, $gid) use ($mutation) {
+                file_put_contents($path, 'fictional evidence');
+                $triggered = false;
+                ProofReadBarrier::$path = $path;
+                ProofReadBarrier::$action = function () use ($path, $gid, $mutation, &$triggered) {
+                    $triggered = true;
+                    if ($mutation === 'grow') {
+                        file_put_contents($path, 'x', FILE_APPEND);
+                    } else {
+                        rename($path, $path . '.old');
+                        copy($path . '.old', $path);
+                        chmod($path, 0640);
+                        chgrp($path, $gid);
                     }
-                    usleep(100);
+                };
+                try {
+                    $this->denied(fn () => RuntimeProofFile::read($path, $gid, 262144));
+                    self::assertTrue($triggered, 'Mutation must occur after metadata admission on the real descriptor.');
+                } finally {
+                    ProofReadBarrier::$action = null;
+                    ProofReadBarrier::$path = null;
                 }
-                self::assertTrue($stopped, 'Owned real reader must be stopped with its descriptor open.');
-                file_put_contents($path, 'y', FILE_APPEND);
-            } finally {
-                posix_kill($pid, SIGCONT);
-                pcntl_waitpid($pid, $status);
-            }
-            self::assertSame(17, pcntl_wexitstatus($status));
-        });
+            });
+        }
     }
 
     private function denied(\Closure $call): void
