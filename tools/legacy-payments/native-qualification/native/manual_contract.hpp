@@ -36,6 +36,10 @@ struct Snapshot {
     bool linked=false;
     bool users_disabled=false,direct_isolated=false,queue_isolated=false,provider_isolated=false;
 };
+struct FirstResult {
+    Snapshot snapshot;
+    std::string originals_hash;
+};
 inline void require(bool v,const char* code) {if(!v)throw ProbeError(code);}
 inline bool digest(const std::string& value) {
     return value.size()==64 && value.find_first_not_of("0123456789abcdef")==std::string::npos;
@@ -112,8 +116,12 @@ public:
     virtual bool current(const Grant&) const=0;
     // Immutable admitted membership only; no I/O, SQL or callback reentry.
     virtual bool owns(int payment) const noexcept=0;
+    // Same-run M4 first result from protected independent committed originals.
+    // A digest/JSON claim alone cannot implement or qualify this dependency.
+    virtual FirstResult first_result(const Grant&) const=0;
     // Bounded private diagnostics; never a transaction/acceptance claim.
     virtual void record(const Request&,const Grant&,Checkpoint) const=0;
+    virtual void record_connection(const Request&,const Grant&,const std::string&) const=0;
 };
 class NativeAccess {
 public:

@@ -6,7 +6,7 @@ thread_local ManualScope* ManualScope::active_=nullptr;
 ManualScope::ManualScope(const Request& r,const Grant& g,const void* cache,const void* connection):
     request_(r),grant_(g),cache_(cache),connection_(connection),process_(getpid()),
     worker_(std::this_thread::get_id()),deadline_(Clock::now()+std::chrono::seconds(30)) {
-    require(active_==nullptr,"manual-nested-context");
+    if(active_) {active_->invalidate();throw ProbeError("manual-nested-context");}
     validate(r,g,r.run_id);require(cache && connection,"manual-cache");
     active_=this;
 }
@@ -25,10 +25,14 @@ void ManualScope::owner() const {
             "manual-context-owner");
 }
 void ManualScope::check(const Request& r,const void* cache,const void* connection) const {
-    owner();require(same_request(r,request_),"manual-context-binding");
+    owner();require(!invalid_,"manual-poisoned-context");
+    require(same_request(r,request_),"manual-context-binding");
     validate(r,grant_,request_.run_id);
     require(Clock::now()<deadline_,"manual-case-deadline");
     require(cache==cache_ && connection==connection_,"manual-cache-connection");
+}
+void ManualScope::invalidate() noexcept {
+    if(process_==getpid() && worker_==std::this_thread::get_id())invalid_=true;
 }
 void ManualScope::enter_native() {
     check(request_,cache_,connection_);require(!entered_ && !used_,"manual-native-reentry");
@@ -36,7 +40,7 @@ void ManualScope::enter_native() {
 }
 CallbackToken ManualScope::consume(int old_status,int new_status,int payment,
                                   const void* cache,const void* connection) {
-    owner();require(!used_,"manual-reused-callback");used_=true;
+    owner();if(used_) {invalidate();throw ProbeError("manual-reused-callback");}used_=true;
     // Reservation precedes all caller diagnostics, reads and intentional throws.
     check(request_,cache,connection);require(entered_,"manual-before-native");
     require(payment==parse_id(request_.payment_id),"manual-callback-payment");

@@ -23,7 +23,7 @@ class ManualScope {
     const int process_;
     const std::thread::id worker_;
     const Clock::time_point deadline_;
-    bool entered_=false,used_=false;
+    bool entered_=false,used_=false,invalid_=false;
     void owner() const;
 public:
     ManualScope(const Request&,const Grant&,const void* cache,const void* connection);
@@ -33,6 +33,7 @@ public:
     static ManualScope* current() noexcept;
     void check(const Request&,const void* cache,const void* connection) const;
     void enter_native();
+    void invalidate() noexcept;
     CallbackToken consume(int old_status,int new_status,int payment,const void* cache,const void* connection);
 };
 } }
