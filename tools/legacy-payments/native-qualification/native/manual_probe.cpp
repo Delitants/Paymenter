@@ -6,6 +6,7 @@
 #include <mgr/mgrdb_struct.h>
 #include <mgr/mgrerr.h>
 #include <atomic>
+#include <exception>
 #include <mutex>
 #include <unistd.h>
 extern std::shared_ptr<mgr_db::Cache> db;
@@ -71,6 +72,7 @@ struct Frame {
     mgr_db::Connection* const connection;
     std::string server;
     Snapshot before,observed;
+    std::exception_ptr callback_failure;
     bool seen;
 };
 thread_local Frame* frame=nullptr;
@@ -142,7 +144,7 @@ public:
         }
         require(bool(db),"manual-cache");auto cache=db;auto connection=cache->GetConnection();dispatch.check();
         ManualScope scope(r,g,cache.get(),connection);
-        Frame f{this,session,dispatch,scope,r,g,session.auth.level(),cache,connection,"",{},{},false};
+        Frame f{this,session,dispatch,scope,r,g,session.auth.level(),cache,connection,"",{},{},{},false};
         FrameGuard frame_guard(f);check(f);
         f.server=connection_id(f);authority_->record_connection(r,g,f.server);check(f);
         f.before=inspect(f);
@@ -157,6 +159,10 @@ public:
         scope.enter_native();
         // This overload explicitly takes the original supplied Session/Authen.
         auto result=isp_api::InternalCall(session,"payment.setpaid","elid="+r.payment_id);
+        // A native exception bypasses this line and remains unchanged. If the
+        // handler swallowed our callback failure, preserve that exact failure
+        // instead of releasing an apparent success from this qualification.
+        if(f.callback_failure)std::rethrow_exception(f.callback_failure);
         check(f);require(f.seen || second,"manual-missing-callback");
         auto after=inspect(f);
         require(same_snapshot(after,f.seen?f.observed:f.before),"manual-after-native");
@@ -186,6 +192,18 @@ public:
                                                 f.request.case_id,f.grant.fixture.facts_hash);
         check(f);diagnostic(f,Checkpoint::JournalReturned);
         if(gate_phase(f)==Phase::AfterJournal)throw ProbeError("manual-injected-after-journal");
+    }
+    void callback(int old_status,int new_status,int payment) {
+        try {
+            try {changed(old_status,new_status,payment);}
+            catch(const ProbeError& e) {throw mgr_err::Error(e.what());}
+        } catch(...) {
+            // Capture only on the owning lexical frame. A foreign worker has
+            // no frame and never receives the owner's Session/Cache pointer.
+            if(frame && frame->probe==this && ManualScope::current()==&frame->scope &&
+               !frame->callback_failure)frame->callback_failure=std::current_exception();
+            throw;
+        }
     }
 private:
     Phase gate_phase(Frame& f) const {check(f);return f.grant.phase;}
@@ -217,7 +235,7 @@ void RegisterManualProbe(std::shared_ptr<const manual::Authority> authority,
         // Store has no removal API. Its owning closure retains held state even
         // if a later action registration fails; recovery must retire the process.
         callback::Store<event::PaymentStatusChanged>().Add([probe](int old_s,int new_s,int id) {
-            try {probe->changed(old_s,new_s,id);}catch(const ProbeError& e) {throw mgr_err::Error(e.what());}
+            probe->callback(old_s,new_s,id);
         });
         new OwnAction(probe);
         expected=Registration::Registering;

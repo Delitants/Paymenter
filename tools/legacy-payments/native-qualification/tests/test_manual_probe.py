@@ -22,6 +22,9 @@ SCENARIOS = (
     'missing-authority', 'missing-access', 'missing-action', 'duplicate-registration',
     'store-registration-failure', 'action-registration-failure', 'registration-reentry',
     'action-registration-reentry', 'same-thread-after-native-error', 'fork',
+    'swallowed-before', 'swallowed-after', 'swallowed-journal-error',
+    'swallowed-diagnostic-error', 'swallowed-reader-error',
+    'native-error-after-swallowed-callback',
 )
 
 

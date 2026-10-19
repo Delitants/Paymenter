@@ -14,12 +14,14 @@ using namespace paymenter_qa::manual;
 namespace {
 void check(bool v) {if(!v)throw std::runtime_error("test assertion");}
 class NativeFailure:public std::runtime_error {public:NativeFailure():std::runtime_error("original native error") {}};
+class CallbackFailure:public std::runtime_error {public:CallbackFailure():std::runtime_error("original callback dependency error") {}};
 std::string scenario;
 int dispatches=0,unsafe_calls=0,balance=0,inspections=0;
 std::map<int,int> statuses={{101,1},{102,1},{103,1},{104,1}};
 const isp_api::Session* expected_session=nullptr;
 isp_api::Session* mutable_session=nullptr;
 bool short_expiry=false;
+std::string swallowed;
 Fixture fixture() {return {"11","12","13","14","USD","0.0100",{{"101","102","103","104"}},{"21"},std::string(64,'f')};}
 Snapshot snapshot(int id) {
     Snapshot s;s.payment_id=std::to_string(id);s.account_id="11";s.subaccount_id="12";
@@ -42,7 +44,10 @@ struct TestAuthority:Authority {
         return active;
     }
     bool owns(int p)const noexcept override {return p>=101 && p<=104;}
-    void record(const Request&,const Grant&,Checkpoint)const override {++records;}
+    void record(const Request&,const Grant&,Checkpoint stage)const override {
+        ++records;
+        if(scenario=="swallowed-diagnostic-error" && stage==Checkpoint::JournalReturned)throw CallbackFailure();
+    }
     void record_connection(const Request&,const Grant&,const std::string& id)const override {check(id=="71");++records;}
     FirstResult first_result(const Grant&)const override {
         auto s=snapshot(104);s.status=4;s.balance="0.0100";
@@ -72,6 +77,7 @@ std::string invoke(isp_api::Session& s) {
 struct Access:NativeAccess {
     Snapshot inspect(const Fixture&,int id,mgr_db::Cache& cache)override {
         check(&cache==db.get());++inspections;auto s=snapshot(id);
+        if(scenario=="swallowed-reader-error" && inspections==2)throw CallbackFailure();
         if(scenario=="enabled-user")s.users_disabled=false;
         if(scenario=="direct-notifier")s.direct_isolated=false;
         if(scenario=="queue-not-isolated")s.queue_isolated=false;
@@ -113,7 +119,11 @@ Xml InternalCall(const Session& s,const std::string& function,const std::string&
     if(scenario=="native-role-change")mutable_session->auth.role=0;
     if(scenario=="native-revocation")authority->active=false;
     if(scenario=="preliminary-commit")check(ManualScope::current()!=nullptr);
-    if(scenario!="missing-callback")emit(1,statuses[id],id);
+    if(scenario.find("swallowed-")==0 || scenario=="native-error-after-swallowed-callback") {
+        try {emit(1,statuses[id],id);}catch(const std::exception& e){swallowed=e.what();}
+        check(!swallowed.empty());
+        if(scenario=="native-error-after-swallowed-callback")throw NativeFailure();
+    } else if(scenario!="missing-callback")emit(1,statuses[id],id);
     if(scenario=="double-callback")emit(1,4,id);
     return Xml("<doc><native-ok/></doc>");
 }
@@ -154,6 +164,9 @@ int main(int argc,char** argv) {
         isp_api::Session s(own_action());params(s);expected_session=&s;mutable_session=&s;
         if(scenario=="before-journal")params(s,"M2");
         if(scenario=="after-journal")params(s,"M3");
+        if(scenario=="swallowed-before" || scenario=="native-error-after-swallowed-callback")params(s,"M2");
+        if(scenario=="swallowed-after")params(s,"M3");
+        if(scenario=="swallowed-journal-error")mgr_db::on_write()=[]{throw CallbackFailure();};
         if(scenario=="wrong-actor")s.auth.actor="other-admin";
         if(scenario=="wrong-role")s.auth.role=0;
         if(scenario=="wrong-run")s.params["qa_run"]=std::string(64,'c');
@@ -170,13 +183,23 @@ int main(int argc,char** argv) {
         if(scenario=="expiry-during-read")short_expiry=true;
         bool duplicate=scenario.find("duplicate-native-")==0 || scenario=="duplicate-callback-noop" || scenario=="duplicate-baseline-mismatch";
         if(duplicate)params(s,"M4","first");
-        if(scenario=="original-error" || scenario=="same-thread-after-native-error") {
+        if(scenario=="original-error" || scenario=="same-thread-after-native-error" || scenario=="native-error-after-swallowed-callback") {
             bool original=false;try {invoke(s);}catch(const NativeFailure&){original=true;}
             check(original && ManualScope::current()==nullptr && mgr_db::calls().empty());
             if(scenario=="same-thread-after-native-error") {params(s,"M2");check(!invoke(s).empty() && dispatches==2);}
             check(unsafe_calls==0);return 0;
         }
+        if(scenario=="swallowed-reader-error" || scenario=="swallowed-journal-error" || scenario=="swallowed-diagnostic-error") {
+            bool original=false;try {invoke(s);}catch(const CallbackFailure& e){original=std::string(e.what())==swallowed;}
+            check(original && !swallowed.empty() && dispatches==1 && unsafe_calls==0 && ManualScope::current()==nullptr);
+            check(mgr_db::calls().size()==(scenario=="swallowed-reader-error"?0:1));return 0;
+        }
         auto error=invoke(s);
+        if(scenario=="swallowed-before" || scenario=="swallowed-after") {
+            check(!error.empty() && error==swallowed && dispatches==1 && unsafe_calls==0 && ManualScope::current()==nullptr);
+            check(error==(scenario=="swallowed-before"?"manual-injected-before-journal":"manual-injected-after-journal"));
+            check(mgr_db::calls().size()==(scenario=="swallowed-before"?0:1));return 0;
+        }
         if(duplicate) {
             check(error.empty() && mgr_db::calls().size()==1);params(s,"M4","second");
             if(scenario=="duplicate-native-error") {

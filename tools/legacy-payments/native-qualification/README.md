@@ -341,7 +341,10 @@ The callback checks immutable registry membership before I/O. Owned payments
 require the live lexical context, exact actor/worker/process/cache/connection,
 bounded grant, native ownership/amount/currency/linkage and isolation snapshot.
 It reserves the callback attempt before any journal operation or injected error.
-M2/M3 throw before/after the fixed QA journal write; M5 never dispatches. M4's
+M2/M3 throw before/after the fixed QA journal write; M5 never dispatches.
+The owning frame retains the original outward callback exception even if the
+native handler catches it and returns normally. A later exception from the
+native handler itself propagates unchanged. M4's
 second call requires a protected independent committed first result, then retains
 the native error or exact unchanged no-op without adding another journal. A hash
 or supplied JSON document alone cannot establish that first result.

@@ -1,6 +1,6 @@
 # Session-bound native manual-payment qualification design
 
-Status: written amendment approved for offline implementation planning. Product implementation and native execution remain separate review stages. The inner callback replaces the proposed outer epAfter journal in this design; existing economic, provider and handover gates remain.
+Status: written amendment and offline implementation plan approved; generic offline probe implemented and reviewed. Product financial integration and native execution remain separate review stages. The inner callback replaces the proposed outer epAfter journal in this design; existing economic, provider and handover gates remain.
 
 ## Purpose and evidence
 
