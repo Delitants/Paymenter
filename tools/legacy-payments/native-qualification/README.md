@@ -357,7 +357,7 @@ shortcut. Registration is one-shot and process-lifetime-safe: a partial stored
 closure retains disabled state, and reentry holds the registration. The vendor
 Store has no removal API, so process retirement remains necessary.
 
-The live issuer, financial reader/collector and operator remain unavailable.
+The live issuer, admitted financial reader/collector and operator remain unavailable.
 Fictional profiles can describe proposals but cannot issue `AdmittedRun`, execute
 payments or make the framework-only observer accept manual accounting rows.
 Offline tests qualify routing, refusal and lifetime behavior only; they model
@@ -384,3 +384,11 @@ Before native execution, the next concrete operation must qualify all of:
 No source build, load, restart, fixture, financial/provider action, publication
 or billing handover follows from the offline suite. BILLmanager stays billing
 authoritative until a separately approved handover.
+
+The standalone manual financial reader is now implemented for offline tests;
+its [separate protocol](native/manual_financial_reader_protocol.md) documents
+the protected inputs, one-statement observation, exact decimal/link validation
+and failure originals. It is not wired into the SDK, bootstrap or Python live
+observer, and supplies no issuer or NativeAccess factory. Authored C API tests
+and local SQLite query checks provide no native financial, notification or
+provider acceptance. No deployment or billing handover is enabled.

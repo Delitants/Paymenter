@@ -167,7 +167,11 @@ public:
     void create_capture(const std::string& name,const std::string& raw) const {
         guard(name.find("capture.")==0 && name.size()>8,"qa-private-capture-name");publish(name,raw,32768);
     }
-    // Only the fixed retirement archive may exceed the 4 KiB control ceiling.
+    // Fixed standalone observation only; ordinary controls keep their 4 KiB bound.
+    void create_manual_financial_observation(const std::string& raw) const {
+        publish("manual.read.original",raw,65536);
+    }
+    // The retirement archive has a separate fixed-name 64 KiB publication ceiling.
     void create_retirement_archive(const std::string& raw) const {publish("qa.retirement.original",raw,65536);}
 private:
     void publish(const std::string& n,const std::string& raw,size_t maximum) const {
