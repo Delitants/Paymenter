@@ -7,6 +7,9 @@ import unittest
 HERE = Path(__file__).resolve().parent
 NATIVE = HERE.parent / 'native'
 SCENARIOS = (
+    'sdk-error-F2','sdk-error-F3','sdk-error-guard',
+    'native-sdk-action','native-sdk-after','foreign-action','foreign-after',
+    'service-action','service-after',
     'checkpoint-normal','checkpoint-F2','checkpoint-F3','checkpoint-sql-failed',
     'missing-authority', 'normal', 'wrong-run', 'wrong-case', 'wrong-nonce',
     'wrong-actor', 'wrong-role', 'expired', 'unbounded-expiry', 'missing-registry',

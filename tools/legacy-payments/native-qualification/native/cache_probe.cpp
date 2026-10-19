@@ -3,6 +3,7 @@
 #include <api/action.h>
 #include <mgr/mgrdb.h>
 #include <mgr/mgrdb_struct.h>
+#include <mgr/mgrerr.h>
 #include <map>
 #include <mutex>
 #include <set>
@@ -221,13 +222,21 @@ class OwnAction: public isp_api::Action {
     std::shared_ptr<Probe> probe_;
 public:
     explicit OwnAction(std::shared_ptr<Probe> p): Action(ACTION,mgr_access::AccessAdmin),probe_(p) {}
-    void Execute(isp_api::Session& session) const override { probe_->execute(session); }
+    void Execute(isp_api::Session& session) const override {
+        try { probe_->execute(session); }
+        // Only our own failures need the SDK error representation. Native
+        // errors and service/control exceptions must pass through unchanged.
+        catch(const ProbeError& error) { throw mgr_err::Error(error.what()); }
+    }
 };
 class OwnAfter: public isp_api::Event {
     std::shared_ptr<Probe> probe_;
 public:
     explicit OwnAfter(std::shared_ptr<Probe> p): Event(ACTION,"paymenter.qa.cache.after",epAfter),probe_(p) {}
-    void AfterExecute(isp_api::Session& session) const override { probe_->after(session); }
+    void AfterExecute(isp_api::Session& session) const override {
+        try { probe_->after(session); }
+        catch(const ProbeError& error) { throw mgr_err::Error(error.what()); }
+    }
     void Final(isp_api::Session& session) const override { probe_->finish(&session); }
 };
 }

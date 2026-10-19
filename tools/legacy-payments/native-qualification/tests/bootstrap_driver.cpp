@@ -2,6 +2,7 @@
 #include "bootstrap.hpp"
 #include <api/action.h>
 #include <mgr/mgrdb_struct.h>
+#include <mgr/mgrerr.h>
 #include <functional>
 #include <iostream>
 #include <sys/wait.h>
@@ -45,7 +46,7 @@ void invoke(bool accepted) {
     isp_api::Session request(*action);
     request.params={{"qa_run",std::string(64,'a')},{"qa_case","F1"},{"qa_nonce",std::string(64,'b')}};
     bool result=true;
-    try {action->Execute(request);} catch(const ProbeError&) {result=false;}
+    try {action->Execute(request);} catch(const mgr_err::Error&) {result=false;}
     check(result==accepted);
     if (accepted) {
         check(isp_api::test_events().size()==1);
@@ -99,7 +100,7 @@ int main(int argc,char**argv) {
             if(scenario=="refusal-closed")check(!bootstrap.initialize());
             auto action=isp_api::test_actions().back();isp_api::Session request(*action);
             request.params={{"qa_run",std::string(64,'a')},{"qa_case",scenario=="checkpoint-close-after-forward"?"F1":"F5"},{"qa_nonce",std::string(64,'b')}};
-            bool held=false;try{action->Execute(request);}catch(const ProbeError&){held=true;}check(held);
+            bool held=false;try{action->Execute(request);}catch(const mgr_err::Error&){held=true;}check(held);
             check(refusal_calls==(scenario=="refusal-active"?1:0));
             check(checkpoint_calls==(scenario=="checkpoint-close-after-forward"?1:0));
             check(mgr_db::calls().size()==(scenario=="checkpoint-close-after-forward"?1u:0u));return 0;

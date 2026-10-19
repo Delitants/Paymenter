@@ -2,6 +2,7 @@
 #include "cache_probe.hpp"
 #include <api/action.h>
 #include <mgr/mgrdb_struct.h>
+#include <mgr/mgrerr.h>
 #include <chrono>
 #include <functional>
 #include <iostream>
@@ -20,8 +21,15 @@ void check(bool ok) { if (!ok) throw std::runtime_error("test assertion"); }
 void refuses(const std::function<void()>& f) {
     bool refused = false;
     try { f(); } catch (const ProbeError&) { refused = true; }
+    catch (const mgr_err::Error&) { refused = true; }
     check(refused);
 }
+void sdk_error(const std::function<void()>& f,const std::string& code) {
+    bool caught=false;
+    try {f();} catch(const mgr_err::Error& error) {check(error.type()==code);caught=true;}
+    check(caught);
+}
+struct ServiceSignal {};
 class FictionalAuthority: public FrameworkAuthority {
 public:
     std::string case_id = "F1";
@@ -95,7 +103,25 @@ int main(int argc,char** argv) {
             return 0;
         }
         Fixture f;
-        if (test=="checkpoint-normal") {f.execute();f.after();check(f.authority->checkpoints==std::vector<int>({0,1}));}
+        if (test=="sdk-error-F2") {f.select("F2",Mode::ThrowAfterBusiness);sdk_error([&]{f.execute();},"qa-injected-after-business");check(mgr_db::calls().size()==1);}
+        else if (test=="sdk-error-F3") {f.select("F3",Mode::ThrowAfterJournal);f.execute();sdk_error([&]{f.after();},"qa-injected-after-journal");check(mgr_db::calls().size()==2);}
+        else if (test=="sdk-error-guard") {f.request->params["qa_run"]=std::string(64,'d');sdk_error([&]{f.execute();},"qa-request");check(mgr_db::calls().empty());}
+        else if (test=="native-sdk-action" || test=="native-sdk-after") {
+            if(test=="native-sdk-after")f.execute();
+            mgr_db::on_write()=[]{throw mgr_err::Error("authored-native-error");};
+            sdk_error([&]{if(test=="native-sdk-after")f.after();else f.execute();},"authored-native-error");
+        }
+        else if (test=="foreign-action" || test=="foreign-after") {
+            if(test=="foreign-after")f.execute();
+            mgr_db::on_write()=[]{throw std::logic_error("authored-foreign");};
+            bool caught=false;try{if(test=="foreign-after")f.after();else f.execute();}catch(const std::logic_error& e){check(std::string(e.what())=="authored-foreign");caught=true;}check(caught);
+        }
+        else if (test=="service-action" || test=="service-after") {
+            if(test=="service-after")f.execute();
+            mgr_db::on_write()=[]{throw ServiceSignal();};
+            bool caught=false;try{if(test=="service-after")f.after();else f.execute();}catch(const ServiceSignal&){caught=true;}check(caught);
+        }
+        else if (test=="checkpoint-normal") {f.execute();f.after();check(f.authority->checkpoints==std::vector<int>({0,1}));}
         else if (test=="checkpoint-F2") {f.select("F2",Mode::ThrowAfterBusiness);refuses([&]{f.execute();});check(f.authority->checkpoints==std::vector<int>({0,2}));}
         else if (test=="checkpoint-F3") {f.select("F3",Mode::ThrowAfterJournal);f.execute();refuses([&]{f.after();});check(f.authority->checkpoints==std::vector<int>({0,1,3}));}
         else if (test=="checkpoint-sql-failed") {mgr_db::on_write()=[] {throw ProbeError("authored-write-failed");};refuses([&]{f.execute();});check(f.authority->checkpoints.empty());}

@@ -234,6 +234,15 @@ never writes. Fixed deadlines bound the case and the own-action observation
 barrier. The private bridge's methods must themselves perform bounded local
 reads; no unqualified blocking callback belongs in that bridge.
 
+The own action and after-event translate only the probe's `ProbeError` into
+the SDK's documented `mgr_err::Error`, retaining the fixed failure code.
+Existing SDK errors, unrelated standard exceptions and service/control
+exceptions pass through unchanged. This follows the vendor's
+[error contract](https://www.ispsystem.com/docs/coremanager/developer-section/general-specifications/errors);
+the authored boundary tests do not establish native error serialization or
+database rollback. The probe never adds transaction control to obtain a passing
+result: fresh native observations must still prove the F1–F5 outcomes.
+
 The action inserts a fictional `0.0100` USD business row; its after-event inserts
 one matching QA row through the same supplied cache. Throws after either write
 and a pre-return observer barrier are QA behaviors on this own action only.
