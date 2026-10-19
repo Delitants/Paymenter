@@ -1,0 +1,82 @@
+"""Offline identity/refusal models only; no native proof or side effects."""
+import dataclasses
+from pathlib import Path
+import sys
+import time
+import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+try:
+    import fixture_isolation as api
+except ModuleNotFoundError as exc:
+    if exc.name != 'fixture_isolation':
+        raise
+    api = None
+
+
+class FixtureIsolationTests(unittest.TestCase):
+    def setUp(self):
+        self.assertIsNotNone(api, 'offline fixture profile boundary is not implemented')
+        self.now = time.monotonic_ns()
+        self.profile = api.FixtureProfile(
+            'paymenter-fixture-isolation-offline-v1', 'a'*64, 'pmqa'+'a'*28,
+            'b'*64, (api.ImagePin('/fictional/fixture', '1:2:3', 'c'*64, 'd'*64),),
+            'authored-config-v0', self.now+10**9)
+
+    def test_module_name_and_full_run(self):
+        self.assertEqual('pmqa'+'a'*28, api.module_name('a'*64))
+        self.assertEqual(32, len(api.module_name('a'*64)))
+        for run in ('A'*64, 'a'*63, 'a'*65, 'g'*64, '', 12):
+            with self.subTest(run=run), self.assertRaises(api.IsolationError):
+                api.module_name(run)
+        api.validate_profile(self.profile, self.now, frozenset())
+
+    def test_prefix_collision_and_identity_replacement_refuse(self):
+        other = dataclasses.replace(self.profile, run='a'*28+'e'*36)
+        with self.assertRaises(api.IsolationError):
+            api.validate_profile(other, self.now, frozenset({'pmqa'+'a'*28}))
+        for field, value in (('identity', 'different'), ('sha256', 'e'*64),
+                             ('ancestors_sha256', 'f'*64), ('path', '/fictional/replaced')):
+            image = dataclasses.replace(self.profile.images[0], **{field:value})
+            actual = dataclasses.replace(self.profile, images=(image,))
+            with self.subTest(field=field), self.assertRaises(api.IsolationError):
+                api.validate_profile_binding(actual, self.profile, self.now, frozenset())
+        with self.assertRaises(api.IsolationError):
+            api.validate_profile_binding(other, self.profile, self.now, frozenset())
+        api.validate_profile_binding(self.profile, self.profile, self.now, frozenset())
+
+    def test_malformed_expired_and_mutable_profiles_refuse(self):
+        changes = ({'expires_monotonic_ns':self.now}, {'version':'native-v1'},
+                   {'protocol':'vendor-config'}, {'module':'production'},
+                   {'registry_sha256':'B'*64}, {'images':()},
+                   {'images':self.profile.images*2}, {'images':list(self.profile.images)},
+                   {'expires_monotonic_ns':True})
+        for change in changes:
+            with self.subTest(change=change), self.assertRaises(api.IsolationError):
+                api.validate_profile(dataclasses.replace(self.profile, **change), self.now, frozenset())
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            self.profile.module = 'different'
+        for path in ('relative', '/a//b', '/a/../b', '/a/./b', '/a/', '/a b', '/a\\b'):
+            image = dataclasses.replace(self.profile.images[0], path=path)
+            with self.subTest(path=path), self.assertRaises(api.IsolationError):
+                api.validate_profile(dataclasses.replace(self.profile, images=(image,)), self.now, frozenset())
+        metadata = api.ImagePin('/fictional/metadata', '4:5:6', 'e'*64, 'f'*64)
+        api.validate_profile(dataclasses.replace(self.profile, images=self.profile.images+(metadata,)), self.now, frozenset())
+        with self.assertRaises(api.IsolationError):
+            api.validate_profile(dataclasses.replace(self.profile, images=self.profile.images+(metadata,metadata)), self.now, frozenset())
+
+    def test_offline_success_cannot_enable_native_gate(self):
+        kinds = ('launcher','config','filter','fallback','creation','financial-read',
+                 'notification-direct','notification-queue','retirement')
+        refs = tuple(api.EvidenceRef(k, 'e'*64, 'a'*64, 'b'*64) for k in kinds)
+        for gate in api.NativeGate:
+            result = api.offline_native_gate(gate, self.profile, refs)
+            self.assertFalse(result.allowed)
+            self.assertIn('native-evidence-verifier-absent', result.missing)
+            self.assertFalse(api.offline_native_gate(gate, self.profile, ()).allowed)
+        for change in ({'kind':'unknown'}, {'run':'f'*64}, {'registry_sha256':'f'*64}, {'sha256':'invalid'}):
+            with self.subTest(change=change), self.assertRaises(api.IsolationError):
+                api.offline_native_gate(api.NativeGate.N0, self.profile,
+                    (dataclasses.replace(refs[0], **change),))
+        with self.assertRaises(api.IsolationError):
+            api.offline_native_gate('N0', self.profile, refs)
