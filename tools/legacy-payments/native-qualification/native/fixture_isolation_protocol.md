@@ -40,3 +40,33 @@ contents. There is no JSON/environment activation, live factory or payment API.
 BILLmanager stays billing authority. No fixture record, native callback invocation,
 provider operation, source installation/restart, financial mutation or handover is
 performed or authorized by successful offline validation.
+
+## Authored confined child candidate
+
+`fixture_child_x86_64.S` and `fixture_child.c` are freestanding Linux x86-64
+sources with no libc startup. Assembly installs the filter before reading argc
+or argv; it preserves the original stack and uses the raw exit syscall. The
+candidate recognizes only `--offline-config-v0`, emits a bounded fixed offline
+semantic document and exits0. All other arguments emit a fixed refusal to stderr
+and exit64. Setup error exits126 before any output. Output errors/partial writes
+exit74 without retry. It never reads stdin, argv[0] or environment.
+
+The cBPF array in `fixture_child_policy.h` requires x86-64 (not x32) and only
+allows exit/exit_group and writes to stdout<=4096 or stderr<=256 bytes. Full-width
+fd/count comparisons prevent high-word bypass. It kills every other syscall;
+`PR_SET_NO_NEW_PRIVS` then `SECCOMP_SET_MODE_FILTER` must succeed first. Minimum
+Linux kernel4.14 with filter support is required. The filter limits each write;
+the immutable program limits total writes. It does not constrain the parent
+launcher or establish notification isolation.
+
+Tests compile the actual C with an authored syscall boundary and interpret the
+same filter bytes against denied syscall/descriptor/count/architecture inputs.
+Those are portable tests, not kernel acceptance. Cross-compiling relocatable
+objects checks assembler/compiler syntax only. Final static ELF checks require a
+compatible ELF linker; `LinuxFixtureChildTests` also requires actual x86-64 Linux.
+Missing prerequisites are explicitly `BLOCKED-O2`, never silently counted as an
+accepted target. No linker, VM, kernel or other dependency is downloaded.
+
+The candidate config bytes and switch are intentionally unrelated to the still
+unqualified vendor protocol. No installable vendor image, discovery sidecar,
+source build path or production module registration is created by these tests.
