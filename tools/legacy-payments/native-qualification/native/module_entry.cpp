@@ -8,7 +8,7 @@ namespace { paymenter_qa::FrameworkBootstrap bootstrap; }
 LIBRARY_ENTRY() {
     return bootstrap.prepare(PAYMENTER_QA_CONTROL_DIRECTORY);
 }
-MODULE_INIT(paymenter_qa_framework,"database") {
+MODULE_INIT(paymenter_qa_framework,"billmgr") {
     // Failure leaves any partial own registration disabled, without propagating
     // an initialization exception into other SDK modules.
     (void)bootstrap.initialize();

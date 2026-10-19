@@ -41,20 +41,33 @@ for name in SCENARIOS:
 
 
 class ModuleEntryTests(unittest.TestCase):
-    def test_entry_uses_only_compiled_directory_and_routes_initialization(self):
-        self.assertTrue((NATIVE / 'module_entry.cpp').exists(), 'opt-in entry is not implemented')
-        with tempfile.TemporaryDirectory(prefix='entry-test-', dir=HERE) as temp:
-            binary = Path(temp) / 'entry-driver'
-            subprocess.run(['/usr/bin/c++', '-std=c++11', '-pthread', '-Wall', '-Wextra', '-Werror',
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory(prefix='entry-test-', dir=HERE)
+        cls.addClassCleanup(cls.temp.cleanup)
+        cls.binary = Path(cls.temp.name) / 'entry-driver'
+        subprocess.run(['/usr/bin/c++', '-std=c++11', '-pthread', '-Wall', '-Wextra', '-Werror',
                 '-DPAYMENTER_QA_CONTROL_DIRECTORY="/fictional/operation"',
                 '-I', str(HERE / 'fake_sdk'), '-I', str(NATIVE), str(HERE / 'entry_driver.cpp'),
                 str(NATIVE / 'bootstrap.cpp'), str(NATIVE / 'cache_probe.cpp'),
-                str(NATIVE / 'module_entry.cpp'), '-o', str(binary)],
+                str(NATIVE / 'module_entry.cpp'), '-o', str(cls.binary)],
                 capture_output=True, timeout=30, check=True)
-            env = dict(os.environ, PAYMENTER_QA_CONTROL_DIRECTORY='/untrusted/environment/path')
-            for scenario in ('normal', 'missing'):
-                result = subprocess.run([str(binary), scenario], env=env, capture_output=True, timeout=5)
-                self.assertEqual(0, result.returncode, result.stderr.decode(errors='replace'))
+
+    def scenario(self, name):
+        env = dict(os.environ, PAYMENTER_QA_CONTROL_DIRECTORY='/untrusted/environment/path')
+        result = subprocess.run([str(self.binary), name], env=env, capture_output=True, timeout=5)
+        self.assertEqual(0, result.returncode, name + ': ' + result.stderr.decode(errors='replace'))
+
+    def test_entry_uses_only_compiled_directory_and_routes_initialization(self):
+        for scenario in ('normal', 'missing'):
+            with self.subTest(scenario=scenario):
+                self.scenario(scenario)
+
+    def test_loaded_entry_waits_for_billmanager_readiness(self):
+        self.scenario('deferred')
+
+    def test_unrelated_database_module_does_not_trigger_registration(self):
+        self.scenario('unrelated')
 
     def test_entry_cannot_compile_without_explicit_control_directory(self):
         self.assertTrue((NATIVE / 'module_entry.cpp').exists(), 'opt-in entry is not implemented')

@@ -204,7 +204,12 @@ native control path, not SDK startup, independent observation or financial effec
 
 `module_entry.cpp` is opt-in and requires the exact reviewed compile-time
 `PAYMENTER_QA_CONTROL_DIRECTORY`. `LIBRARY_ENTRY` opens protected authority;
-`MODULE_INIT` depends on `database` and calls the registration gate. The gate
+`MODULE_INIT` depends on `billmgr`, matching the vendor's
+[CentOS 7 BILLmanager example](https://www.ispsystem.com/docs/b6c/developer-section/gdb-debugger),
+and calls the registration gate. The generic SDK header's `database` name is a
+hypothetical dependency, not evidence of a BILLmanager initialization module.
+The authored entry fixture dispatches the actual callback only when its declared
+prerequisites are ready; it is not a vendor loader or native startup proof. The gate
 enables requests only after both own action and after-event registration succeed
 and authority is rechecked. Any failure, duplicate/reentrant initialization,
 destruction or forked use leaves requests disabled, including on a partially

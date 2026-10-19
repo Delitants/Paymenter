@@ -197,7 +197,7 @@ preparation. It is not approval to execute a restart or install a module.
 
 `native/cache_probe.cpp` defines the exact own action `paymenter.qa.transaction`
 and its after-event. The optional `native/module_entry.cpp` supplies a guarded
-`LIBRARY_ENTRY` and database-dependent `MODULE_INIT`. It is excluded from the
+`LIBRARY_ENTRY` and BILLmanager-dependent `MODULE_INIT`. It is excluded from the
 component build and refuses compilation without an explicit reviewed
 `PAYMENTER_QA_CONTROL_DIRECTORY` string; there is no environment/profile/HTTP
 override. It must only run inside a separately qualified SDK startup, after a protected,
