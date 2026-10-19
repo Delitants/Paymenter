@@ -11,6 +11,8 @@ struct Connection {};
 struct Call { std::string sql; std::vector<std::string> values; };
 inline std::vector<Call>& calls() { static std::vector<Call> v; return v; }
 inline std::vector<std::string>& reads() { static std::vector<std::string> v; return v; }
+inline std::vector<std::string>& read_paths() { static std::vector<std::string> v; return v; }
+inline std::function<void()>& on_query() { static std::function<void()> f; return f; }
 inline int& caches() { static int n = 0; return n; }
 inline std::function<void()>& on_write() { static std::function<void()> f; return f; }
 inline std::function<void()>& on_connection() { static std::function<void()> f; return f; }
@@ -19,7 +21,7 @@ class Stmt {
     std::string server_id_;
 public:
     Stmt(std::string sql, std::string id): sql_(sql), server_id_(id) {}
-    QueryPtr Execute() const { reads().push_back(sql_); return std::make_shared<Query>(server_id_); }
+    QueryPtr Execute() const { read_paths().push_back("prepared-query"); reads().push_back(sql_); return std::make_shared<Query>(server_id_); }
     void Execute(const std::string& a, const std::string& b,
                  const std::string& c, const std::string& d) const {
         calls().push_back({sql_, {a,b,c,d}});
@@ -33,6 +35,11 @@ public:
     std::string server_id = "71";
     Cache() { ++caches(); }
     Connection* GetConnection() { if (on_connection()) on_connection()(); return &connections_[connection]; }
+    QueryPtr Query(const std::string& sql) {
+        read_paths().push_back("cache-query");
+        if (on_query()) on_query()();
+        reads().push_back(sql); return std::make_shared<mgr_db::Query>(server_id);
+    }
     Stmt Prepare(const std::string& sql) { return Stmt(sql,server_id); }
 };
 }

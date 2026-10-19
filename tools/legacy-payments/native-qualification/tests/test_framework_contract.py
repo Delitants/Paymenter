@@ -7,6 +7,7 @@ import unittest
 HERE = Path(__file__).resolve().parent
 NATIVE = HERE.parent / 'native'
 SCENARIOS = (
+    'cache-query-entry','cache-query-F2','cache-query-guard','cache-query-failure',
     'sdk-error-F2','sdk-error-F3','sdk-error-guard',
     'native-sdk-action','native-sdk-after','foreign-action','foreign-after',
     'service-action','service-after',

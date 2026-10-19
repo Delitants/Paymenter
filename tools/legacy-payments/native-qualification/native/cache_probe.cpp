@@ -37,7 +37,8 @@ Mode mode_for(const std::string& case_id) {
     throw ProbeError("qa-case-refused");
 }
 std::string server_connection(const std::shared_ptr<mgr_db::Cache>& cache) {
-    auto query=cache->Prepare("SELECT CONNECTION_ID()").Execute();
+    // Enter the supplied cache revision before using its prepared statements.
+    auto query=cache->Query("SELECT CONNECTION_ID()");
     require(query && !query->Eof(), "qa-connection-diagnostic");
     std::string value=query->AsString(static_cast<size_t>(0));
     query->Next();

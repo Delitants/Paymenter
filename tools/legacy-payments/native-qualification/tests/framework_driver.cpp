@@ -103,7 +103,23 @@ int main(int argc,char** argv) {
             return 0;
         }
         Fixture f;
-        if (test=="sdk-error-F2") {f.select("F2",Mode::ThrowAfterBusiness);sdk_error([&]{f.execute();},"qa-injected-after-business");check(mgr_db::calls().size()==1);}
+        if (test=="cache-query-entry") {
+            mgr_db::on_write()=[] {check(!mgr_db::read_paths().empty());for(const auto& path:mgr_db::read_paths())check(path=="cache-query");};
+            f.execute();f.after();exact_calls();check(mgr_db::caches()==1);
+        }
+        else if (test=="cache-query-F2") {
+            f.select("F2",Mode::ThrowAfterBusiness);
+            mgr_db::on_write()=[] {check(!mgr_db::read_paths().empty());for(const auto& path:mgr_db::read_paths())check(path=="cache-query");};
+            sdk_error([&]{f.execute();},"qa-injected-after-business");check(mgr_db::calls().size()==1);
+        }
+        else if (test=="cache-query-guard") {
+            f.request->params["qa_run"]=std::string(64,'d');refuses([&]{f.execute();});check(mgr_db::read_paths().empty() && mgr_db::calls().empty());
+        }
+        else if (test=="cache-query-failure") {
+            int attempts=0;mgr_db::on_query()=[&] {++attempts;throw mgr_err::Error("authored-cache-query-error");};
+            sdk_error([&]{f.execute();},"authored-cache-query-error");check(attempts==1 && mgr_db::calls().empty());f.final();
+        }
+        else if (test=="sdk-error-F2") {f.select("F2",Mode::ThrowAfterBusiness);sdk_error([&]{f.execute();},"qa-injected-after-business");check(mgr_db::calls().size()==1);}
         else if (test=="sdk-error-F3") {f.select("F3",Mode::ThrowAfterJournal);f.execute();sdk_error([&]{f.after();},"qa-injected-after-journal");check(mgr_db::calls().size()==2);}
         else if (test=="sdk-error-guard") {f.request->params["qa_run"]=std::string(64,'d');sdk_error([&]{f.execute();},"qa-request");check(mgr_db::calls().empty());}
         else if (test=="native-sdk-action" || test=="native-sdk-after") {

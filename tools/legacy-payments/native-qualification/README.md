@@ -248,7 +248,11 @@ one matching QA row through the same supplied cache. Throws after either write
 and a pre-return observer barrier are QA behaviors on this own action only.
 `Final` removes memory context and provides no commit signal. The probe checks
 cache/connection object identity and uses `SELECT CONNECTION_ID()` through that
-same cache to detect server-connection replacement. That ID is retained only by
+same cache to detect server-connection replacement. This fixed read uses
+`Cache::Query` to enter the cache revision path before prepared writes. It keeps
+the supplied cache and connection; no explicit transaction control or alternate
+database is introduced. Authored tests check API entry and order only; native
+request rollback remains a separate required observation. That ID is retained only by
 the private bridge; it proves no transaction or durable outcome. The barrier
 does not poll SQL while waiting for the observer. Rollback and independent
 visibility still require native observations.
