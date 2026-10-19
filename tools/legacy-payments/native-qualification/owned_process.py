@@ -19,8 +19,10 @@ import sys
 import time
 try:
     _strings = (basestring,)
+    _integers = (int, long)
 except NameError:
     _strings = (str,)
+    _integers = (int,)
 
 
 def _clock():
@@ -58,9 +60,31 @@ def supervise_owned(argv, input_bytes, seconds=5, stdout_limit=16384, stderr_lim
     No result is a commit/acceptance token. Failure is terminal and never retried.
     env is trusted launcher data, never an HTTP/profile-derived override.
     """
+    return _supervise_owned(argv, input_bytes, seconds, stdout_limit, stderr_limit, env, 30)
+
+
+def supervise_billmanager_startup(authority_expires, env=None):
+    """One fixed actionlist getter, bounded by 120 seconds and existing expiry.
+
+    The trusted caller supplies the absolute expiry from its already admitted
+    authority, never a new lease derived from the current time. This function
+    neither issues authority nor verifies its provenance. The caller must still
+    pin the executable, arguments and environment and preserve the original
+    result. There is no retry, installation or manager-exit action here.
+    """
+    remaining = authority_expires-time.time() if type(authority_expires) in _integers else 0
+    if not 0 < remaining <= 600:
+        raise ValueError('startup-authority')
+    return _supervise_owned(
+        ['/usr/local/mgr5/sbin/mgrctl', '-m', 'billmgr', '-o', 'xml', 'actionlist'],
+        b'', min(120, remaining), 196608, 8192, env, 120, authority_expires)
+
+
+def _supervise_owned(argv, input_bytes, seconds, stdout_limit, stderr_limit, env,
+                     maximum_seconds, authority_expires=None):
     if (type(argv) is not list or not argv or not all(isinstance(x, _strings) and '\0' not in x for x in argv)
             or not os.path.isabs(argv[0]) or type(input_bytes) is not bytes or len(input_bytes) > 65536
-            or type(seconds) not in (int, float) or not 0 < seconds <= 30
+            or type(seconds) not in (int, float) or not 0 < seconds <= maximum_seconds
             or any(type(n) is not int or not 0 < n <= 1048576 for n in (stdout_limit, stderr_limit))
             or signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL):
         raise ValueError('child-input')
@@ -105,6 +129,9 @@ def supervise_owned(argv, input_bytes, seconds=5, stdout_limit=16384, stderr_lim
             writefd = None
         while reads or child.returncode is None:
             child.poll()
+            if authority_expires is not None and time.time() >= authority_expires:
+                result['failure'] = 'authority-expired'
+                break
             if _clock() >= end:
                 result['failure'] = 'deadline'
                 break

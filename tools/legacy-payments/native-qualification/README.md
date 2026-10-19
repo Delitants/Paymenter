@@ -86,6 +86,23 @@ identity is held; process groups, descendants and manager processes are never
 signal targets. Local macOS pipe tests do not qualify Linux identity checks.
 The reserved `Operator` does not yet call this transport.
 
+Ordinary `supervise_owned` calls retain their 30-second maximum. A separate
+`supervise_billmanager_startup(authority_expires, env=None)` runs only the fixed
+local `mgrctl -m billmgr -o xml actionlist` getter, with empty stdin, a 192 KiB
+stdout limit, an 8 KiB stderr limit and a 120-second maximum. The trusted caller
+must supply the absolute expiry from its existing protected authority; expired,
+non-integer or more-than-600-seconds-distant expiry is refused before launch.
+The monotonic deadline is capped by the remaining lifetime, and wall-clock
+expiry is also checked while supervising the child. Moving the wall clock back
+does not renew the monotonic budget. The helper never creates or refreshes an
+authority, retries a getter, installs a library or requests a manager exit.
+It retains the same EOF, output, exit and direct-child retirement checks as
+ordinary calls. A successful transport result still requires separate catalog,
+process, protected-authority and native acceptance checks. Recovery outside a
+QA lease needs its own reviewed operational authority; this helper does not
+invent or extend it. Offline child tests do not qualify vendor startup or the
+source Python 2.7 runtime, and existing sealed execution packets are unchanged.
+
 `native/committed_reader.cpp` is a standalone source-native C API collector,
 compiled separately from the SDK module and without separately compiling its
 amalgamated `authority_bridge.cpp`. It requires exact reviewed compile-time
