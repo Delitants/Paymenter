@@ -10,7 +10,7 @@
 
 **Spec:** [Approved callback amendment](../specs/2026-10-19-native-manual-callback-qualification.md). This is an offline preparation increment within Task4 of the source native qualification plan; it does not complete native M1-M5.
 
-**Status:** Planning only; implementation awaits review. The existing framework bootstrap remains unchanged and framework-only. Operational evidence and all actual source identities remain outside Git.
+**Status:** Approved offline implementation is present; final whole-increment review is pending. The existing framework bootstrap remains unchanged and framework-only. Operational evidence and all actual source identities remain outside Git.
 
 ## Global Constraints
 
@@ -43,7 +43,7 @@ All paths below are relative to `tools/legacy-payments/native-qualification/`.
 - `tests/manual_context_driver.cpp`, `tests/manual_probe_driver.cpp`: executable authored-boundary cases.
 - `tests/test_manual_context.py`, `tests/test_manual_probe.py`: compile/run the real generic implementation against those cases.
 - `tests/fake_manual_sdk/`: isolated authored connection/Authen/XML/InternalCall/callback doubles, so the established framework doubles retain their contracts.
-- `tests/test_manual_readiness.py`, `README.md`: live-admission refusal and precise evidence/acceptance limits.
+- `tests/test_manual_readiness.py`, `tests/manual_readiness_driver.cpp`, `README.md`: live-admission refusal and precise evidence/acceptance limits.
 
 ## Task 1: Define the immutable manual-probe boundary
 

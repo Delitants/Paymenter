@@ -10,8 +10,9 @@ namespace mgr_access {static const int AccessAdmin=29;static const int lvAdmin=2
 namespace mgr_xml {struct Xml {std::string bytes;Xml(std::string b=""):bytes(b){}};}
 namespace isp_api {
 using mgr_xml::Xml;
-class Session;class Action;
+class Session;class Action;class Event;
 inline std::vector<Action*>& test_actions(){static std::vector<Action*> v;return v;}
+inline std::vector<Event*>& test_events(){static std::vector<Event*> v;return v;}
 inline bool& test_action_failure(){static bool v=false;return v;}
 inline std::function<void()>& test_action_hook(){static std::function<void()> v;return v;}
 class Action {
@@ -33,6 +34,15 @@ public:
 };
 inline void BaseConnection::GetParams(StringVector& out)const{for(const auto& v:owner_->params)out.push_back(v.first);}
 inline bool HasAction(const std::string& n){for(auto a:test_actions())if(a->name()==n)return true;return false;}
+class Event {
+public:
+ enum Priority {epBefore,epAfter};
+ std::string action,name;Priority priority;
+ Event(const std::string& a,const std::string& n,Priority p):action(a),name(n),priority(p){test_events().push_back(this);}
+ virtual ~Event(){}
+ virtual void AfterExecute(Session&)const{}
+ virtual void Final(Session&)const{}
+};
 Xml InternalCall(const Session&,const std::string&,const std::string&);
 Xml InternalCall(const std::string&,const std::string&);
 Authen Authenticate();

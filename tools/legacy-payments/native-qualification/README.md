@@ -325,3 +325,59 @@ financial acceptance. The runner consumes already admitted resource creation and
 loaded-module state, retains failures, and leaves every completed run fenced with
 retirement and qualification explicitly pending. The Python live capability and
 operator remain unavailable; no profile or test success can enable them.
+
+## Offline native manual callback preparation
+
+The generic `manual_contract`, `manual_context` and opt-in `manual_probe` adapter
+are implemented and locally tested against authored SDK boundaries. They hold a
+noncopyable, thread-affine scope around exactly one supplied-session
+`InternalCall(session,"payment.setpaid","elid=<bound numeric ID>")`. The original
+handler's XML/error is preserved. The adapter never calls `Authenticate`, an
+unbound overload or `.one`, and never writes a native credit or controls a
+transaction. Connection diagnostics establish identity only, including when a
+modeled preliminary commit leaves the scope alive; they do not prove atomicity.
+
+The callback checks immutable registry membership before I/O. Owned payments
+require the live lexical context, exact actor/worker/process/cache/connection,
+bounded grant, native ownership/amount/currency/linkage and isolation snapshot.
+It reserves the callback attempt before any journal operation or injected error.
+M2/M3 throw before/after the fixed QA journal write; M5 never dispatches. M4's
+second call requires a protected independent committed first result, then retains
+the native error or exact unchanged no-op without adding another journal. A hash
+or supplied JSON document alone cannot establish that first result.
+
+`RegisterManualProbe` requires both a protected `manual::Authority` and a real
+source-only `manual::NativeAccess`. No live implementation or factory for either
+is supplied. The framework module entry/bootstrap does not call it, even when
+the manual adapter is linked. There is no manual CLI activation flag or profile
+shortcut. Registration is one-shot and process-lifetime-safe: a partial stored
+closure retains disabled state, and reentry holds the registration. The vendor
+Store has no removal API, so process retirement remains necessary.
+
+The live issuer, financial reader/collector and operator remain unavailable.
+Fictional profiles can describe proposals but cannot issue `AdmittedRun`, execute
+payments or make the framework-only observer accept manual accounting rows.
+Offline tests qualify routing, refusal and lifetime behavior only; they model
+neither transaction rollback nor vendor notification/DSO semantics.
+
+Before native execution, the next concrete operation must qualify all of:
+
+- Supported fresh fixture creation and retirement through native operations;
+  four owned USD `0.0100` manual payments with independently checked ownership
+  and no invoice/order/service/recurring/stored-method/provider linkage.
+- Every associated fixture user disabled at the actual user-row level, plus
+  independent direct-notifier, queue, creation-path and provider isolation.
+  A disabled client label or ordinary opt-out is insufficient.
+- Exact native accounting schema/read contract, protected one-use manual issuer,
+  committed independent reader and original-result collector.
+- Actual installed SDK compilation/linking, shared callback singleton binding,
+  supplied actor, worker/cache/connection and exception-unwind behavior.
+- Fresh F1–F5 for the new build and original M1–M5 with independent native
+  business/QA observations. Old framework results are historical only.
+- A fresh approved install/startup/recovery packet, explicit slot/expiry limits,
+  process-lifetime callback retirement and retention of every paid audit record
+  and failed result. A surviving credit is a failed test, never replay authority.
+
+No source build, load, restart, fixture, financial/provider action, publication
+or billing handover follows from the offline suite. BILLmanager stays billing
+authoritative until a separately approved handover.
