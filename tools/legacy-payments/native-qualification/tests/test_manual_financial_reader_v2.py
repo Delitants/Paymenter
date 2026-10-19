@@ -28,8 +28,8 @@ class ManualFinancialV2Tests(unittest.TestCase):
         p=subprocess.run([str(self.binary),name],capture_output=True,timeout=5)
         self.assertEqual(0,p.returncode,p.stderr.decode(errors='replace'))
 
-    def sql(self):
-        return subprocess.run([str(self.binary),'emit-query'],capture_output=True,check=True,timeout=5).stdout.decode()
+    def sql(self,max_users=False):
+        return subprocess.run([str(self.binary),'emit-query8' if max_users else 'emit-query'],capture_output=True,check=True,timeout=5).stdout.decode()
 
     def database(self):
         # Reuse only fictional physical tables/data; no v1 implementation edits.
@@ -42,14 +42,14 @@ class ManualFinancialV2Tests(unittest.TestCase):
         db.create_function('OCTET_LENGTH',1,lambda x:None if x is None else len(x if isinstance(x,bytes) else x.encode()))
         return db
 
-    def rows(self,db):
+    def rows(self,db,max_users=False):
         # Explicit test dialect adapter: SQLite BINARY cast is numeric, not bytes.
-        query=self.sql().replace('CAST(paymethod.xmlparams AS BINARY)','QA_BYTES(paymethod.xmlparams)')
+        query=self.sql(max_users).replace('CAST(paymethod.xmlparams AS BINARY)','QA_BYTES(paymethod.xmlparams)')
         return db.execute(query).fetchall()
 
-    def validate(self,rows):
+    def validate(self,rows,max_users=False):
         payload=''.join('\t'.join(str(c) for c in row)+'\n' for row in rows).encode()
-        return subprocess.run([str(self.binary),'validate-input'],input=payload,capture_output=True,timeout=5).returncode==0
+        return subprocess.run([str(self.binary),'validate-input8' if max_users else 'validate-input'],input=payload,capture_output=True,timeout=5).returncode==0
 
     def test_exact_profile_and_owned_project(self):
         for xml,want in (('<doc/>','N|X:authored-empty-doc-v0|N'),(None,'N|N|N'),('','N|E|N')):
@@ -58,10 +58,20 @@ class ManualFinancialV2Tests(unittest.TestCase):
                 rows=self.rows(db)
                 self.assertTrue(self.validate(rows))
                 self.assertEqual(want,next(r[3] for r in rows if r[:3]==('method','501','links')))
+
+    def test_eight_user_request_is_observed_and_accepted(self):
+        self.scenario('eight-users')
         with self.database() as db:
             for n in range(803,809):
                 db.execute("INSERT INTO user (id,account,enabled,remotelevel,level) VALUES (?, '101','off','0','29')",(str(n),))
-            self.assertLess(len(self.rows(db)),128)
+            rows=self.rows(db,max_users=True)
+            self.assertTrue(self.validate(rows,max_users=True))
+            self.assertEqual(8,len({row[1] for row in rows if row[0]=='user'}))
+            self.assertLess(len(rows),128)
+
+    def test_metadata_and_session_drift_after_financial_statement_refuses(self):
+        for mode in ('late-schema-drift','late-fk-drift','late-session-drift'):
+            with self.subTest(mode=mode):self.scenario(mode)
 
     def test_xml_byte_variants_and_foreign_project(self):
         variants=(' <doc/>','<doc/>\n','<doc />','<DOC/>','<doc></doc>',

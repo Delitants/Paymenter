@@ -4,6 +4,8 @@ import platform
 import shutil
 import signal
 import struct
+import sys
+import time
 import subprocess
 import tempfile
 import unittest
@@ -23,6 +25,25 @@ def elf_build(output,extra_sources=(),defines=()):
              '-fuse-ld='+LINKER, *defines, str(NATIVE/'fixture_child_x86_64.S'),
              str(NATIVE/'fixture_child.c'), *map(str,extra_sources), '-o',str(output)]
     subprocess.run(command,check=True,capture_output=True,timeout=30)
+
+
+def run_open_stdin(command,timeout=2):
+    """Test utility: keep stdin open until child exit (not native evidence)."""
+    proc=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    try:
+        # Keep the stdin writer open while waiting; communicate() would close it.
+        proc.wait(timeout=timeout)
+        out,err=proc.communicate(timeout=timeout)
+        return subprocess.CompletedProcess(command,proc.returncode,out,err)
+    finally:
+        # Never use Popen.__exit__: its unbounded wait defeats the test deadline.
+        try:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=2)
+        finally:
+            for stream in (proc.stdin,proc.stdout,proc.stderr):
+                stream.close()
 
 
 class FixtureChildPortableTests(unittest.TestCase):
@@ -64,6 +85,12 @@ class FixtureChildPortableTests(unittest.TestCase):
                 result=subprocess.run([str(self.binary),'policy',str(nr),str(a),str(fd),str(count)],
                                       check=True,capture_output=True,timeout=2)
                 self.assertEqual(want,int(result.stdout))
+
+    def test_stalled_child_supervisor_is_bounded(self):
+        begin=time.monotonic()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            run_open_stdin([sys.executable,'-c','import time;time.sleep(1.5)'],timeout=0.05)
+        self.assertLess(time.monotonic()-begin,1.0)
 
     def test_setup_failure_portable_boundary(self):
         result=subprocess.run([str(self.binary),'setup-fail','--offline-config-v0'],capture_output=True,timeout=2)
@@ -110,13 +137,8 @@ class LinuxFixtureChildTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='fixture-linux-',dir=HERE) as tmp:
             candidate=Path(tmp)/'candidate'
             elf_build(candidate)
-            with subprocess.Popen([str(candidate),'--offline-config-v0'],stdin=subprocess.PIPE,
-                                  stdout=subprocess.PIPE,stderr=subprocess.PIPE) as proc:
-                # wait() keeps parent's stdin writer open; child must not wait for EOF.
-                proc.wait(timeout=2)
-                self.assertEqual(0,proc.returncode)
-                self.assertEqual(CONFIG,proc.stdout.read())
-                self.assertEqual(b'',proc.stderr.read())
+            proc=run_open_stdin([str(candidate),'--offline-config-v0'])
+            self.assertEqual((0,CONFIG,b''),(proc.returncode,proc.stdout,proc.stderr))
             probe=Path(tmp)/'probe.c'
             probe.write_text('extern long fixture_syscall6(long,long,long,long,long,long,long);\n'
                 'int fixture_child_main(long n,const char *const *v) {(void)n;(void)v;'

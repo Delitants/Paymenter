@@ -9,25 +9,31 @@ void set(ReadRows& r,const std::string& kind,const std::string& id,const std::st
 }
 class DB:public ReadDatabase {
 public:
-    std::string mode;ManualFinancialRequest wanted;ReadRows data;unsigned configs=0,states=0,observations=0;
+    std::string mode;ManualFinancialRequest wanted;ReadRows data;unsigned configs=0,states=0,observations=0,engine_passes=0,fk_passes=0,schema_reads=0;
     DB(std::string m,ManualFinancialRequest r):mode(m),wanted(r),data(rows()) {
         data.erase(std::remove_if(data.begin(),data.end(),[](const std::vector<std::string>& x){return x[0]=="count" && x[2]=="method_bindings";}),data.end());
         for(const auto& p:std::vector<std::pair<std::string,std::string>>{{"method_company","0"},{"method_group","0"},{"method_project","1"},{"method_foreign_project","0"}})
             data.push_back({"count","101",p.first,p.second,F});
         data.push_back({"method","501","allowrefund","V:off",F});
         set(data,"method","501","links","N|X:authored-empty-doc-v0|N");
+        if(wanted.fixture.users.size()==8) {
+            for(const auto& id:std::vector<std::string>{"803","804","805","806","807","808"})
+                for(const auto& v:std::vector<std::pair<std::string,std::string>>{{"account","V:101"},{"enabled","V:off"},{"remoteid","N"},{"remotelevel","V:0"},{"level","V:29"}})
+                    data.push_back({"user",id,v.first,v.second,F});
+            set(data,"count","101","users","8");
+        }
     }
     void configure()override{++configs;}
     ReaderState state()override {
-        ++states;return {mode=="same-writer"?"11":mode=="reused-reader"?"10":mode=="connection-drift" && states>2?"13":"12",mode=="repeatable"?"REPEATABLE-READ":"READ-COMMITTED",mode=="database"?"other":"qa",mode=="socket"?"/other.sock":"/fictional.sock",mode=="autocommit"?"0":"1",static_cast<unsigned>(mode=="transaction" && states==1?3:mode=="autocommit"?0:2)};
+        ++states;return {mode=="same-writer"?"11":mode=="reused-reader"?"10":((mode=="connection-drift" && states>2) || (mode=="late-session-drift" && observations==1))?"13":"12",mode=="repeatable"?"REPEATABLE-READ":"READ-COMMITTED",mode=="database"?"other":"qa",mode=="socket"?"/other.sock":"/fictional.sock",mode=="autocommit"?"0":"1",static_cast<unsigned>(mode=="transaction" && states==1?3:mode=="autocommit"?0:2)};
     }
     ReadRows select(const std::string& sql)override {
         if(sql.find("SELECT TABLE_NAME,ENGINE FROM information_schema.TABLES")==0) {
-            ReadRows out;for(const auto& t:manual_financial_tables())out.push_back({t,mode=="myisam" && t=="payment"?"MyISAM":"InnoDB"});return out;
+            ++engine_passes;ReadRows out;for(const auto& t:manual_financial_tables())out.push_back({t,mode=="myisam" && t=="payment"?"MyISAM":"InnoDB"});return out;
         }
-        if(sql.find("SHOW CREATE TABLE ")==0) {auto t=sql.substr(18);return {{t,mode=="schema-drift" && t=="payment"?"changed":wanted.schemas.at(t)}};}
+        if(sql.find("SHOW CREATE TABLE ")==0) {++schema_reads;auto t=sql.substr(18);return {{t,(mode=="schema-drift" || (mode=="late-schema-drift" && observations==1)) && t=="payment"?"changed":wanted.schemas.at(t)}};}
         if(sql.find("information_schema.TRIGGERS")!=std::string::npos)return mode=="trigger"?ReadRows{{"present"}}:ReadRows{};
-        if(sql.find("information_schema.KEY_COLUMN_USAGE")!=std::string::npos){if(mode=="fk-query-bound" && sql.find(" LIMIT 512")==std::string::npos)throw ReaderError("unbounded metadata");return mode=="foreign-key-drift"?ReadRows{{"qa","new_table","p","qa.payment","id"}}:ReadRows{};}
+        if(sql.find("information_schema.KEY_COLUMN_USAGE")!=std::string::npos){++fk_passes;if(mode=="fk-query-bound" && sql.find(" LIMIT 512")==std::string::npos)throw ReaderError("unbounded metadata");return (mode=="foreign-key-drift" || (mode=="late-fk-drift" && observations==1))?ReadRows{{"qa","new_table","p","qa.payment","id"}}:ReadRows{};}
         if(sql.find("SELECT 'subaccount'")==0) {
             if(++observations>1)throw std::runtime_error("sequential financial read views");
             if(sql.find("recurring.init_payment")==std::string::npos || sql.find("payment.expense_commission")==std::string::npos || sql.find("payment.recurring_subscription")==std::string::npos)throw std::runtime_error("missing physical link");
@@ -40,9 +46,10 @@ public:
 }
 int main(int argc,char**argv) {try {
     if(argc!=2)return 2;std::string mode=argv[1];auto r=request();
+    if(mode=="eight-users" || mode=="emit-query8" || mode=="validate-input8")r.fixture.users={"801","802","803","804","805","806","807","808"};
     ManualFinancialV2Request v2{r,"paymenter-manual-financial-offline-v2",ManualV2Profile::AuthoredEmptyDocV0};
-    if(mode=="emit-query"){std::cout<<manual_financial_v2_query(v2);return 0;}
-    if(mode=="validate-input") {ReadRows data;std::string line;while(std::getline(std::cin,line)){std::istringstream in(line);std::vector<std::string> cells;std::string cell;while(std::getline(in,cell,'\t'))cells.push_back(cell);data.push_back(cells);}try{manual_financial_v2_rows(v2,data);return 0;}catch(const ReaderError&){return 1;}}
+    if(mode=="emit-query" || mode=="emit-query8"){std::cout<<manual_financial_v2_query(v2);return 0;}
+    if(mode=="validate-input" || mode=="validate-input8") {ReadRows data;std::string line;while(std::getline(std::cin,line)){std::istringstream in(line);std::vector<std::string> cells;std::string cell;while(std::getline(in,cell,'\t'))cells.push_back(cell);data.push_back(cells);}try{manual_financial_v2_rows(v2,data);return 0;}catch(const ReaderError&){return 1;}}
     if(mode.find("money-reject:")==0){try{manual_financial_units(mode.substr(13));return 22;}catch(const ReaderError&){return 0;}}
     if(mode=="money") {
         if(manual_financial_units("-99999999999999.9999")!=-999999999999999999LL || manual_financial_units("0.0100")!=100)return 20;return 0;
@@ -106,9 +113,13 @@ int main(int argc,char**argv) {try {
         ManualFinancialV2Read reader(db,"qa","/fictional.sock",std::chrono::steady_clock::now()+std::chrono::seconds(mode=="expired"?-1:5));
         auto out=reader.observe(v2);accepted=true;
         if(mode=="reuse"){reader.observe(v2);return 12;}
-        if(out.connection!="12" || db.observations!=1 || out.rows!=db.data)return 13;
+        if(out.connection!="12" || db.observations!=1 || out.rows!=db.data || db.engine_passes!=2 || db.fk_passes!=2 || db.schema_reads!=50)return 13;
         if(mode=="negative-balance" && out.rows[3][3]!="V:-0.0100")return 14;
-    } catch(const ReaderError& e) {if((mode=="v1-version" || mode=="unknown-version" || mode=="unknown-profile") && (db.configs || db.states || db.observations))return 30;if(mode=="transaction" && db.configs)return 15;if(mode=="reuse"){if(std::string(e.what())!="manual-read-reused")return 17;accepted=false;}}
-    const bool wanted=mode=="valid" || mode=="fk-query-bound" || mode=="negative-balance" || mode=="absent-journal" || mode=="surviving-credit" || mode=="zero-credit-journal" || mode=="M5";
+    } catch(const ReaderError& e) {
+        if(mode=="late-schema-drift" && (db.observations!=1 || std::string(e.what())!="manual-read-schema-drift"))return 31;
+        if(mode=="late-fk-drift" && (db.observations!=1 || std::string(e.what())!="manual-read-foreign-key-drift"))return 32;
+        if(mode=="late-session-drift" && (db.observations!=1 || std::string(e.what())!="manual-read-session"))return 33;
+        if((mode=="v1-version" || mode=="unknown-version" || mode=="unknown-profile") && (db.configs || db.states || db.observations))return 30;if(mode=="transaction" && db.configs)return 15;if(mode=="reuse"){if(std::string(e.what())!="manual-read-reused")return 17;accepted=false;}}
+    const bool wanted=mode=="eight-users" || mode=="valid" || mode=="fk-query-bound" || mode=="negative-balance" || mode=="absent-journal" || mode=="surviving-credit" || mode=="zero-credit-journal" || mode=="M5";
     return accepted==wanted?0:16;
 } catch(const std::exception& e){std::cerr<<e.what();return 1;} }
