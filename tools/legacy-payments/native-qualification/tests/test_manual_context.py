@@ -13,6 +13,11 @@ SCENARIOS = (
     'unknown-slot', 'second-slot-on-M1', 'single-slot-on-M4', 'M5-is-read-only',
     'wrong-phase', 'wrong-currency', 'wrong-amount', 'expired', 'unbounded-expiry',
     'missing-session', 'bad-facts', 'money-scale', 'money-overflow',
+    'scope-normal', 'scope-early-return', 'scope-unwind-before-callback',
+    'scope-unwind-after-callback', 'scope-same-thread-reuse', 'scope-nested',
+    'scope-wrong-thread', 'scope-fork', 'scope-wrong-cache', 'scope-wrong-connection',
+    'scope-repeat', 'scope-before-native', 'scope-wrong-payment', 'scope-wrong-status',
+    'scope-expired', 'scope-context-binding',
 )
 
 
