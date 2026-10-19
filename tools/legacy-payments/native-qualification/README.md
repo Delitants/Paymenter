@@ -392,3 +392,28 @@ and failure originals. It is not wired into the SDK, bootstrap or Python live
 observer, and supplies no issuer or NativeAccess factory. Authored C API tests
 and local SQLite query checks provide no native financial, notification or
 provider acceptance. No deployment or billing handover is enabled.
+
+## Offline isolated-fixture candidates
+
+The [fixture protocol](native/fixture_isolation_protocol.md) now has a strict
+immutable profile, always-closed native admission and forward-only failure model.
+The freestanding child recognizes an authored offline config switch only. Its
+portable tests use the real output logic and cBPF bytes; cross-compiled ELF objects
+are syntax coverage. Final ELF and actual x86-64 Linux filter tests explicitly
+report `BLOCKED-O2` when prerequisites are absent. No runtime is downloaded.
+
+The [reader-v2 candidate](native/manual_financial_reader_v2_protocol.md) adds a
+fixed authored empty-XML byte profile, exactly one owned project association and
+independent allowrefundoff observation. V1 behavior/files are unchanged. The v2
+core has no standalone collector, credentials or SDK activation. SQLite's explicit
+byte adapter is relational coverage, not MySQL/source acceptance.
+
+Run the directory's unittest command above for regression. The focused test files
+are `test_fixture_isolation.py`, `test_fixture_child.py` and
+`test_manual_financial_reader_v2.py`. O1/O3/O4 results are offline only; O2 requires
+actual target-kernel enforcement. N0–N3 remain closed pending exact vendor
+protocol/launcher/build exclusion, constructor and creation notification
+prevention/durable evidence, supported native original IDs/session/actor, actual
+owned graph and canonical XML, NativeAccess/isolation producer and fresh recovery.
+No successful candidate test creates source fixtures, accepts a native callback,
+changes customer accounting or authorizes billing handover.

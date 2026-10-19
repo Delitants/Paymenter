@@ -106,7 +106,7 @@ def validate_profile_binding(actual: FixtureProfile, expected: FixtureProfile,
 
 
 def _validate_ref(ref: EvidenceRef, run: str, registry: str) -> None:
-    _require(type(ref) is EvidenceRef and ref.kind in _EVIDENCE_KINDS and
+    _require(type(ref) is EvidenceRef and type(ref.kind) is str and ref.kind in _EVIDENCE_KINDS and
              _digest(ref.sha256) and ref.run == run and
              ref.registry_sha256 == registry, 'fixture-evidence-reference')
 
@@ -124,3 +124,92 @@ def offline_native_gate(gate: NativeGate, profile: FixtureProfile,
     # Even complete authored references cannot establish custody, isolation,
     # native creator/session provenance or authority to execute a source action.
     return AdmissionDecision(False, ('native-evidence-verifier-absent',))
+
+
+class FixtureState(Enum):
+    ABSENT = 'absent'
+    INTENT_RESERVED = 'intent-reserved'
+    OUTCOME_KNOWN = 'outcome-known'
+    OUTCOME_UNKNOWN = 'outcome-unknown'
+    READBACK_BOUND = 'readback-bound'
+    ISOLATION_QUALIFIED = 'isolation-qualified'  # No producer in this module.
+
+
+@dataclass(frozen=True)
+class Lifecycle:
+    state: FixtureState
+    run: str
+    original_refs: tuple[EvidenceRef, ...]
+
+
+def advance(current: Lifecycle, event: str, original: EvidenceRef) -> Lifecycle:
+    _require(type(current) is Lifecycle and type(current.state) is FixtureState and
+             current.state is not FixtureState.ISOLATION_QUALIFIED and
+             _digest(current.run), 'fixture-lifecycle')
+    _require(type(current.original_refs) is tuple and len(current.original_refs) < 128,
+             'fixture-originals')
+    _require(type(original) is EvidenceRef and _digest(original.registry_sha256),
+             'fixture-original')
+    seen = set()
+    for ref in current.original_refs + (original,):
+        _validate_ref(ref, current.run, original.registry_sha256)
+        _require(ref.sha256 not in seen, 'fixture-original-duplicate')
+        seen.add(ref.sha256)
+    transitions = {
+        (FixtureState.ABSENT, 'reserve-intent'): (FixtureState.INTENT_RESERVED, 'creation'),
+        (FixtureState.INTENT_RESERVED, 'creation-result'): (FixtureState.OUTCOME_KNOWN, 'creation'),
+        (FixtureState.INTENT_RESERVED, 'creation-error'): (FixtureState.OUTCOME_UNKNOWN, 'creation'),
+        (FixtureState.INTENT_RESERVED, 'response-lost'): (FixtureState.OUTCOME_UNKNOWN, 'creation'),
+        (FixtureState.OUTCOME_KNOWN, 'independent-readback'): (FixtureState.READBACK_BOUND, 'financial-read'),
+        (FixtureState.OUTCOME_UNKNOWN, 'independent-readback'): (FixtureState.OUTCOME_UNKNOWN, 'financial-read'),
+    }
+    _require(type(event) is str and (current.state, event) in transitions,
+             'fixture-transition')
+    _require((current.state is FixtureState.ABSENT) == (not current.original_refs),
+             'fixture-history')
+    target, kind = transitions[(current.state, event)]
+    _require(original.kind == kind, 'fixture-event-original')
+    return Lifecycle(target, current.run, current.original_refs + (original,))
+
+
+@dataclass(frozen=True)
+class InvocationBudget:
+    cold_config: bool = False
+    post_commit_reload: bool = False
+    failed: bool = False
+
+
+def _validate_budget(budget):
+    _require(type(budget) is InvocationBudget and
+             all(type(v) is bool for v in (budget.cold_config, budget.post_commit_reload, budget.failed)),
+             'fixture-invocation-budget')
+    _require(not budget.post_commit_reload or budget.cold_config, 'fixture-invocation-order')
+
+
+def consume_slot(budget: InvocationBudget, slot: str) -> InvocationBudget:
+    _validate_budget(budget)
+    _require(not budget.failed, 'fixture-invocation-failed')
+    if slot == 'cold-config' and not budget.cold_config:
+        return InvocationBudget(True, False, False)
+    if slot == 'post-commit-reload' and budget.cold_config and not budget.post_commit_reload:
+        return InvocationBudget(True, True, False)
+    raise IsolationError('fixture-invocation-slot')
+
+
+def fail_budget(budget: InvocationBudget) -> InvocationBudget:
+    _validate_budget(budget)
+    return InvocationBudget(budget.cold_config, budget.post_commit_reload, True)
+
+
+@dataclass(frozen=True)
+class RetentionDecision:
+    retain_evidence: bool
+    retain_audit: bool
+    retain_inert_image: bool
+    may_delete_or_refund: bool
+
+
+def retention_decision(paid_or_unknown: bool, module_referenced: bool) -> RetentionDecision:
+    _require(type(paid_or_unknown) is bool and type(module_referenced) is bool,
+             'fixture-retention-input')
+    return RetentionDecision(True, paid_or_unknown, module_referenced, False)

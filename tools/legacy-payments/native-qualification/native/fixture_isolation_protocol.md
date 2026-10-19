@@ -70,3 +70,25 @@ accepted target. No linker, VM, kernel or other dependency is downloaded.
 The candidate config bytes and switch are intentionally unrelated to the still
 unqualified vendor protocol. No installable vendor image, discovery sidecar,
 source build path or production module registration is created by these tests.
+
+## Forward-only failure model
+
+Lifecycle starts ABSENT, reserves intent, then retains either a known authored
+creation result or an UNKNOWN result/error/lost response. A known result can bind
+an independent readback, but cannot produce ISOLATION_QUALIFIED. An UNKNOWN result
+can append an independently authorized read reference and stays UNKNOWN: no
+retry, assumed rollback, guessed identity, credit repair or deletion. Original
+references are immutable and append-only, full-run/registry bound and duplicate
+hashes refuse. These states are not native receipts or dispatch permissions.
+
+The offline example has two ordered one-use config slots, cold-config then
+post-commit-reload. A duplicate/unknown slot or any failed budget refuses. This
+model does not reserve real native invocation slots. Future exact operation
+packets independently establish finite authority and current source identities.
+
+Retention always keeps evidence; paid/unknown audit stays held, and an image is
+kept whenever an audit reference needs the inert module. No retention decision
+permits deletion or refund, even for unpaid setup. Native reconciliation and any
+retirement need separate qualified authority. Callback guard revocation and the
+existing reserved manager recovery remain the only proposed unload procedure;
+M5 does not dispatch another credit. No cleanup invokes SQL or a provider.

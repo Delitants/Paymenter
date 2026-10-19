@@ -45,6 +45,21 @@ class FixtureIsolationTests(unittest.TestCase):
             api.validate_profile_binding(other, self.profile, self.now, frozenset())
         api.validate_profile_binding(self.profile, self.profile, self.now, frozenset())
 
+    def test_unhashable_evidence_kind_has_fixed_refusal(self):
+        for kind in ([],{}):
+            reference=api.EvidenceRef(kind,'e'*64,'a'*64,'b'*64)
+            for name,call in (
+                ('gate',lambda:api.offline_native_gate(api.NativeGate.N0,self.profile,(reference,))),
+                ('lifecycle',lambda:api.advance(api.Lifecycle(api.FixtureState.ABSENT,'a'*64,()),'reserve-intent',reference))):
+                with self.subTest(kind=kind,consumer=name):
+                    try:
+                        call()
+                    except Exception as exc:
+                        self.assertIs(type(exc),api.IsolationError)
+                        self.assertEqual('fixture-evidence-reference',str(exc))
+                    else:
+                        self.fail('malformed evidence was accepted')
+
     def test_malformed_expired_and_mutable_profiles_refuse(self):
         changes = ({'expires_monotonic_ns':self.now}, {'version':'native-v1'},
                    {'protocol':'vendor-config'}, {'module':'production'},
@@ -80,3 +95,87 @@ class FixtureIsolationTests(unittest.TestCase):
                     (dataclasses.replace(refs[0], **change),))
         with self.assertRaises(api.IsolationError):
             api.offline_native_gate('N0', self.profile, refs)
+
+
+class FixtureLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        FixtureIsolationTests.setUp(self)
+        self.assertTrue(hasattr(api,'Lifecycle'),'forward-only fixture lifecycle is not implemented')
+
+    def ref(self,kind='creation',digest='e'):
+        return api.EvidenceRef(kind,digest*64,'a'*64,'b'*64)
+
+    def initial(self):
+        return api.Lifecycle(api.FixtureState.ABSENT,'a'*64,())
+
+    def intent(self):
+        return api.advance(self.initial(),'reserve-intent',self.ref())
+
+    def test_commit_then_lost_result_stays_unknown(self):
+        intent=self.intent()
+        unknown=api.advance(intent,'response-lost',self.ref(digest='f'))
+        self.assertEqual(api.FixtureState.OUTCOME_UNKNOWN,unknown.state)
+        self.assertEqual(2,len(unknown.original_refs))
+        for event in ('reserve-intent','creation-result','creation-error','response-lost','retry'):
+            with self.subTest(event=event), self.assertRaises(api.IsolationError):
+                api.advance(unknown,event,self.ref(digest='1'))
+        observed=api.advance(unknown,'independent-readback',self.ref('financial-read','1'))
+        self.assertEqual(api.FixtureState.OUTCOME_UNKNOWN,observed.state)
+        self.assertEqual(unknown.original_refs,observed.original_refs[:2])
+        self.assertEqual(3,len(observed.original_refs))
+
+    def test_originals_and_partial_failure_preserved(self):
+        intent=self.intent()
+        error=api.advance(intent,'creation-error',self.ref(digest='f'))
+        self.assertEqual(api.FixtureState.OUTCOME_UNKNOWN,error.state)
+        known=api.advance(intent,'creation-result',self.ref(digest='2'))
+        self.assertEqual(api.FixtureState.OUTCOME_KNOWN,known.state)
+        readback=api.advance(known,'independent-readback',self.ref('financial-read','3'))
+        self.assertEqual(api.FixtureState.READBACK_BOUND,readback.state)
+        self.assertEqual(intent.original_refs,readback.original_refs[:1])
+        for reference in (self.ref(),dataclasses.replace(self.ref(digest='4'),run='f'*64),
+                dataclasses.replace(self.ref(digest='4'),registry_sha256='f'*64),
+                self.ref('unknown','4')):
+            with self.subTest(reference=reference), self.assertRaises(api.IsolationError):
+                api.advance(intent,'creation-result',reference)
+        for event in ('isolation-qualified','repair-balance','rollback','delete','refund'):
+            with self.subTest(event=event), self.assertRaises(api.IsolationError):
+                api.advance(readback,event,self.ref('retirement','4'))
+        self.assertEqual(1,len(intent.original_refs))
+
+    def test_duplicate_config_and_reload_slots(self):
+        budget=api.InvocationBudget()
+        cold=api.consume_slot(budget,'cold-config')
+        done=api.consume_slot(cold,'post-commit-reload')
+        self.assertEqual((False,False,False),(budget.cold_config,budget.post_commit_reload,budget.failed))
+        self.assertEqual((True,True,False),(done.cold_config,done.post_commit_reload,done.failed))
+        for slot in ('cold-config','post-commit-reload','retry','other'):
+            with self.subTest(slot=slot), self.assertRaises(api.IsolationError):
+                api.consume_slot(done,slot)
+        for slot in ('cold-config','post-commit-reload'):
+            with self.subTest(slot=slot), self.assertRaises(api.IsolationError):
+                api.consume_slot(api.fail_budget(budget),slot)
+        with self.assertRaises(api.IsolationError):
+            api.consume_slot(budget,'post-commit-reload')
+
+    def test_offline_success_cannot_enable_native_gate(self):
+        known=api.advance(self.intent(),'creation-result',self.ref(digest='f'))
+        readback=api.advance(known,'independent-readback',self.ref('financial-read','1'))
+        self.assertNotEqual(api.FixtureState.ISOLATION_QUALIFIED,readback.state)
+        refs=tuple(self.ref(k,str(i)) for i,k in enumerate(('launcher','config','filter','creation','financial-read')))
+        for gate in api.NativeGate:
+            self.assertFalse(api.offline_native_gate(gate,self.profile,refs).allowed)
+        # A forged terminal state cannot be advanced or used to produce a grant.
+        with self.assertRaises(api.IsolationError):
+            api.advance(dataclasses.replace(readback,state=api.FixtureState.ISOLATION_QUALIFIED),
+                        'independent-readback',self.ref('financial-read','2'))
+
+    def test_referenced_inert_image_is_retained(self):
+        for paid in (False,True):
+            for referenced in (False,True):
+                with self.subTest(paid=paid,referenced=referenced):
+                    result=api.retention_decision(paid,referenced)
+                    self.assertTrue(result.retain_evidence)
+                    self.assertEqual(paid,result.retain_audit)
+                    self.assertEqual(referenced,result.retain_inert_image)
+                    self.assertFalse(result.may_delete_or_refund)
