@@ -18,9 +18,13 @@ Task 3 evidence/recovery preparation now also includes native protected
 writer/intent/read binding, original-identity seals, withheld caller-intent
 verification and fresh-reader reconciliation. The QA-only retirement policy and
 protected durable archive are tested, including foreign-row/schema/partial
-cleanup failures. There is still no native SQL mutator, permissive source guard,
-full admitted-run launcher or executable source cleanup. Standalone source-root
-file/recovery/archive fixtures use fictional DB/target/caller facts: they qualify
+cleanup failures. Guarded native creation and retirement backends are now
+implemented; they can issue QA SQL only through their separately admitted
+resource, authority and custody checks. This plan authorizes no live execution,
+and local tests do not qualify those operations on a production source. There
+is no permissive source guard or complete admitted-run launcher. Standalone
+source-root file/recovery/archive fixtures use fictional DB/target/caller facts:
+they qualify
 file custody/build compatibility, not native transaction coupling, actual
 withholding of an SDK response or source table retirement. All real F/M cases,
 SDK startup/recovery and financial gates remain pending.

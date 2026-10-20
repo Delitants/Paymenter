@@ -65,13 +65,28 @@ class OwnedProcessTests(unittest.TestCase):
         time.sleep(.8)
 
     def test_identity_mismatch_is_held_and_never_signalled(self):
-        with patch.object(api, '_same_child', return_value=False), patch.object(api.os, 'kill', wraps=os.kill) as kill:
-            r = self.run_child('import time;time.sleep(20)', seconds=.1)
-            self.assertEqual('identity-held', r['retirement'])
-            kill.assert_not_called()
-        # This test created that child; cleanup stays outside production code.
-        os.kill(r['identity']['pid'], 9)
-        os.waitpid(r['identity']['pid'], 0)
+        launched = []
+        real_popen = api.subprocess.Popen
+
+        def launch(*args, **kwargs):
+            child = real_popen(*args, **kwargs)
+            launched.append(child)
+            return child
+
+        try:
+            with patch.object(api.subprocess, 'Popen', side_effect=launch), \
+                    patch.object(api, '_same_child', return_value=False), \
+                    patch.object(api.os, 'kill', wraps=os.kill) as kill:
+                r = self.run_child('import time;time.sleep(20)', seconds=.1)
+                self.assertEqual('identity-held', r['retirement'])
+                kill.assert_not_called()
+        finally:
+            # This test owns these real children. Reap through Popen so its
+            # state records the exit; an external waitpid leaves stale state.
+            for child in launched:
+                if child.poll() is None:
+                    child.kill()
+                child.wait(timeout=2)
 
     def test_invalid_argv_input_and_limits_refuse_before_spawning(self):
         for argv, data, kw in [(['relative'], b'', {}), ([sys.executable], b'x'*65537, {}),
