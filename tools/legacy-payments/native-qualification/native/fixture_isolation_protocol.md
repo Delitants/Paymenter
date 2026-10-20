@@ -53,14 +53,33 @@ exit74 without retry. It never reads stdin, argv[0] or environment.
 
 The cBPF array in `fixture_child_policy.h` requires x86-64 (not x32) and only
 allows exit/exit_group and writes to stdout<=4096 or stderr<=256 bytes. Full-width
-fd/count comparisons prevent high-word bypass. It kills every other syscall;
-`PR_SET_NO_NEW_PRIVS` then `SECCOMP_SET_MODE_FILTER` must succeed first. Minimum
-Linux kernel4.14 with filter support is required. The filter limits each write;
-the immutable program limits total writes. It does not constrain the parent
-launcher or establish notification isolation.
+fd/count comparisons prevent high-word bypass. It kills the calling task for
+every other syscall using Linux3.10's `SECCOMP_RET_KILL` action. That terminates
+the entire fixture only because its freestanding entry is strictly single-thread:
+no interpreter, constructors or pre-filter thread creation, and no clone/fork/exec
+allowed after setup. This policy is not valid for a multithreaded process and does
+not claim thread-group termination. The final ELF/entry/launcher qualification
+must establish this invariant; an unqualified image cannot gain native admission.
+
+`prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)` followed by
+`prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program, 0, 0)` must succeed before
+argument handling. The child uses that one fixed setup interface; it never tries
+a newer syscall or continues without a filter. Either setup failure exits126
+with no config or diagnostic output. Linux3.10 with actual seccomp-filter support
+is the candidate floor; kernel version alone does not establish support. The
+filter limits each write; the immutable program limits total writes. It does not
+constrain the parent launcher or establish notification isolation.
+
+The [upstream Linux3.10 filter documentation](https://raw.githubusercontent.com/torvalds/linux/v3.10/Documentation/prctl/seccomp_filter.txt)
+describes this interface and its no_new_privs prerequisite. It is not evidence
+that an installed host has filtering enabled.
 
 Tests compile the actual C with an authored syscall boundary and interpret the
 same filter bytes against denied syscall/descriptor/count/architecture inputs.
+The authored syscall boundary admits only ordered no_new_privs then legacy prctl
+filter installation with the actual BPF bytes, and can refuse either setup step.
+The portable interpreter uses a distinct invalid-program sentinel, so malformed
+instructions cannot masquerade as the zero-valued legacy kill action.
 Those are portable tests, not kernel acceptance. Cross-compiling relocatable
 objects checks assembler/compiler syntax only. Final static ELF checks require a
 compatible ELF linker; `LinuxFixtureChildTests` also requires actual x86-64 Linux.

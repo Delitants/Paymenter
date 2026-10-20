@@ -399,7 +399,11 @@ The [fixture protocol](native/fixture_isolation_protocol.md) now has a strict
 immutable profile, always-closed native admission and forward-only failure model.
 The freestanding child recognizes an authored offline config switch only. Its
 portable tests use the real output logic and cBPF bytes; cross-compiled ELF objects
-are syntax coverage. Final ELF and actual x86-64 Linux filter tests explicitly
+are syntax coverage. The single-thread-only child now uses the Linux3.10 prctl
+filter interface and legacy task-kill action, preserving the same syscall and
+output limits. Failure of either setup step exits before any config output;
+there is no permissive fallback. Thread-group isolation is not claimed, and the
+final executable/entry/launcher must qualify the single-thread invariant. Final ELF and actual x86-64 Linux filter tests explicitly
 report `BLOCKED-O2` when prerequisites are absent. No runtime is downloaded.
 
 The [reader-v2 candidate](native/manual_financial_reader_v2_protocol.md) adds a

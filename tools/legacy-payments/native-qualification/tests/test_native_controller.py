@@ -1,6 +1,8 @@
 from pathlib import Path
 import subprocess,tempfile,unittest,shutil,sys
 HERE=Path(__file__).resolve().parent
+# Keep protected runtime fixtures shallow; every custody check still runs.
+FIXTURE_ROOT=HERE.parents[3]
 class NativeControllerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -26,7 +28,7 @@ class NativeControllerBindingTests(unittest.TestCase):
         cls.c=subprocess.run(['/usr/bin/c++','-std=c++11','-Wall','-Wextra','-Werror','-pthread','-I'+str(HERE/'fake_retirement_mysql'),str(HERE/'native_controller_fixture.cpp'),'-o',str(cls.binary),*flags],capture_output=True,timeout=30)
     def scenario(self,m):
         self.assertEqual(0,self.c.returncode,self.c.stderr.decode(errors='replace'))
-        with tempfile.TemporaryDirectory(prefix='controller-operation-',dir=HERE) as tmp:
+        with tempfile.TemporaryDirectory(prefix='controller-operation-',dir=FIXTURE_ROOT) as tmp:
             r=subprocess.run([str(self.binary),m,tmp],capture_output=True,timeout=25)
             self.assertEqual(0,r.returncode,r.stderr.decode(errors='replace'))
 for m in ('caller-alias','normal','large-reply','wrong-producer','reused-reader','injection-not-reached','visible-barrier','missing-barrier','F5-mutated','capture-overflow','lost-native-child'):

@@ -10,6 +10,8 @@ import time
 import unittest
 
 HERE=Path(__file__).resolve().parent
+# Keep protected runtime fixtures shallow; every custody check still runs.
+FIXTURE_ROOT=HERE.parents[3]
 NATIVE=HERE.parent/'native'
 SCENARIOS=('f1','f2','f3','f4-barrier','f4-after','split','wrong-writer','wrong-intent',
            'wrong-request','same-reader','read-failure','completion-hash','stale-read',
@@ -55,7 +57,7 @@ class CaseEvidenceTests(unittest.TestCase):
     def scenario(self,name):
         self.assertIsNotNone(self.compiled,'protected case evidence binding is not implemented')
         self.assertEqual(0,self.compiled.returncode,self.compiled.stderr.decode(errors='replace'))
-        with tempfile.TemporaryDirectory(prefix='case-evidence-',dir=HERE) as tmp:
+        with tempfile.TemporaryDirectory(prefix='case-evidence-',dir=FIXTURE_ROOT) as tmp:
             root=Path(tmp).resolve();controls(root)
             r=subprocess.run([str(self.binary),name,str(root)],capture_output=True,timeout=5)
             self.assertEqual(0,r.returncode,r.stderr.decode(errors='replace'))

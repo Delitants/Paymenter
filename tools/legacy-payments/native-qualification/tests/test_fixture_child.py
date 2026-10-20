@@ -73,7 +73,7 @@ class FixtureChildPortableTests(unittest.TestCase):
                                  (result.returncode,result.stdout,result.stderr))
 
     def test_policy_decisions(self):
-        allow=0x7fff0000;kill=0x80000000;arch=0xc000003e
+        allow=0x7fff0000;kill=0x00000000;arch=0xc000003e
         cases=[(1,arch,1,4096,allow),(1,arch,2,256,allow),(60,arch,0,0,allow),
                (231,arch,0,0,allow),(1,arch,1,4097,kill),(1,arch,2,257,kill),
                (1,arch,3,1,kill),(1,arch,1+(1<<32),1,kill),
@@ -91,6 +91,16 @@ class FixtureChildPortableTests(unittest.TestCase):
         with self.assertRaises(subprocess.TimeoutExpired):
             run_open_stdin([sys.executable,'-c','import time;time.sleep(1.5)'],timeout=0.05)
         self.assertLess(time.monotonic()-begin,1.0)
+
+    def test_legacy_setup_without_newer_seccomp_syscall(self):
+        # Driver exposes only ordered no_new_privs then prctl filter setup.
+        # A child that still calls syscall317 cannot produce config here.
+        result=subprocess.run([str(self.binary),'run','--offline-config-v0'],capture_output=True,timeout=2)
+        self.assertEqual((0,CONFIG,b''),(result.returncode,result.stdout,result.stderr))
+
+    def test_no_new_privs_failure_stops_before_filter_or_output(self):
+        result=subprocess.run([str(self.binary),'no-new-privs-fail','--offline-config-v0'],capture_output=True,timeout=2)
+        self.assertEqual((126,b'',b''),(result.returncode,result.stdout,result.stderr))
 
     def test_setup_failure_portable_boundary(self):
         result=subprocess.run([str(self.binary),'setup-fail','--offline-config-v0'],capture_output=True,timeout=2)
@@ -133,7 +143,7 @@ class FixtureChildPortableTests(unittest.TestCase):
 class LinuxFixtureChildTests(unittest.TestCase):
     def test_setup_failure_x32_and_open_stdin(self):
         release=platform.release().split('-')[0].split('.')
-        self.assertGreaterEqual(tuple(map(int,release[:2])),(4,14))
+        self.assertGreaterEqual(tuple(map(int,release[:2])),(3,10))
         with tempfile.TemporaryDirectory(prefix='fixture-linux-',dir=HERE) as tmp:
             candidate=Path(tmp)/'candidate'
             elf_build(candidate)

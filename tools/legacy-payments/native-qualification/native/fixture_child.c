@@ -7,7 +7,8 @@ int fixture_install_filter(void) {
     program.len=(unsigned short)FIXTURE_FILTER_LEN;
     program.filter=fixture_filter;
     if(fixture_syscall6(157,38,1,0,0,0,0)!=0) return -1;
-    if(fixture_syscall6(317,1,0,(long)&program,0,0,0)!=0) return -1;
+    /* Linux3.10 interface. No newer-syscall attempt or permissive fallback. */
+    if(fixture_syscall6(157,22,2,(long)&program,0,0,0)!=0) return -1;
     return 0;
 }
 
