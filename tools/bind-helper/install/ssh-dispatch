@@ -1,0 +1,4 @@
+#!/bin/sh
+# Root-owned; invoked by the dedicated key's forced command, never user argv.
+[ "$#" -eq 0 ] && [ "${SSH_ORIGINAL_COMMAND-}" = 'paymenter-bind-v1' ] || exit 126
+exec /usr/bin/sudo -n -- /usr/local/libexec/paymenter-bind-helper

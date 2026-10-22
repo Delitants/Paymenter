@@ -1,0 +1,26 @@
+{
+  "schema": "paymenter-bind-package-v1",
+  "version": "0.1.0",
+  "files": {
+    "paymenter_bind/__init__.py": "ca53759424b3b5a1cf786f534029a7312eb11686fd05afa6a86f7bc8bf98a20b",
+    "paymenter_bind/cli.py": "5d7feae7b8ee864db32ef045d1f0c749bbbc147bbd82e9f3a50983b8413fa9ca",
+    "paymenter_bind/commands.py": "e70d776829c5ad68325fa022fced472d60d4d706a971bccf8a717423dac48116",
+    "paymenter_bind/config.py": "ca570934ce5dafde239511d4c9bc740ae94a835ef8900449bbb84f9d7cd6e895",
+    "paymenter_bind/convergence.py": "2a910584adc969ab43c92ad87063f0a68751f775a050e896c3ab4a84c6cd8954",
+    "paymenter_bind/custody.py": "31b22fb13f2d685e2ab4e8ca5358ca2ef3ba3686b98ff53e8d0e6c4091d4da96",
+    "paymenter_bind/journal.py": "558a58108496bf96c217eabfd690c60bc1bdbbc3593c8f67c3f7438d15362df1",
+    "paymenter_bind/lifecycle.py": "322d29f82db490408637d4ca945a23cc8fe12094467bbe6894c05bb26063ed21",
+    "paymenter_bind/operations.py": "6ad36d0cd38d7bc56341f86b1e7d2f69f41ee83f9b56546b71a54d813cbd77de",
+    "paymenter_bind/protocol.py": "00bb0b910524528cef04e56719af23024534d342208767ded415027bedf28ef1",
+    "paymenter_bind/qualify.py": "db116ba2f4ab933234d97677c0dfcd0946e8e06fc7afe94b98d93890611e177c",
+    "paymenter_bind/zone.py": "cfc26cf6cc605109687f99899d338a9d288fe47d22d08139cb24130928fa5e4f",
+    "requirements.lock": "1af5f26ac1a54a5ea7d74b56665a802ae7715d718e229f72cbb3b15398317871",
+    "pyproject.toml": "2a2ec1a0ce20dd6aa3fa11aafc247f063053e83e084600b8a6e60e1eb2f73496",
+    "install/authorized_keys.example": "4203db4f09c11172997d318f8e3e898781debee7c68f7a6347d92e8ef0ca1113",
+    "install/paymenter-bind-helper": "5ee1edb7f68d47db6a0738cf7e66a5fb2f42eec42e7a6919bb9ee7140d33708d",
+    "install/server-config.example.json": "5437085b7c1568b043da4dddf83eab81b10abc34afb149f4394731a076bf4244",
+    "install/ssh-dispatch": "3b1cacea001ed420ececcb0ac4c7f77dbece726ed488b78b51928534bd8dcda3",
+    "install/sudoers.example": "97b68aba52002d23937176e452d30cad118c49e0dc736859cf98c61563bfded5",
+    "tests/native-acceptance.example.json": "724e5bc911757596ec6054fe5b1cdffd283c1deeaebc372455d5dc906abefc2d"
+  }
+}

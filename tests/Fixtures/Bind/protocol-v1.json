@@ -1,0 +1,54 @@
+{
+  "requests": [
+    {
+      "protocol": "paymenter-bind-v1",
+      "request_id": "00000000-0000-4000-8000-000000000001",
+      "binding_id": "00000000-0000-4000-8000-000000000002",
+      "operation": "inspect",
+      "payload": {}
+    },
+    {
+      "protocol": "paymenter-bind-v1",
+      "request_id": "00000000-0000-4000-8000-000000000001",
+      "binding_id": "00000000-0000-4000-8000-000000000002",
+      "operation": "prepare_zone",
+      "payload": {}
+    },
+    {
+      "protocol": "paymenter-bind-v1",
+      "request_id": "00000000-0000-4000-8000-000000000001",
+      "binding_id": "00000000-0000-4000-8000-000000000002",
+      "operation": "prepare_secondary",
+      "payload": {}
+    },
+    {
+      "protocol": "paymenter-bind-v1",
+      "request_id": "00000000-0000-4000-8000-000000000001",
+      "binding_id": "00000000-0000-4000-8000-000000000002",
+      "operation": "inspect_request",
+      "payload": {
+        "request_id": "00000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "protocol": "paymenter-bind-v1",
+      "request_id": "00000000-0000-4000-8000-000000000001",
+      "binding_id": "00000000-0000-4000-8000-000000000002",
+      "operation": "replace_records",
+      "payload": {
+        "expected_serial": 0,
+        "expected_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "changes": [
+          {
+            "owner": "www",
+            "type": "A",
+            "ttl": 300,
+            "records": [
+              "192.0.2.1"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
