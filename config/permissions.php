@@ -23,7 +23,16 @@ return [
                 'delete' => 'Delete Invoices',
                 'deleteAny' => 'Bulk Delete Invoices',
             ],
+            'account_funding' => [
+                'view' => 'View private account funding statements and audit lineage',
+            ],
             'invoice_transactions' => [
+                'account_reverse' => 'Reverse internal account funding',
+                'manual_settle' => 'Record or restore manual settlement',
+                'manual_unsettle' => 'Reverse manual settlement',
+                'refund' => 'Issue or record payment refunds',
+                'capture' => 'Capture authorized payments',
+                'reconcile' => 'Reconcile payment operations',
                 'create' => 'Create Invoice Transactions',
                 'update' => 'Update Invoice Transactions',
                 'viewAny' => 'View Invoice Transactions',

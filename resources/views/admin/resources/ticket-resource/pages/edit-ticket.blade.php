@@ -8,17 +8,23 @@
                         @if ($loop->last) x-data x-init="$el.scrollIntoView()" @endif>
                         <div class="flex justify-between gap-4">
                             <div class="flex items-center gap-4">
+                                @if($message->user)
                                 <x-filament-panels::avatar.user
                                     :user="$message->user"
                                     class="size-7 shrink-0 rounded-full block"
                                 />
+                                @endif
                                 <div class="flex flex-col">
                                     <div class="flex gap-3 items-center">
 
+                                        @if($message->user)
                                         <a class="text-lg font-semibold hover:underline"
                                         href="{{ App\Admin\Resources\UserResource::getUrl('edit', ['record' => $message->user]) }}">
-                                        {{ $message->user->name }}
+                                        {{ $message->author_name }}
                                     </a>
+                                    @else
+                                        <span class="text-lg font-semibold">{{ $message->author_name }}</span>
+                                    @endif
                                 </div>
                                 <div class="flex gap-1">
                                     <p class="text-sm text-gray-500">
@@ -47,10 +53,12 @@
                         </div>
                         <div>
                             @can('delete', $message)
+                            @if(!\App\Services\BillmanagerMigration\MigrationHold::isHeld($message))
                             <button wire:click="deleteMessage({{ $message->id }})"
                                 class="dark:text-danger-300 text-danger-600 p-0">
                                 Delete
                             </button>
+                            @endif
                             @endcan
                         </div>
                     </div>
@@ -80,6 +88,7 @@
                 </div>
                 @endforeach
             </div>
+            @if(!\App\Services\BillmanagerMigration\MigrationHold::isHeld($this->record))
             <form wire:submit="send">
                 <div class="mt-4 mb-4">
                     {{ $this->form }}
@@ -94,6 +103,9 @@
                     </x-filament::button>
                 </div>
             </form>
+            @else
+                <p class="mt-4 text-sm">This imported ticket is read-only until support handover.</p>
+            @endif
         </div>
 
         <div class="md:order-last order-first w-full col-span-3 sm:col-auto">{{ $this->infolist }}</div>

@@ -6,6 +6,7 @@ use App\Events\Setting\Retrieved;
 use App\Events\Setting\Saved;
 use App\Events\Setting\Saving;
 use App\Redactors\RightRedactor;
+use App\Redactors\SecretRedactor;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use OwenIt\Auditing\Contracts\Auditable;
 
@@ -44,7 +45,7 @@ class Setting extends Model implements Auditable
         }
 
         return [
-            'value' => RightRedactor::class,
+            'value' => in_array($this->key, ['wm_certificate', 'wm_private_key', 'wm_key_passphrase'], true) ? SecretRedactor::class : RightRedactor::class,
         ];
     }
 }

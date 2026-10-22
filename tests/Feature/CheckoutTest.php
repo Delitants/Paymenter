@@ -2,8 +2,14 @@
 
 namespace Tests\Feature;
 
+use App\Livewire\Products\Checkout;
 use App\Models\Cart;
+use App\Models\CartItem;
+use App\Models\ConfigOption;
+use App\Models\Setting;
+use App\Models\TaxRate;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Once;
 use Livewire\Livewire;
 use Tests\TestCase;
@@ -146,5 +152,151 @@ class CheckoutTest extends TestCase
             ->set('plan_id', $plan->id)
             ->call('checkout')
             ->assertHasErrors(['plan_id' => 'exists']);
+    }
+
+    public function test_checkout_config_prices_are_calculated_from_cents(): void
+    {
+        $component = new class extends Checkout
+        {
+            public array $checkoutConfigForTest = [];
+
+            public function getCheckoutConfig()
+            {
+                return $this->checkoutConfigForTest;
+            }
+        };
+
+        $component->product = $this->product->product;
+        $component->plan = $this->product->plan;
+        $component->configOptions = [];
+        $component->checkoutConfig = ['ipv4_count' => '2'];
+        $component->checkoutConfigForTest = [
+            [
+                'name' => 'ip_addresses_section',
+                'type' => 'section',
+                'fields' => [
+                    [
+                        'name' => 'ipv4_count',
+                        'type' => 'radio',
+                        'prices' => [
+                            '1' => 0,
+                            '2' => 400,
+                        ],
+                    ],
+                ],
+            ],
+        ];
+
+        $component->updatePricing();
+
+        $this->assertSame(14.00, $component->total->price);
+    }
+
+    public function test_checkout_summary_matches_paid_checkbox_cart_and_separates_setup_fee(): void
+    {
+        $option = ConfigOption::create(['name' => 'Synthetic backup', 'type' => 'checkbox']);
+        $child = $option->children()->create(['name' => 'Enabled', 'type' => 'select']);
+        $this->assertNotSame(1, $child->id);
+        $option->products()->attach($this->product->product);
+        $plan = $child->plans()->create(['name' => 'Monthly', 'type' => 'recurring', 'billing_period' => 1, 'billing_unit' => 'month']);
+        $plan->prices()->create(['price' => 3, 'setup_fee' => 7, 'currency_code' => 'USD']);
+        $component = Livewire::test(Checkout::class, ['category' => $this->product->product->category, 'product' => $this->product->product->slug])
+            ->set('configOptions.' . $option->id, true);
+        $total = $component->get('total');
+        $this->assertSame(13.0, $total->price);
+        $this->assertSame(7.0, $total->setup_fee);
+        $dom = new \DOMDocument;
+        @$dom->loadHTML($component->html());
+        $xpath = new \DOMXPath($dom);
+        $root = $xpath->query('//*[@*[name()="wire:id"]]')->item(0);
+        $this->assertSame('div', $root->tagName);
+        $this->assertSame(1, $xpath->query('.//input[@type="checkbox"]', $root)->length);
+        // Read the actual order-summary amounts, independently of component state.
+        $panel = $xpath->query('//*[contains(concat(" ", normalize-space(@class), " "), " checkout-summary-panel ")]')->item(0);
+        $this->assertNotNull($panel);
+        $this->assertStringContainsString('$20.00', $panel->textContent);
+        $this->assertStringContainsString('$13.00', $panel->textContent);
+        $component->call('checkout')->assertHasNoErrors();
+        $item = CartItem::firstOrFail();
+        $this->assertSame($total->price, $item->price->price);
+        $this->assertSame($total->setup_fee, $item->price->setup_fee);
+    }
+
+    public function test_checkout_tax_line_includes_tax_on_paid_option_setup_charge(): void
+    {
+        foreach (['tax_enabled' => true, 'tax_type' => 'exclusive', 'tax_scope' => 'all'] as $key => $value) {
+            Setting::updateOrCreate(['key' => $key, 'settingable_type' => null, 'settingable_id' => null], ['value' => $value]);
+        }
+        config(['settings' => collect(config('settings'))->all()]);
+        config(['settings.tax_enabled' => true, 'settings.tax_type' => 'exclusive', 'settings.tax_scope' => 'all']);
+        TaxRate::query()->delete();
+        TaxRate::create(['name' => 'Synthetic tax', 'rate' => '7.1250', 'country' => 'all']);
+        $option = ConfigOption::create(['name' => 'Synthetic backup', 'type' => 'checkbox']);
+        $child = $option->children()->create(['name' => 'Enabled', 'type' => 'select']);
+        $option->products()->attach($this->product->product);
+        $plan = $child->plans()->create(['name' => 'Monthly', 'type' => 'recurring', 'billing_period' => 1, 'billing_unit' => 'month']);
+        $plan->prices()->create(['price' => '3.00', 'setup_fee' => '7.00', 'currency_code' => 'USD']);
+        $component = Livewire::test(Checkout::class, ['category' => $this->product->product->category, 'product' => $this->product->product->slug])
+            ->set('configOptions.' . $option->id, true);
+        $dom = new \DOMDocument;
+        @$dom->loadHTML($component->html());
+        $xpath = new \DOMXPath($dom);
+        $panel = $xpath->query('//*[contains(concat(" ", normalize-space(@class), " "), " checkout-summary-panel ")]')->item(0);
+        $tax = $xpath->query('.//div[span[1][contains(., "Synthetic tax")]]/span[2]', $panel);
+        $this->assertSame(1, $tax->length);
+        // 13.00 recurring + 7.00 setup = 20.00 net; 0.93 + 0.50 = 1.43 tax.
+        $this->assertSame('$1.43', trim($tax->item(0)->textContent));
+        $this->assertStringContainsString('$20.00', $panel->textContent);
+        $this->assertStringContainsString('$21.43', $panel->textContent);
+        $this->assertStringContainsString('$13.93', $panel->textContent);
+    }
+
+    public function test_top_level_and_nested_provider_fields_are_rendered(): void
+    {
+        Livewire::test(GenericCheckoutFixture::class, ['category' => $this->product->product->category, 'product' => $this->product->product->slug])
+            ->assertSee('checkoutConfig.vm_type', false)->assertSee('checkoutConfig.os_template', false)
+            ->assertSee('Synthetic LXC')->assertSee('Synthetic template')
+            ->assertSee('checkoutConfig.ipv6_enabled', false)->assertSee('Synthetic IPv6')
+            ->assertSee('checkoutConfig.region', false)->assertSee('checkoutConfig.description', false)
+            ->assertDontSee('You must select either a Cloud Image');
+    }
+
+    public function test_nested_checkout_fields_validate_their_allowed_values(): void
+    {
+        $component = new class extends Checkout
+        {
+            public function getCheckoutConfig()
+            {
+                return [['name' => 'network', 'type' => 'section', 'fields' => [
+                    ['name' => 'ipv4_count', 'label' => 'IPv4 count', 'type' => 'radio', 'required' => true, 'options' => ['1' => 'One', '2' => 'Two']],
+                    ['name' => 'ipv6_enabled', 'label' => 'IPv6', 'type' => 'checkbox'],
+                ]]];
+            }
+        };
+        $component->product = $this->product->product;
+        $component->configOptions = [];
+        foreach ([['ipv4_count' => '999', 'ipv6_enabled' => false], ['ipv4_count' => '1', 'ipv6_enabled' => 'invalid']] as $invalid) {
+            $validator = Validator::make(['plan_id' => $this->product->plan->id, 'checkoutConfig' => $invalid], $component->rules());
+            $this->assertTrue($validator->fails(), 'Nested invalid selection was accepted');
+        }
+        $validator = Validator::make(['plan_id' => $this->product->plan->id, 'checkoutConfig' => ['ipv4_count' => '2', 'ipv6_enabled' => true]], $component->rules());
+        $this->assertFalse($validator->fails());
+        $this->assertSame('IPv4 count', $component->attributes()['checkoutConfig.ipv4_count']);
+    }
+}
+
+class GenericCheckoutFixture extends Checkout
+{
+    public function getCheckoutConfig()
+    {
+        return [
+            ['name' => 'vm_type', 'type' => 'select', 'options' => ['qemu' => 'Synthetic QEMU', 'lxc' => 'Synthetic LXC']],
+            ['name' => 'os_template', 'type' => 'select', 'options' => ['template' => 'Synthetic template']],
+            ['name' => 'section', 'type' => 'section', 'fields' => [
+                ['name' => 'ipv6_enabled', 'label' => 'Synthetic IPv6', 'type' => 'checkbox', 'default' => false],
+                ['name' => 'region', 'type' => 'text', 'required' => true],
+                ['name' => 'description', 'type' => 'text'],
+            ]],
+        ];
     }
 }

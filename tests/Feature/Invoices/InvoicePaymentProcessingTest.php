@@ -4,6 +4,7 @@ namespace Tests\Feature\Invoices;
 
 use App\Enums\InvoiceTransactionStatus;
 use App\Helpers\ExtensionHelper;
+use App\Models\Gateway;
 use App\Models\Invoice;
 use App\Models\Service;
 use App\Models\User;
@@ -173,6 +174,8 @@ class InvoicePaymentProcessingTest extends TestCase
 
     public function test_fee_can_be_updated_after_payment()
     {
+        // Processor deductions require a real native gateway original.
+        Gateway::create(['name' => 'Synthetic Stripe fee method', 'type' => 'gateway', 'extension' => 'Stripe', 'enabled' => false]);
         $invoice = $this->createInvoiceWithItem(100.00);
 
         // Initial payment without fee

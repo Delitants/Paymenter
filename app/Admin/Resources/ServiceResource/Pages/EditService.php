@@ -22,6 +22,11 @@ class EditService extends EditRecord
     protected function getHeaderActions(): array
     {
         return [
+            Action::make('credentials')
+                ->label('View credentials')
+                ->icon('ri-key-line')
+                ->visible(fn (): bool => ViewCredentials::canAccess())
+                ->url(fn (): string => ServiceResource::getUrl('credentials', ['record' => $this->getRecord()])),
             DeleteAction::make()
                 ->form(function (DeleteAction $action) {
                     $status = !in_array($this->record->status, [Service::STATUS_PENDING, Service::STATUS_CANCELLED]) && $this->record->product->server_id !== null;

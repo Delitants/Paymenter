@@ -4,6 +4,8 @@ namespace App\Observers;
 
 use App\Events\Invoice as InvoiceEvent;
 use App\Models\Invoice;
+use App\Services\Billing\InvoicePricing;
+use App\Services\Gateways\PaymentWriteGuard;
 use App\Services\Invoice\ProcessPaidInvoiceService;
 
 class InvoiceObserver
@@ -13,6 +15,7 @@ class InvoiceObserver
      */
     public function creating(Invoice $invoice): void
     {
+        (new InvoicePricing)->capture($invoice);
         event(new InvoiceEvent\Creating($invoice));
     }
 
@@ -43,8 +46,7 @@ class InvoiceObserver
      */
     public function updated(Invoice $invoice): void
     {
-        if ($invoice->isDirty('status') && $invoice->status == 'paid') {
-            app(ProcessPaidInvoiceService::class)->handle($invoice);
+        if ($invoice->isDirty('status') && $invoice->status == 'paid' && !(new PaymentWriteGuard)->defersIncomingProcessing($invoice) && app(ProcessPaidInvoiceService::class)->handle($invoice)) {
             event(new InvoiceEvent\Paid($invoice));
         }
         event(new InvoiceEvent\Updated($invoice));
