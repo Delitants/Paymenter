@@ -21,7 +21,7 @@ class Operations:
      free=os.statvfs(binding.state_root);need(free.f_bavail*free.f_frsize>33554432+len(before.raw)*4);state.save(request['request_id']+'.before.zone',before.raw);state.save(request['request_id']+'.candidate.zone',candidate.raw)
     # Recheck runtime serial immediately before installation, not only the file.
     again=self.commands.status(binding);need(again==loaded)
-    binding.assert_current();installed=owned.install(candidate.raw,request['request_id'],before.image)
+    binding.assert_current();self.commands.guard_install();installed=owned.install(candidate.raw,request['request_id'],before.image)
     self.commands.reload(binding);self.commands.notify(binding);observed=self.commands.status(binding);after=read_zone(binding)
     need(observed.serial==candidate.serial and after.revision==candidate.revision and observed.file_identity==after.image.identity)
     return attempt.record('committed',{'serial':after.serial,'revision':after.revision},'SAVED')
@@ -36,7 +36,7 @@ class Operations:
      need(owned.read()==installed);current=self.commands.status(binding);need(current.serial in {before.serial,candidate.serial})
      rollback_serial=next_serial(candidate.serial);need(serial_newer(rollback_serial,current.serial))
      rollback=self._rollback(before,rollback_serial)
-     self.commands.check(rollback);binding.assert_current();owned.install(rollback.raw,request['request_id'],installed);self.commands.reload(binding);self.commands.notify(binding);observed=self.commands.status(binding);restored=read_zone(binding)
+     self.commands.check(rollback);binding.assert_current();self.commands.guard_install();owned.install(rollback.raw,request['request_id'],installed);self.commands.reload(binding);self.commands.notify(binding);observed=self.commands.status(binding);restored=read_zone(binding)
      need(observed.serial==rollback_serial and restored.revision==rollback.revision and observed.file_identity==restored.image.identity)
      return attempt.record('rejected',{'serial':restored.serial,'revision':restored.revision},'ROLLED_BACK')
     except Exception:return attempt.record('uncertain',{},'OUTCOME_UNCONFIRMED')

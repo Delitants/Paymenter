@@ -9,6 +9,7 @@ from paymenter_bind.zone import read_zone
 from paymenter_bind.custody import RootDirectory
 from paymenter_bind.commands import LoadedState
 class Commands:
+ def guard_install(self):pass
  def __init__(self,b,fail=False):self.b=b;self.fail=fail;self.events=[];self.loaded=4294967295
  def status(self,b):
   self.events.append('status');image=read_zone(b).image

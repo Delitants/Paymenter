@@ -5,7 +5,8 @@ import pathlib
 import re
 
 MODULES = {'__init__', 'protocol', 'config', 'zone', 'custody', 'journal', 'commands',
-           'operations', 'lifecycle', 'convergence', 'cli', 'qualify'}
+           'operations', 'lifecycle', 'convergence', 'cli', 'qualify', 'legacy',
+           'runtime_bundle', 'runtime_admission'}
 
 
 def require(condition):

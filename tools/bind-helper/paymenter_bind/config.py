@@ -7,6 +7,7 @@ from .protocol import need,uuid,OPS,pairs
 class Binding:
  id:str;zone:str;view:str;role:str;file:str;zone_root:str;state_root:str;uid:int=0;gid:int=0
  manager_uid:int|None=None;ttl_min:int=60;ttl_max:int=86400
+ status_profile:str='strict';expected_version:str='';binary_pins:tuple=();named:str='/usr/sbin/named'
  main_config:str='/etc/named.conf';managed_include:str='';primary:str='';secondary:str=''
  nameservers:tuple=();transfer_key:str=''
  compilezone:str='/usr/sbin/named-compilezone'
@@ -26,7 +27,7 @@ def load_binding(config_dir_fd,binding_id,operation,expected_uid=0):
   raw=os.read(fd,262145);need(len(raw)==s.st_size);after=os.fstat(fd);need((s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns)==(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns))
  finally:os.close(fd)
  c=json.loads(raw.decode(),object_pairs_hook=pairs);need(c.get('version')==1 and type(c.get('bindings'))is dict and type(c.get('protected_zones'))is list)
- allowed={'version','zone_root','state_root','protected_zones','bindings','ttl_min','ttl_max','main_config','checkzone','checkconf','rndc','compilezone','nameservers','primary','secondary','transfer_key'};need(set(c)<=allowed)
+ allowed={'version','zone_root','state_root','protected_zones','bindings','ttl_min','ttl_max','main_config','checkzone','checkconf','rndc','compilezone','nameservers','primary','secondary','transfer_key','status_profile','legacy_status','named'};need(set(c)<=allowed)
  r=c['bindings'].get(binding_id);need(type(r)is dict and set(r)<={'zone','view','role','file','operations','uid','gid','managed_include'})
  need(operation in r.get('operations',[])and set(r.get('operations',[]))<=OPS)
  zone=r.get('zone');need(type(zone)is str and zone.isascii()and re.fullmatch(r'(?:[a-z0-9_*-]+\.)+',zone)is not None and len(zone)<=254 and zone not in {'.','in-addr.arpa.','ip6.arpa.'}and not zone.endswith(('.in-addr.arpa.','.ip6.arpa.')))
@@ -39,5 +40,13 @@ def load_binding(config_dir_fd,binding_id,operation,expected_uid=0):
  for key in ['main_config','checkzone','checkconf','rndc','compilezone']:
   if key in values:need(type(values[key])is str and values[key].startswith('/')and '\x00'not in values[key]and '..'not in values[key].split('/'))
  for key in ['uid','gid']:need(type(r.get(key,expected_uid))is int and r.get(key,expected_uid)>=0)
+ profile=c.get('status_profile','strict');need(profile in {'strict','bind-9.11.4-p2'})
+ legacy=c.get('legacy_status');pins=();expected=''
+ if profile=='strict':need(legacy is None)
+ else:
+  need(type(legacy)is dict and set(legacy)=={'expected_version','binary_sha256'})
+  expected=legacy['expected_version'];need(type(expected)is str and len(expected)<=512 and re.fullmatch(r'BIND 9\.11\.4-P2(?:[ -][A-Za-z0-9_.:<> ()-]+)?',expected)is not None)
+  hashes=legacy['binary_sha256'];need(type(hashes)is dict and set(hashes)=={'named','rndc','checkconf','checkzone','compilezone'}and all(type(v)is str and re.fullmatch('[a-f0-9]{64}',v)is not None for v in hashes.values()));pins=tuple(sorted(hashes.items()))
+ named=c.get('named','/usr/sbin/named');need(type(named)is str and named.startswith('/')and '\x00'not in named and '..'not in named.split('/'))
  lo=c.get('ttl_min',60);hi=c.get('ttl_max',86400);need(type(lo)is int and type(hi)is int and 1<=lo<=hi<=2147483647)
- return Binding(id=binding_id,zone=zone,view=r['view'],role=r['role'],file=r['file'],zone_root=c['zone_root'],state_root=c['state_root'],uid=r.get('uid',expected_uid),gid=r.get('gid',os.getgid()),manager_uid=expected_uid,managed_include=r.get('managed_include',''),**values)
+ return Binding(id=binding_id,zone=zone,view=r['view'],role=r['role'],file=r['file'],zone_root=c['zone_root'],state_root=c['state_root'],uid=r.get('uid',expected_uid),gid=r.get('gid',os.getgid()),manager_uid=expected_uid,managed_include=r.get('managed_include',''),status_profile=profile,expected_version=expected,binary_pins=pins,named=named,**values)

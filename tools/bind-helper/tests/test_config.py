@@ -16,6 +16,13 @@ class ConfigTest(unittest.TestCase):
    with self.assertRaises(ValueError):load_binding(self.fd,bid,op,os.getuid())
   self.config['bindings'][BID]['zone']='child.infra.test.';self.save()
   with self.assertRaises(ValueError):load_binding(self.fd,BID,'inspect',os.getuid())
+ def test_legacy_profile_is_opt_in_and_requires_complete_exact_pins(self):
+  self.assertEqual(load_binding(self.fd,BID,'inspect',os.getuid()).status_profile,'strict')
+  self.config['status_profile']='bind-9.11.4-p2';self.save()
+  with self.assertRaises(ValueError):load_binding(self.fd,BID,'inspect',os.getuid())
+  pins={k:'a'*64 for k in ['named','rndc','checkconf','checkzone','compilezone']};self.config['legacy_status']={'expected_version':'BIND 9.11.4-P2-TestBuild','binary_sha256':pins};self.save();b=load_binding(self.fd,BID,'inspect',os.getuid());self.assertEqual(dict(b.binary_pins),pins)
+  self.config['legacy_status']['expected_version']='BIND 9.20.0';self.save()
+  with self.assertRaises(ValueError):load_binding(self.fd,BID,'inspect',os.getuid())
  def test_unsafe_config_link_mode_or_path_refuse(self):
   self.p.joinpath('server.json').chmod(0o666)
   with self.assertRaises(ValueError):load_binding(self.fd,BID,'inspect',os.getuid())

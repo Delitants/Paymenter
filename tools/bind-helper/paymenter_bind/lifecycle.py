@@ -73,10 +73,10 @@ class Lifecycle:
       full=replace_include(mainimage.raw.decode(),b.managed_include,str(Path(b.state_root)/include_candidate),b.view);full_candidate=request['request_id']+'.full.conf';state.save(full_candidate,full.encode());self.commands.check_config(str(Path(b.state_root)/full_candidate))
       state.save(request['request_id']+'.include.before',original.raw);need(mainroot.read(main.name,262144)==mainimage and conf.read(include.name,262144)==original)
       if candidate is not None:
-       b.assert_current();changed=True;zone.install(candidate.raw,request['request_id'],None)
+       b.assert_current();self.commands.guard_install();changed=True;zone.install(candidate.raw,request['request_id'],None)
       # Setting this before install preserves uncertainty if rename succeeds but
       # its durable readback fails; partial creations never get auto-deleted.
-      b.assert_current();changed=True;conf.install(include.name,updated,request['request_id'],original,original.uid,original.gid);self.commands.reconfigure()
+      b.assert_current();self.commands.guard_install();changed=True;conf.install(include.name,updated,request['request_id'],original,original.uid,original.gid);self.commands.reconfigure()
       try:
        loaded=self.commands.status(b)
        if secondary:status='pending_replication';data={'serial':loaded.serial}

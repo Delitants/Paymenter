@@ -5,6 +5,7 @@ except ImportError:Lifecycle=None;replace_include=None
 import test_zone as fixtures
 from test_protocol import request
 class LifecycleCommands:
+ def guard_install(self):pass
  def __init__(self):self.validated=[];self.reconfigured=0
  def check(self,c):self.validated.append('zone')
  def check_config(self,p):self.validated.append(pathlib.Path(p).read_text())
