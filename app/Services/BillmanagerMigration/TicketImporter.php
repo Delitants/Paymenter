@@ -25,12 +25,22 @@ final class TicketImporter
             // A native message must never silently outlive a source deletion or edit.
             // Preflight before writing any support records; reconciliation is an explicit step.
             $incoming = array_column($snapshot->rows('ticket_messages'), null, 'id');
+            $selectedAccounts = array_fill_keys(array_map('strval', array_column($snapshot->rows('accounts'), 'id')), true);
             $mappings = DB::table('billmanager_mappings')->where('source_host', $context->sourceHost)
                 ->where('source_table', 'ticket_messages')->get();
             foreach ($mappings as $mapping) {
                 $record = DB::table('billmanager_records')->where('import_id', $mapping->import_id)
                     ->where('source_table', 'ticket_messages')->where('source_id', $mapping->source_id)->first();
                 $previous = $record ? json_decode(Crypt::decryptString($record->payload), true, 512, JSON_THROW_ON_ERROR) : null;
+                if ($record && $previous && $record->source_account_id > 0 && !isset($selectedAccounts[(string) $record->source_account_id])) {
+                    if (isset($incoming[$mapping->source_id])) {
+                        throw new RuntimeException('Mapped support message account changed; explicit reconciliation required');
+                    }
+
+                    // A rolling login cohort can shrink. Retain the excluded
+                    // account's history without treating its absence as deletion.
+                    continue;
+                }
                 if (!$previous || !isset($incoming[$mapping->source_id]) || $previous != $incoming[$mapping->source_id]) {
                     throw new RuntimeException('Mapped support message drift requires explicit reconciliation');
                 }
