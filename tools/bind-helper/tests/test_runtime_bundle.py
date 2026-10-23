@@ -48,6 +48,18 @@ class RuntimeBundleTest(unittest.TestCase):
     for name,data in members.items():
      i=tarfile.TarInfo('opt/runtime/python/'+name);i.size=len(data);i.mode=0o755 if name.startswith('bin/') else 0o644;t.addfile(i,io.BytesIO(data))
    output=root/'bundle.tgz';result=build_bundle(source,hashlib.sha256(source.read_bytes()).hexdigest(),'opt/runtime/python',wheels,output,helper)
+   # A versioned staging location must work without replacing the active tree.
+   versioned=root/'versioned.tgz'
+   build_bundle(source,hashlib.sha256(source.read_bytes()).hexdigest(),'opt/runtime/python',wheels,versioned,helper,install_root='/opt/paymenter-bind-runtime-test')
+   with tarfile.open(versioned) as archive:
+    self.assertEqual(archive.extractfile('venv/pyvenv.cfg').read(),b'home = /opt/paymenter-bind-runtime-test/runtime/bin\ninclude-system-site-packages = false\nversion = 3.11.14\n')
+   with tarfile.open(output) as archive:
+    self.assertTrue(archive.extractfile('venv/pyvenv.cfg').read().startswith(b'home = /opt/paymenter-bind/runtime/bin\n'))
+   for invalid in ['relative','/opt/../escape','/opt//double','/opt/./dot','/opt/trailing/','/opt/new\nline','/']:
+    rejected=root/'rejected.tgz'
+    with self.assertRaises(ValueError):
+     build_bundle(source,hashlib.sha256(source.read_bytes()).hexdigest(),'opt/runtime/python',wheels,rejected,helper,install_root=invalid)
+    self.assertFalse(rejected.exists())
    self.assertFalse(result['native_accepted']);self.assertFalse(result['installation_authorized']);self.assertFalse(result['elf']['runtime/bin/python3.11']['relocation_verified'])
    self.assertEqual(result,verify_archive(output))
    staged=root/'staged';staged.mkdir()

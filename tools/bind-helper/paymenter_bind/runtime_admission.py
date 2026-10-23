@@ -7,7 +7,15 @@ import pathlib
 import platform
 import stat
 import sys
-from .runtime_bundle import SCHEMA, LINKS, safe_name, require
+from .runtime_bundle import SCHEMA, LINKS, safe_name, require, installation_root
+
+
+def runtime_root(prefix, base_prefix):
+    """Derive the staged root from the running isolated interpreter's prefixes."""
+    prefix, base_prefix = installation_root(prefix), installation_root(base_prefix)
+    root = prefix.parent
+    require(prefix == root / 'venv' and base_prefix == root / 'runtime')
+    return root
 
 
 def verify_tree(root, expected_uid=0):
@@ -47,7 +55,7 @@ def main():
     # -I and -B are required before importing this trusted staged module.
     require(sys.flags.isolated and sys.dont_write_bytecode)
     require(platform.system() == 'Linux' and platform.machine() == 'x86_64')
-    root = pathlib.Path('/opt/paymenter-bind')
+    root = runtime_root(sys.prefix, sys.base_prefix)
     manifest = verify_tree(root)
     require(sys.prefix == str(root / 'venv') and sys.base_prefix == str(root / 'runtime'))
     require(platform.python_version() == manifest['python_version'])

@@ -127,7 +127,16 @@ def verify_archive(path):
         raise ValueError('Runtime candidate verification failed') from error
 
 
-def build_bundle(source, expected_sha256, source_prefix, wheels, output, helper_root):
+def installation_root(value):
+    """Require an unambiguous Linux installation path, safe in pyvenv.cfg."""
+    require(type(value) is str and re.fullmatch(r'(?:/[A-Za-z0-9._-]+)+', value) is not None)
+    require(all(part not in ('.', '..') for part in value.split('/')[1:]))
+    return pathlib.Path(value)
+
+
+def build_bundle(source, expected_sha256, source_prefix, wheels, output, helper_root,
+                 install_root='/opt/paymenter-bind'):
+    install_root = installation_root(install_root)
     source, output, helper_root = pathlib.Path(source), pathlib.Path(output), pathlib.Path(helper_root)
     require(re.fullmatch(r'[a-f0-9]{64}', expected_sha256) is not None and source.stat().st_size <= MAX_TOTAL)
     require(digest(source.read_bytes()) == expected_sha256 and not output.exists())
@@ -196,7 +205,7 @@ def build_bundle(source, expected_sha256, source_prefix, wheels, output, helper_
     package = json.loads((helper_root / 'package-manifest.json').read_text())
     for name in list(package['files']) + ['package-manifest.json']:
         files['source/' + name] = ((helper_root / name).read_bytes(), 0o644)
-    files['venv/pyvenv.cfg'] = (f'home = /opt/paymenter-bind/runtime/bin\ninclude-system-site-packages = false\nversion = {version}\n'.encode(), 0o644)
+    files['venv/pyvenv.cfg'] = (f'home = {install_root}/runtime/bin\ninclude-system-site-packages = false\nversion = {version}\n'.encode(), 0o644)
     manifest = {'schema': SCHEMA, 'native_accepted': False, 'installation_authorized': False,
                 'native_admission_required': True, 'python_version': version,
                 'source_archive_sha256': expected_sha256, 'dependencies': dependencies, 'elf': elf,
