@@ -12,6 +12,13 @@ jobs:
     steps:
       - name: Code checkout
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Check publication source
+        run: |
+          python3 .github/publication/guard.py history HEAD
+          python3 .github/publication/install-hooks.py
 
       - name: Setup Node
         uses: actions/setup-node@v3
@@ -54,6 +61,11 @@ jobs:
           SUM=`sha256sum paymenter.tar.gz`
           echo $SUM > checksum.txt
         
+      - name: Check release files
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 .github/publication/guard.py release-files --tag "$RELEASE_TAG" --asset paymenter.tar.gz --asset checksum.txt
+
       - name: Create release
         id: create_release
         uses: softprops/action-gh-release@v1

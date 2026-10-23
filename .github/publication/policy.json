@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "repository": "Delitants/Paymenter",
+  "baseline": "556415f5b1bed219bf5385283b49400ac475eacc",
+  "public_docs": [],
+  "public_data": [],
+  "release_assets": [
+    "paymenter.tar.gz",
+    "checksum.txt"
+  ]
+}
