@@ -17,8 +17,24 @@ Prepare and review a concrete packet separately. The example `tests/native-accep
 - Python/runtime/dependency identities; OS and BIND service account; effective UID/GID; service/chroot layout; SELinux/AppArmor policy; transfer ports and existing transfer authentication. Secondary raw-file conversion must be qualified against the installed utility and format.
 - Exact view/class, canonical domain, immutable application binding UUID and verified service/owner evidence on **both** endpoints. Pin that the same UUID maps to the same domain on each endpoint; requests cannot select a domain or view. The complete default denylist must cover infrastructure/reverse zones. Adopt no zone based on a service label or numeric legacy ID alone.
 - Exact root-owned configuration, managed include hook, zone directory/data owner, journal/backup directory, free space and readback permissions. Directory traversal denies symlinks, nested mounts and group/world-writable ancestors; ordinary files must have one link. Secondary BIND-owned data must meet these custody rules. An incompatible legacy directory needs a separately reviewed layout change.
-- PHP/FPM, proxy and HTTP request deadlines for the **whole action**. One SSH call is bounded at 40 seconds ordinary/70 seconds lifecycle; a create action can perform two lifecycle calls and two inspections sequentially, so allow at least 220 seconds plus application overhead (or keep lifecycle preparation disabled until a reviewed background-worker design exists). Client record save/reconciliation can use two inspections plus a mutation, so allow 120 seconds plus overhead. Disconnects preserve an uncertain reference; never automatically retry mutations.
+- PHP/FPM, proxy and HTTP request deadlines for the **whole action**, including any record refresh after the operation. One SSH call is bounded at 40 seconds ordinary/70 seconds lifecycle. Use the full action budgets below; individual SSH deadlines do not establish that the HTTP request can complete. Disconnects preserve an uncertain reference; never automatically retry mutations.
 - Exact preimages, file ownership/modes/hashes, loaded serials and authoritative snapshots for all protected customer/infrastructure zones; server-only backup/recovery custody; exact newly owned files and key removal rollback list. Never copy production recovery keys to the workstation.
+
+## Whole-action request budgets
+
+These ceilings are derived from the sequential calls in `ZoneManager` and the customer page's `Show::save()` / `Show::reconcile()` handlers. They are sums of configured SSH timeouts, not measured request durations. Database, application and process-cleanup overhead need additional allowance.
+
+| HTTP action | Sequential SSH calls on the longest successful path | SSH time budget |
+| --- | --- | --- |
+| Customer open / record refresh; administrator inspection | Primary inspection | 40 seconds |
+| Customer record save | Primary mutation, secondary inspection, primary record refresh | 120 seconds |
+| Customer reconciliation | Primary request inspection, primary inspection, secondary inspection, primary record refresh | 160 seconds |
+| Administrator reconciliation | Primary request inspection, primary inspection, secondary inspection | 120 seconds |
+| Administrator zone preparation | Secondary preparation, primary preparation, primary inspection, secondary inspection | 220 seconds |
+
+A successful customer reconciliation refreshes records after `ZoneManager::reconcile()` returns, adding a fourth 40-second call. Its total cannot be treated as the administrator's 120-second reconciliation budget. Save also refreshes records after committed or rejected outcomes.
+
+Qualify the actual PHP/FPM, reverse-proxy and external HTTP path against each complete action before enabling it. If the path cannot accommodate the complete budget plus overhead, keep that action disabled until a reviewed background-worker implementation is in place. Increasing a single SSH or HTTP timeout does not qualify the whole path, and a disconnect never authorizes replaying a mutation.
 
 ## Proposed installation layout (not an installer)
 
