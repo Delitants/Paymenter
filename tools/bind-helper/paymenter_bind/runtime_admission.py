@@ -1,5 +1,4 @@
 """Prepared native admission probe. Read-only, no BIND calls or DNS requests."""
-import hashlib
 import importlib
 import json
 import os
@@ -43,8 +42,8 @@ def verify_tree(root, expected_uid=0):
                 path = root / name
                 require(record == {'symlink': LINKS[name]} and path.is_symlink() and os.readlink(path) == LINKS[name])
             else:
-                image = custody.read(name, 32 * 1024 * 1024)
-                require(record == {'sha256': hashlib.sha256(image.raw).hexdigest(), 'mode': image.mode})
+                image = custody.digest(name, 32 * 1024 * 1024)
+                require(record == {'sha256': image.sha256, 'mode': image.mode})
         custody.recheck()
     return manifest
 

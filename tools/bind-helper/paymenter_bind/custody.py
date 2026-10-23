@@ -12,6 +12,9 @@ class FileImage:
  raw:bytes;identity:tuple;mode:int;uid:int;gid:int
  @property
  def sha256(self):return hashlib.sha256(self.raw).hexdigest()
+@dataclass(frozen=True)
+class FileDigest:
+ sha256:str;identity:tuple;mode:int;uid:int;gid:int;size:int
 class RootDirectory:
  def __init__(self,path,uid=0,private=False):
   need(type(path)is str and path.startswith('/')and '..'not in path.split('/'));self.path=path;self.uid=uid;self.private=private;self.fd,self.chain=self._walk()
@@ -58,6 +61,21 @@ class RootDirectory:
   with self.parent(name)as(fd,leaf):
    try:os.stat(leaf,dir_fd=fd,follow_symlinks=False);return True
    except FileNotFoundError:return False
+ def digest(self,name,limit=LIMIT):
+  """Hash a stable owned file without retaining its contents."""
+  with self.parent(name)as(parent,leaf):
+   fd=os.open(leaf,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=parent)
+   try:
+    s=os.fstat(fd);need(stat.S_ISREG(s.st_mode)and s.st_nlink==1 and s.st_uid==self.uid and not s.st_mode&0o022 and 0<=s.st_size<=limit)
+    digest=hashlib.sha256();size=0
+    while size<=s.st_size:
+     block=os.read(fd,min(65536,s.st_size+1-size))
+     if not block:break
+     size+=len(block);need(size<=s.st_size);digest.update(block)
+    need(size==s.st_size and identity(s)==identity(os.fstat(fd))==identity(os.stat(leaf,dir_fd=parent,follow_symlinks=False)))
+    with self.parent(name)as(current,_):need(dir_identity(os.fstat(current))==dir_identity(os.fstat(parent)))
+    self.recheck();return FileDigest(digest.hexdigest(),identity(s),stat.S_IMODE(s.st_mode),s.st_uid,s.st_gid,size)
+   finally:os.close(fd)
  def save(self,name,raw,mode=0o600):
   need(type(raw)is bytes and len(raw)<=LIMIT)
   with self.parent(name)as(parent,leaf):
