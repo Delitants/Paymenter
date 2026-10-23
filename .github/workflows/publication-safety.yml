@@ -10,11 +10,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          fetch-depth: 0
-          filter: blob:none
-          sparse-checkout: .github/publication
-          persist-credentials: false
+      - name: Read source without initializing submodules
+        env:
+          CHECK_SHA: ${{ github.sha }}
+        run: |
+          test "${#CHECK_SHA}" -eq 40
+          case "$CHECK_SHA" in *[!0-9a-f]*) exit 1;; esac
+          git init --quiet
+          git remote add origin https://github.com/Delitants/Paymenter.git
+          git -c core.hooksPath=/dev/null fetch --filter=blob:none --no-tags origin "$CHECK_SHA"
+          git sparse-checkout init --cone
+          git sparse-checkout set .github/publication
+          git -c core.hooksPath=/dev/null checkout --quiet --detach FETCH_HEAD
       - name: Check source publication
         run: python3 .github/publication/guard.py history HEAD
