@@ -42,8 +42,11 @@ class LegacyHistory extends Component
             Gate::authorize('view', $record);
         }
         // Only the latest imported snapshot per account is shown in the list.
-        $latest = BillmanagerFinancialRecord::whereIn('user_id', $owners)->selectRaw('MAX(import_id)')->groupBy('user_id');
-        $query->whereIn('import_id', $latest);
+        $query->where('import_id', function ($latest) {
+            $latest->from('billmanager_financial_records as latest_records')
+                ->selectRaw('MAX(latest_records.import_id)')
+                ->whereColumn('latest_records.user_id', 'billmanager_financial_records.user_id');
+        });
         if (in_array($this->kind, ['payments', 'invoices', 'subaccounts'], true)) {
             $query->where('source_table', $this->kind);
         }
