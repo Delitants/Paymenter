@@ -7,8 +7,10 @@ use App\Models\Service;
 use App\Models\User;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Foundation\Testing\RefreshDatabaseState;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Paymenter\Extensions\Others\Bind\Models\ZoneBinding;
 use Paymenter\Extensions\Others\Bind\SshTransport;
@@ -27,6 +29,15 @@ abstract class BindTestCase extends TestCase
     protected Extension $extension;
 
     protected array $calls = [];
+
+    protected function beforeRefreshingDatabase(): void
+    {
+        // Core tests may set the shared flag before the extension schema exists.
+        if (RefreshDatabaseState::$migrated &&
+            (!Schema::hasTable('ext_bind_zones') || !Schema::hasTable('ext_bind_operations'))) {
+            RefreshDatabaseState::$migrated = false;
+        }
+    }
 
     protected function migrateFreshUsing(): array
     {
