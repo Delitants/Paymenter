@@ -115,9 +115,23 @@ class TicketTest extends TestCase
     {
         [$snapshot, $context] = $this->source();
         (new TicketImporter)->import($snapshot, $context);
+        $row = $snapshot->rows('ticket_messages')[0];
+        $payload = match ($kind) {
+            'ciphertext', 'json' => 'null',
+            'string' => '"not a source row"',
+            'boolean' => 'true',
+            'integer' => '1',
+            'float' => '1.5',
+            'wrong_identity' => json_encode(array_replace($row, ['id' => '999']), JSON_THROW_ON_ERROR),
+            'digest_mismatch' => json_encode(array_replace($row, ['message' => 'Changed archived content']), JSON_THROW_ON_ERROR),
+            'invalid_json' => '{invalid json',
+        };
+        $updates = ['payload' => $kind === 'ciphertext' ? 'invalid-ciphertext' : Crypt::encryptString($payload)];
+        if ($kind !== 'digest_mismatch') {
+            $updates['payload_sha256'] = hash('sha256', $payload);
+        }
         DB::table('billmanager_records')->where('import_id', $context->importId)
-            ->where('source_table', 'ticket_messages')->where('source_id', '31')
-            ->update(['payload' => $kind === 'ciphertext' ? 'invalid-ciphertext' : Crypt::encryptString('null')]);
+            ->where('source_table', 'ticket_messages')->where('source_id', '31')->update($updates);
         [$refresh, $next] = $this->source('UTC', null, [
             'accounts' => [['id' => '20']],
             'users' => [['id' => '12', 'account' => '20', 'level' => '16', 'enabled' => 'on',
@@ -134,6 +148,13 @@ class TicketTest extends TestCase
         return [
             'corrupt ciphertext' => ['ciphertext', DecryptException::class],
             'empty decoded evidence' => ['json', \RuntimeException::class],
+            'string instead of a source row' => ['string', \RuntimeException::class],
+            'boolean instead of a source row' => ['boolean', \RuntimeException::class],
+            'integer instead of a source row' => ['integer', \RuntimeException::class],
+            'float instead of a source row' => ['float', \RuntimeException::class],
+            'source row identity mismatch' => ['wrong_identity', \RuntimeException::class],
+            'source row digest mismatch' => ['digest_mismatch', \RuntimeException::class],
+            'invalid archived JSON' => ['invalid_json', \JsonException::class],
         ];
     }
 
@@ -170,6 +191,48 @@ class TicketTest extends TestCase
             $this->assertSame(0, DB::table('billmanager_records')->where('import_id', $next->importId)->where('source_table', 'ticket_messages')->count());
             $this->assertSame(2, TicketMessage::count());
         }
+    }
+
+    #[DataProvider('numericMessageEdits')]
+    public function test_refresh_rejects_numeric_string_message_edits(string $original, string $edited): void
+    {
+        $messages = [['id' => '31', 'ticket' => '23', 'user' => '99', 'message' => $original,
+            'date_post' => '2021-02-03 13:00:00', 'date_delete' => null]];
+        [$snapshot, $context] = $this->source('UTC', null, ['ticket_messages' => $messages]);
+        (new TicketImporter)->import($snapshot, $context);
+        $messages[0]['message'] = $edited;
+        [$refresh, $next] = $this->source('UTC', null, ['ticket_messages' => $messages]);
+        $blocked = false;
+        try {
+            (new TicketImporter)->import($refresh, $next);
+        } catch (\RuntimeException $e) {
+            $blocked = str_contains($e->getMessage(), 'reconciliation');
+        }
+
+        $this->assertTrue($blocked);
+        $this->assertSame($original, TicketMessage::findOrFail($context->mappedId('ticket_messages', '31'))->message);
+        $this->assertSame(0, DB::table('billmanager_records')->where('import_id', $next->importId)->where('source_table', 'ticket_messages')->count());
+    }
+
+    public static function numericMessageEdits(): array
+    {
+        return ['leading zero' => ['001', '1'], 'exponent notation' => ['0e123', '0e456']];
+    }
+
+    public function test_refresh_accepts_unchanged_text_with_reordered_fields_and_normalized_ids(): void
+    {
+        [$snapshot, $context] = $this->source();
+        (new TicketImporter)->import($snapshot, $context);
+        $messages = array_map(function (array $row): array {
+            $row['id'] = (int) $row['id'];
+
+            return array_reverse($row, true);
+        }, $snapshot->rows('ticket_messages'));
+        [$refresh, $next] = $this->source('UTC', null, ['ticket_messages' => $messages]);
+        (new TicketImporter)->import($refresh, $next);
+
+        $this->assertSame(2, TicketMessage::count());
+        $this->assertSame(3, DB::table('billmanager_records')->where('import_id', $next->importId)->where('source_table', 'ticket_messages')->count());
     }
 
     public function test_native_tickets_preserve_states_dates_long_text_and_safe_author_attribution(): void

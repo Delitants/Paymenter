@@ -31,8 +31,15 @@ final class TicketImporter
             foreach ($mappings as $mapping) {
                 $record = DB::table('billmanager_records')->where('import_id', $mapping->import_id)
                     ->where('source_table', 'ticket_messages')->where('source_id', $mapping->source_id)->first();
-                $previous = $record ? json_decode(Crypt::decryptString($record->payload), true, 512, JSON_THROW_ON_ERROR) : null;
-                if ($record && $previous && $record->source_account_id > 0 && !isset($selectedAccounts[(string) $record->source_account_id])) {
+                $payload = $record ? Crypt::decryptString($record->payload) : null;
+                $previous = $payload !== null ? json_decode($payload, true, 512, JSON_THROW_ON_ERROR) : null;
+                $previousId = is_array($previous) ? ($previous['id'] ?? null) : null;
+                if ($record && (!is_array($previous) || (!is_string($previousId) && !is_int($previousId))
+                    || (string) $previousId !== (string) $mapping->source_id
+                    || !hash_equals($record->payload_sha256, hash('sha256', $payload)))) {
+                    throw new RuntimeException('Mapped support archive evidence is invalid; explicit reconciliation required');
+                }
+                if ($record && $record->source_account_id > 0 && !isset($selectedAccounts[(string) $record->source_account_id])) {
                     if (isset($incoming[$mapping->source_id])) {
                         throw new RuntimeException('Mapped support message account changed; explicit reconciliation required');
                     }
@@ -41,7 +48,8 @@ final class TicketImporter
                     // account's history without treating its absence as deletion.
                     continue;
                 }
-                if (!$previous || !isset($incoming[$mapping->source_id]) || $previous != $incoming[$mapping->source_id]) {
+                if (!$previous || !isset($incoming[$mapping->source_id]) || $previous != $incoming[$mapping->source_id]
+                    || ($previous['message'] ?? null) !== ($incoming[$mapping->source_id]['message'] ?? null)) {
                     throw new RuntimeException('Mapped support message drift requires explicit reconciliation');
                 }
             }
