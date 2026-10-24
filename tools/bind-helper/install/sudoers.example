@@ -1,0 +1,2 @@
+# Install only after visudo validation; empty quotes forbid command arguments.
+paymenter-dns ALL=(root) NOPASSWD: /usr/local/libexec/paymenter-bind-helper ""

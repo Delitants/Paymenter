@@ -1,0 +1,29 @@
+{
+    "schema": "paymenter-bind-package-v1",
+    "version": "0.1.0",
+    "files": {
+        "install/authorized_keys.example": "4203db4f09c11172997d318f8e3e898781debee7c68f7a6347d92e8ef0ca1113",
+        "install/paymenter-bind-helper": "3ae971a2f16e2178301506becfd2748072f530bcb7cdec2056db2006bfda8aee",
+        "install/server-config.example.json": "5437085b7c1568b043da4dddf83eab81b10abc34afb149f4394731a076bf4244",
+        "install/ssh-dispatch": "3b1cacea001ed420ececcb0ac4c7f77dbece726ed488b78b51928534bd8dcda3",
+        "install/sudoers.example": "97b68aba52002d23937176e452d30cad118c49e0dc736859cf98c61563bfded5",
+        "paymenter_bind/__init__.py": "ca53759424b3b5a1cf786f534029a7312eb11686fd05afa6a86f7bc8bf98a20b",
+        "paymenter_bind/cli.py": "5d7feae7b8ee864db32ef045d1f0c749bbbc147bbd82e9f3a50983b8413fa9ca",
+        "paymenter_bind/commands.py": "add712d42f487b4634a8700dbe22d6cd6a30d953222faba037ab644e0ba21ed7",
+        "paymenter_bind/config.py": "9180964c56fdf5e0aaf90471183636b47581d0c5c6f870c8c14b748528d3b344",
+        "paymenter_bind/convergence.py": "2a910584adc969ab43c92ad87063f0a68751f775a050e896c3ab4a84c6cd8954",
+        "paymenter_bind/custody.py": "30a80b28833bf4f149c9cde221e2ba08a46984a609ddc32bf87bc19ba8735a86",
+        "paymenter_bind/journal.py": "558a58108496bf96c217eabfd690c60bc1bdbbc3593c8f67c3f7438d15362df1",
+        "paymenter_bind/legacy.py": "74886d6ef24235ff19cf74652042775986aacacdec0f2a9b47bfceb7783481f7",
+        "paymenter_bind/lifecycle.py": "11b764125733aa89a98e75fcb874399fc066e3a46f476cebab2b859c501c8c05",
+        "paymenter_bind/operations.py": "295aea14167964ebad373e5932a563b6736dd04a5d0952ce2274bc957411ca27",
+        "paymenter_bind/protocol.py": "00bb0b910524528cef04e56719af23024534d342208767ded415027bedf28ef1",
+        "paymenter_bind/qualify.py": "c19cfe66717ed261fff141fe518fed6a3e0f970ea201d9c1c5a37b1db1f56af3",
+        "paymenter_bind/runtime_admission.py": "d201075612fa3ed3643ec7c731740c6b59a0e2b18d0a8e1431c7390ba1b226d9",
+        "paymenter_bind/runtime_bundle.py": "5b6436fdbe9f50bbc92519289db9750d3d2f85c1ab1dc93eb9a496b1d556f5fc",
+        "paymenter_bind/zone.py": "cfc26cf6cc605109687f99899d338a9d288fe47d22d08139cb24130928fa5e4f",
+        "pyproject.toml": "2a2ec1a0ce20dd6aa3fa11aafc247f063053e83e084600b8a6e60e1eb2f73496",
+        "requirements.lock": "1af5f26ac1a54a5ea7d74b56665a802ae7715d718e229f72cbb3b15398317871",
+        "tests/native-acceptance.example.json": "724e5bc911757596ec6054fe5b1cdffd283c1deeaebc372455d5dc906abefc2d"
+    }
+}

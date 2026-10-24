@@ -1,0 +1,20 @@
+{
+  "schema": "paymenter-bind-native-acceptance-v1",
+  "installation_authorized": false,
+  "native_accepted": false,
+  "targets": {"primary": null, "secondary": null},
+  "host_key_fingerprints": {"primary": null, "secondary": null},
+  "binding_id": null,
+  "disposable_zone": null,
+  "views": {"primary": null, "secondary": null},
+  "runtime_and_command_inventory": null,
+  "protected_preimages_and_serials": null,
+  "owned_installation_paths_and_key_fingerprints": null,
+  "rollback_inventory": null,
+  "reviewed_execution_authority": null,
+  "required_checks": [
+    "exact-runtime-compatibility", "host-key-pins", "forced-command-denial",
+    "no-arguments-sudo", "primary-create-edit-readback", "guarded-rollback",
+    "secondary-transfer-convergence", "cross-binding-denial", "unrelated-zones-unchanged"
+  ]
+}
