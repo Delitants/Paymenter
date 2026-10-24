@@ -78,6 +78,57 @@ class AttachmentTest extends TestCase
         $this->assertFalse(Gate::forUser(User::factory()->create())->allows('view', TicketMessageAttachment::sole()));
     }
 
+    public function test_replay_does_not_attempt_duplicate_inserts_or_advance_the_attachment_sequence(): void
+    {
+        [$root, $context] = $this->fixture();
+        $importer = new AttachmentImporter($root . '/destination');
+        $importer->import($root . '/manifest.json', $root . '/source', $context);
+        $before = $this->attachmentSequence();
+        $inserts = [];
+        DB::listen(function ($query) use (&$inserts) {
+            if (preg_match('/^insert\b.*billmanager_attachments/i', $query->sql)) {
+                $inserts[] = $query->sql;
+            }
+        });
+        $importer->import($root . '/manifest.json', $root . '/source', $context);
+        $this->assertSame([], $inserts, 'Attachment replay must not issue duplicate inserts');
+        $this->assertSame($before, $this->attachmentSequence());
+        $this->assertSame(2, BillmanagerAttachment::count());
+    }
+
+    private function attachmentSequence(): ?int
+    {
+        if (DB::getDriverName() === 'sqlite') {
+            return (int) DB::table('sqlite_sequence')->where('name', 'billmanager_attachments')->value('seq');
+        }
+        if (in_array(DB::getDriverName(), ['mysql', 'mariadb'], true)) {
+            $row = DB::selectOne('SELECT AUTO_INCREMENT AS next_id FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?', ['billmanager_attachments']);
+
+            return (int) $row->next_id;
+        }
+
+        return null;
+    }
+
+    public function test_replay_rejects_changed_attachment_metadata_without_silently_ignoring_it(): void
+    {
+        [$root, $context] = $this->fixture();
+        $importer = new AttachmentImporter($root . '/destination');
+        $importer->import($root . '/manifest.json', $root . '/source', $context);
+        DB::table('billmanager_attachments')->where('source_id', '42')->update(['filename' => 'changed.txt']);
+        $before = DB::table('billmanager_attachments')->orderBy('id')->get()->toJson();
+        $failure = null;
+        try {
+            $importer->import($root . '/manifest.json', $root . '/source', $context);
+        } catch (\RuntimeException $error) {
+            $failure = $error;
+        }
+        $this->assertNotNull($failure, 'Changed attachment metadata accepted');
+        $this->assertStringContainsString('attachment metadata', $failure->getMessage());
+        $this->assertSame($before, DB::table('billmanager_attachments')->orderBy('id')->get()->toJson());
+        $this->assertCount(2, File::allFiles($root . '/destination'));
+    }
+
     public function test_changed_attachment_is_rejected_without_a_partial_import(): void
     {
         [$root, $context] = $this->fixture();

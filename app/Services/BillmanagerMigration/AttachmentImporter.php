@@ -85,10 +85,29 @@ final class AttachmentImporter
                         throw new RuntimeException('Copied attachment checksum mismatch');
                     }
                     $context->archive('ticket_attachments', (string) $row['id'], $row, (int) $row['account']);
-                    DB::table('billmanager_attachments')->insertOrIgnore([
-                        'import_id' => $context->importId, 'source_id' => $row['id'], 'source_account_id' => $row['account'],
-                        'filename' => $row['filename'], 'path' => $relative, 'filesize' => $row['size'], 'sha256' => $row['sha256'], 'deleted_message' => $deleted,
-                    ]);
+                    $metadata = [
+                        'import_id' => $context->importId, 'source_id' => (string) $row['id'], 'source_account_id' => (int) $row['account'],
+                        'filename' => (string) $row['filename'], 'path' => $relative, 'filesize' => (int) $row['size'], 'sha256' => $row['sha256'], 'deleted_message' => $deleted,
+                    ];
+                    $existing = DB::table('billmanager_attachments')->where([
+                        'import_id' => $context->importId, 'source_id' => (string) $row['id'],
+                    ])->lockForUpdate()->first();
+                    if ($existing) {
+                        foreach ($metadata as $field => $expected) {
+                            $actual = match ($field) {
+                                'import_id', 'source_account_id', 'filesize' => (int) $existing->$field,
+                                'deleted_message' => (bool) $existing->$field,
+                                default => (string) $existing->$field,
+                            };
+                            if ($actual !== $expected) {
+                                throw new RuntimeException('Existing attachment metadata changed; explicit reconciliation required');
+                            }
+                        }
+                    } else {
+                        // Avoid duplicate INSERT IGNORE attempts: even ignored
+                        // inserts can consume an AUTO_INCREMENT value on replay.
+                        DB::table('billmanager_attachments')->insert($metadata);
+                    }
                     if (!$deleted) {
                         $visible++;
                         if ($context->mappedId('ticket_attachments', (string) $row['id']) === null) {
