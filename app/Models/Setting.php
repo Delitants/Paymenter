@@ -45,7 +45,7 @@ class Setting extends Model implements Auditable
         }
 
         return [
-            'value' => in_array($this->key, ['wm_certificate', 'wm_private_key', 'wm_key_passphrase'], true) ? SecretRedactor::class : RightRedactor::class,
+            'value' => in_array($this->key, ['wm_certificate', 'wm_private_key', 'wm_key_passphrase', 'primary_private_key', 'secondary_private_key'], true) ? SecretRedactor::class : RightRedactor::class,
         ];
     }
 }

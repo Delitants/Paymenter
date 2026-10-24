@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "zone_root": "/var/lib/paymenter-bind/zones",
+  "state_root": "/var/lib/paymenter-bind/state",
+  "main_config": "/etc/named.conf",
+  "protected_zones": ["infrastructure.invalid."],
+  "nameservers": ["ns1.example.invalid.", "ns2.example.invalid."],
+  "primary": "192.0.2.10",
+  "secondary": "192.0.2.20",
+  "ttl_min": 60,
+  "ttl_max": 86400,
+  "bindings": {}
+}

@@ -1,0 +1,2 @@
+# Replace the source-address and public-key placeholders independently.
+restrict,from="PAYMENTER_SOURCE_ADDRESS",command="/usr/local/libexec/paymenter-bind-ssh-dispatch" ssh-ed25519 REPLACE_WITH_DEDICATED_PUBLIC_KEY
