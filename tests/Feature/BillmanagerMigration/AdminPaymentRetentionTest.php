@@ -140,11 +140,13 @@ catch (RuntimeException $e) { if (!str_contains(strtolower($e->getMessage()), "p
                 Gateway::whereKey($gateway->id)->lockForUpdate()->firstOrFail();
                 Invoice::whereKey($invoice->id)->lockForUpdate()->firstOrFail();
                 $process->start();
-                $deadline = microtime(true) + 5;
-                while (!str_contains($process->getOutput(), 'ready') && $process->isRunning() && microtime(true) < $deadline) {
+                // Readiness and completion share the worker's existing timeout.
+                $readyPattern = '/(?:^|\n)ready\r?\n/';
+                while (!preg_match($readyPattern, $process->getOutput()) && $process->isRunning()) {
+                    $process->checkTimeout();
                     usleep(10000);
                 }
-                $this->assertStringContainsString('ready', $process->getOutput(), $process->getErrorOutput());
+                $this->assertMatchesRegularExpression($readyPattern, $process->getOutput(), $process->getErrorOutput());
                 usleep(150000);
                 $this->assertTrue($process->isRunning(), 'Parent delete did not wait for the held native payment locks');
                 $this->assertStringNotContainsString('deleted', $process->getOutput());

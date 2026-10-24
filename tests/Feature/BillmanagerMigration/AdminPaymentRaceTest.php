@@ -72,11 +72,13 @@ echo "claimed:".$operation->id."\\n";
             if (!$started && str_contains($query->sql, '`invoices`') && str_contains($query->sql, 'for update')) {
                 $started = true;
                 $process->start();
-                $deadline = microtime(true) + 5;
-                while (!str_contains($process->getOutput(), 'ready') && $process->isRunning() && microtime(true) < $deadline) {
+                // Readiness and completion share the worker's existing timeout.
+                $readyPattern = '/(?:^|\n)ready\r?\n/';
+                while (!preg_match($readyPattern, $process->getOutput()) && $process->isRunning()) {
+                    $process->checkTimeout();
                     usleep(10000);
                 }
-                $this->assertStringContainsString('ready', $process->getOutput(), $process->getErrorOutput());
+                $this->assertMatchesRegularExpression($readyPattern, $process->getOutput(), $process->getErrorOutput());
             }
         });
         try {
@@ -190,11 +192,13 @@ echo "claimed:".$operation->id."\n";
             if (!$started && str_contains($query->sql, '`invoices`') && str_contains($query->sql, 'for update')) {
                 $started = true;
                 $process->start();
-                $deadline = microtime(true) + 5;
-                while (!str_contains($process->getOutput(), 'ready') && $process->isRunning() && microtime(true) < $deadline) {
+                // Readiness and completion share the worker's existing timeout.
+                $readyPattern = '/(?:^|\n)ready\r?\n/';
+                while (!preg_match($readyPattern, $process->getOutput()) && $process->isRunning()) {
+                    $process->checkTimeout();
                     usleep(10000);
                 }
-                $this->assertStringContainsString('ready', $process->getOutput(), $process->getErrorOutput());
+                $this->assertMatchesRegularExpression($readyPattern, $process->getOutput(), $process->getErrorOutput());
             }
         });
         try {
