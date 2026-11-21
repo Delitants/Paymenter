@@ -6,6 +6,8 @@ use Illuminate\Support\Str;
 
 class TicketMessageAttachment extends Model
 {
+    use Traits\GuardsMigrationWrites;
+
     protected $fillable = [
         'path',
         'filename',

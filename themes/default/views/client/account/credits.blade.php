@@ -2,6 +2,15 @@
     <x-navigation.breadcrumb />
     <div class="px-2">
         <h4 class="text-2xl font-bold pb-3">{{ __('account.credits') }}</h4>
+        @if($statements->isNotEmpty())
+        <section class="bg-background-secondary border border-neutral rounded-xl p-5 mb-6">
+            <h2 class="text-lg font-bold">{{ __('Account statements') }}</h2>
+            @foreach($statements as $statement)
+            <a class="flex items-center min-h-11 text-primary underline" wire:navigate href="{{ route('account.funding', ['owner' => $statement->user_id, 'currency' => $statement->currency_code]) }}">{{ $statement->currency_code }} · {{ $statement->user_id === Auth::id() ? __('Your account statement') : __('Shared account statement') }}</a>
+            @endforeach
+            <p class="text-sm text-base/70 mt-3">{{ __('Deposits repay debt first. The remaining principal becomes cash. Gateway fees do not increase your account balance.') }}</p>
+        </section>
+        @endif
         @if (Auth::user()->credits->count() > 0)
         <div class="flex flex-wrap gap-4">
             @foreach (Auth::user()->credits as $credit)
@@ -15,6 +24,9 @@
         <p>{{ __('account.no_credit') }}</p>
         @endif
 
+        @if($fundingBlocked)
+        <p role="status" class="mt-5 text-sm text-base/70">{{ __('Account funding is unavailable. Your statement and history remain available.') }}</p>
+        @else
         <h4 class="text-xl font-bold pb-3">{{ __('account.add_credit') }}</h4>
 
         <form wire:submit.prevent="addCredit">
@@ -41,5 +53,6 @@
                 {{ __('account.add_credit') }}
             </x-button.primary>
         </form>
+        @endif
     </div>
 </div>

@@ -29,6 +29,7 @@ class Show extends Component
 
     public function save()
     {
+        $this->authorize('update', $this->ticket);
         $this->validate();
 
         $message = $this->ticket->messages()->create([

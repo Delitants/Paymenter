@@ -57,6 +57,11 @@ class Currency extends Model
         return $this->hasMany(Order::class, 'currency_code', 'code');
     }
 
+    public function accountWallets()
+    {
+        return $this->hasMany(AccountWallet::class, 'currency_code', 'code');
+    }
+
     public function credits()
     {
         return $this->hasMany(Credit::class, 'currency_code', 'code');

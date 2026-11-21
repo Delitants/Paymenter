@@ -8,6 +8,7 @@ use App\Admin\Resources\Common\RelationManagers\PropertiesRelationManager;
 use App\Admin\Resources\ServiceResource\Pages\CreateService;
 use App\Admin\Resources\ServiceResource\Pages\EditService;
 use App\Admin\Resources\ServiceResource\Pages\ListService;
+use App\Admin\Resources\ServiceResource\Pages\ViewCredentials;
 use App\Admin\Resources\ServiceResource\RelationManagers\ConfigOptionsRelationManager;
 use App\Admin\Resources\ServiceResource\RelationManagers\InvoicesRelationManager;
 use App\Helpers\ExtensionHelper;
@@ -283,6 +284,7 @@ class ServiceResource extends Resource
             'index' => ListService::route('/'),
             'create' => CreateService::route('/create'),
             'edit' => EditService::route('/{record}/edit'),
+            'credentials' => ViewCredentials::route('/{record}/credentials'),
         ];
     }
 }

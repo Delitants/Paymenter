@@ -5,6 +5,7 @@ namespace App\Livewire\Services;
 use App\Livewire\Component;
 use App\Models\Service;
 use App\Models\ServiceCancellation;
+use App\Services\BillmanagerMigration\MigrationHold;
 use Livewire\Attributes\Validate;
 
 class Cancel extends Component
@@ -19,7 +20,8 @@ class Cancel extends Component
 
     public function cancelService()
     {
-        $this->authorize('view', $this->service);
+        $this->authorize('update', $this->service);
+        MigrationHold::assertAllowed($this->service, 'cancel service');
 
         $this->validate();
 

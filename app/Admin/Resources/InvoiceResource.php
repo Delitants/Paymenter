@@ -7,6 +7,7 @@ use App\Admin\Components\UserComponent;
 use App\Admin\Resources\InvoiceResource\Pages\CreateInvoice;
 use App\Admin\Resources\InvoiceResource\Pages\EditInvoice;
 use App\Admin\Resources\InvoiceResource\Pages\ListInvoices;
+use App\Admin\Resources\InvoiceResource\RelationManagers\PaymentOperationsRelationManager;
 use App\Admin\Resources\InvoiceResource\RelationManagers\TransactionsRelationManager;
 use App\Models\Currency;
 use App\Models\Invoice;
@@ -195,6 +196,7 @@ class InvoiceResource extends Resource
     {
         return [
             TransactionsRelationManager::class,
+            PaymentOperationsRelationManager::class,
         ];
     }
 

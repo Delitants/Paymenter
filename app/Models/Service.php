@@ -3,9 +3,9 @@
 namespace App\Models;
 
 use App\Classes\Price;
-use App\Classes\Settings;
 use App\Models\Traits\HasProperties;
 use App\Observers\ServiceObserver;
+use App\Services\Billing\CatalogPricing;
 use Illuminate\Database\Eloquent\Attributes\ObservedBy;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -14,7 +14,7 @@ use OwenIt\Auditing\Contracts\Auditable;
 #[ObservedBy([ServiceObserver::class])]
 class Service extends Model implements Auditable
 {
-    use HasFactory, HasProperties, Traits\Auditable;
+    use HasFactory, HasProperties, Traits\Auditable, Traits\GuardsMigrationWrites;
 
     public const STATUS_PENDING = 'pending';
 
@@ -49,6 +49,11 @@ class Service extends Model implements Auditable
     public function order()
     {
         return $this->belongsTo(Order::class);
+    }
+
+    public function billmanagerDetails()
+    {
+        return $this->hasOne(BillmanagerServiceDetail::class);
     }
 
     /**
@@ -220,32 +225,15 @@ class Service extends Model implements Auditable
 
     public function calculatePrice()
     {
-        // Calculate the price based on the plan and config options
-        $price = $this->plan->price($this->currency_code)->price;
-
-        $this->configs->each(function ($config) use (&$price) {
-            $configValue = $config->configValue;
-            if ($configValue) {
-                $price += $configValue->price(null, $this->plan->billing_period, $this->plan->billing_unit, $this->currency_code)->price;
-            }
-        });
-
-        // Add coupon discount if applicable
-        if ($this->coupon) {
-            $invoices = $this->invoices()->where('status', 'paid')->count() + 1;
-            // If it already used for the recurring period, do not apply the discount
-            if ($this->coupon->recurring == 0 || $invoices <= $this->coupon->recurring) {
-                $discount = $this->coupon->calculateDiscount($price);
-                $price -= $discount;
-            }
+        $options = $this->configs->map(fn ($config) => ['option_id' => $config->config_option_id, 'value' => $config->config_value_id])->all();
+        $coupon = $this->coupon;
+        if ($coupon && !($coupon->recurring == 0 || $this->invoices()->where('status', 'paid')->count() + 1 <= $coupon->recurring)) {
+            $coupon = null;
         }
 
-        $price = (new Price([
-            'price' => $price,
-            'currency' => $this->currency,
-        ], apply_exclusive_tax: true, tax: Settings::tax($this->user)))->price;
-
-        return number_format($price, 2, '.', '');
+        return (new CatalogPricing)->quote(
+            $this->product, $this->plan, $options, $this->properties->pluck('value', 'key')->all(), $this->currency_code, $coupon, $this->user,
+        )->price_decimal;
     }
 
     public function upgrade()

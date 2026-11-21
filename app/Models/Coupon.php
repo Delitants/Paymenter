@@ -2,6 +2,8 @@
 
 namespace App\Models;
 
+use App\Services\Billing\MoneyCalculator;
+use Brick\Math\RoundingMode;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use OwenIt\Auditing\Contracts\Auditable;
 
@@ -26,7 +28,7 @@ class Coupon extends Model implements Auditable
         'expires_at' => 'datetime',
         'max_uses' => 'integer',
         'max_uses_per_user' => 'integer',
-        'value' => 'float',
+        'value' => 'decimal:4',
     ];
 
     /**
@@ -60,23 +62,25 @@ class Coupon extends Model implements Auditable
 
     public function calculateDiscount($price, $type = 'price')
     {
+        return (float) $this->calculateDiscountDecimal((string) $price, $type);
+    }
+
+    public function calculateDiscountDecimal(string $price, string $type = 'price'): string
+    {
         if (!in_array($type, ['price', 'setup_fee'])) {
             throw new \InvalidArgumentException('Invalid type for coupon discount calculation');
         }
+        $calculator = new MoneyCalculator;
+        $amount = $calculator->money($price);
         if (!in_array($this->applies_to, ['all', $type])) {
-            return 0;
+            return '0.00';
         }
+        $discount = match ($this->type) {
+            'percentage' => $amount->multipliedBy($calculator->rate((string) $this->value))->dividedBy(100, 2, RoundingMode::HALF_UP),
+            'fixed' => $calculator->money((string) $this->value),
+            default => $calculator->money('0.00'),
+        };
 
-        $discount = 0;
-        if ($this->type === 'percentage') {
-            $discount = $price * $this->value / 100;
-        } elseif ($this->type === 'fixed') {
-            $discount = $this->value;
-        }
-        if ($price < $discount) {
-            $discount = $price;
-        }
-
-        return $discount;
+        return (string) ($discount->isGreaterThan($amount) ? $amount : $discount);
     }
 }

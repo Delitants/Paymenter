@@ -3,7 +3,9 @@
 namespace App\Classes;
 
 use App\Helpers\EventHelper;
+use App\Models\BillmanagerFinancialRecord;
 use App\Models\Category;
+use App\Services\BillmanagerMigration\AccountAccess;
 use Illuminate\Support\Facades\Auth;
 
 class Navigation
@@ -32,7 +34,7 @@ class Navigation
                             'url' => route('category.show', ['category' => $category->slug]),
                         ];
                     })->toArray(),
-                    'condition' => count($categories) > 0,
+                    'condition' => Auth::check() && count($categories) > 0,
                     'separator' => true,
                     'icon' => 'ri-shopping-bag',
                 ],
@@ -111,6 +113,13 @@ class Navigation
                     'separator' => true,
                     'condition' => Auth::check(),
                     'priority' => 30,
+                ],
+                [
+                    'name' => __('Billing history'),
+                    'url' => route('billing.history'),
+                    'icon' => 'ri-history',
+                    'condition' => Auth::check() && BillmanagerFinancialRecord::whereIn('user_id', AccountAccess::visibleOwnerIds(Auth::user()))->exists(),
+                    'priority' => 35,
                 ],
                 [
                     'name' => __('navigation.tickets'),

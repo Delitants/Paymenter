@@ -12,7 +12,7 @@ use OwenIt\Auditing\Contracts\Auditable;
 #[ObservedBy([ServiceUpgradeObserver::class])]
 class ServiceUpgrade extends Model implements Auditable
 {
-    use HasFactory, Traits\Auditable;
+    use HasFactory, Traits\Auditable, Traits\GuardsMigrationWrites;
 
     public const STATUS_PENDING = 'pending';
 

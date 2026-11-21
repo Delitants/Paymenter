@@ -3,6 +3,7 @@
 namespace App\Policies;
 
 use App\Models\User;
+use App\Services\Gateways\PaymentWriteGuard;
 
 class UserPolicy
 {
@@ -43,7 +44,7 @@ class UserPolicy
      */
     public function delete(User $user, User $model): bool
     {
-        return $user->hasPermission('admin.users.delete');
+        return $user->hasPermission('admin.users.delete') && !(new PaymentWriteGuard)->hasParentPaymentHistory($model);
     }
 
     /**

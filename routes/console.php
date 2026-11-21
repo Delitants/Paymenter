@@ -3,7 +3,9 @@
 use App\Classes\Settings;
 use App\Console\Commands\CronJob;
 use App\Console\Commands\FetchEmails;
+use App\Console\Commands\ResellerClubSyncPrices;
 use App\Console\Commands\ScheduleHeartbeatCommand;
+use App\Console\Commands\SyncWavePayments;
 use App\Console\Commands\TelemetryCommand;
 use Illuminate\Support\Facades\Schedule;
 
@@ -15,3 +17,9 @@ if (config('app.telemetry_enabled')) {
     $settings = Settings::getTelemetry();
     Schedule::command(TelemetryCommand::class)->description('Sends telemetry data')->dailyAt($settings['hour'] . ':' . $settings['minute']);
 }
+
+Schedule::command(ResellerClubSyncPrices::class, ['--scheduled'])
+    ->description('Refresh enabled ResellerClub catalog and prices')->hourly()->withoutOverlapping(30)->onOneServer();
+
+Schedule::command(SyncWavePayments::class)
+    ->description('Confirm pending Wave invoice payments')->everyFiveMinutes()->withoutOverlapping(15)->onOneServer();

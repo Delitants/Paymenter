@@ -37,7 +37,7 @@ class EditGateway extends EditRecord
             return $record;
         }
 
-        $config = ExtensionHelper::getConfig($record->type, $record->extension);
+        $config = ExtensionHelper::getConfig($record->type, $record->extension, $data['settings'], $record);
 
         foreach ($config as $option) {
             $record->settings()->updateOrCreate([

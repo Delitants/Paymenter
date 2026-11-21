@@ -3,7 +3,10 @@
 namespace App\Policies;
 
 use App\Models\Invoice;
+use App\Models\InvoicePaidProcessing;
+use App\Models\PaymentOperation;
 use App\Models\User;
+use App\Services\BillmanagerMigration\AccountAccess;
 
 class InvoicePolicy extends BasePolicy
 {
@@ -20,7 +23,7 @@ class InvoicePolicy extends BasePolicy
      */
     public function view(User $user, Invoice $invoice): bool
     {
-        return $this->adminPermission($user, 'admin.invoices.view') || $invoice->user_id === $user->id;
+        return $this->adminPermission($user, 'admin.invoices.view') || AccountAccess::canRead($user, $invoice);
     }
 
     /**
@@ -44,7 +47,7 @@ class InvoicePolicy extends BasePolicy
      */
     public function delete(User $user, Invoice $model): bool
     {
-        return $user->hasPermission('admin.invoices.delete');
+        return !$model->transactions()->whereNotNull('original_allocation')->exists() && !InvoicePaidProcessing::whereKey($model->id)->exists() && !PaymentOperation::where('invoice_id', $model->id)->exists() && $user->hasPermission('admin.invoices.delete');
     }
 
     /**

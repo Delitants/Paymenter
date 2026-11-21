@@ -4,6 +4,7 @@ namespace App\Policies;
 
 use App\Models\Service;
 use App\Models\User;
+use App\Services\BillmanagerMigration\AccountAccess;
 
 class ServicePolicy extends BasePolicy
 {
@@ -20,7 +21,7 @@ class ServicePolicy extends BasePolicy
      */
     public function view(User $user, Service $service): bool
     {
-        return $this->adminPermission($user, 'admin.services.view') || $service->user_id === $user->id;
+        return $this->adminPermission($user, 'admin.services.view') || AccountAccess::canRead($user, $service);
     }
 
     /**

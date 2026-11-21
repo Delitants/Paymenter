@@ -249,6 +249,13 @@ class Settings
             ],
             'tax' => [
                 [
+                    'name' => 'tax_scope',
+                    'label' => 'Tax Scope',
+                    'type' => 'select',
+                    'options' => ['country' => 'Customer country', 'all' => 'All countries'],
+                    'default' => 'country',
+                ],
+                [
                     'name' => 'tax_enabled',
                     'label' => 'Tax Enabled',
                     'type' => 'checkbox',
@@ -699,23 +706,17 @@ class Settings
 
     public static function tax(?User $user = null)
     {
-        // Use once so the query is only run once
-        return once(function () use ($user) {
-            $user ??= Auth::user();
-            // Get country from user properties
-            $country = $user?->properties->where('key', 'country')->value('value') ?? null;
+        if (config('settings.tax_scope', 'country') === 'all') {
+            return TaxRate::where('country', 'all')->first() ?: 0;
+        }
+        $user ??= Auth::user();
+        $country = $user?->properties->where('key', 'country')->value('value') ?? null;
+        if ($country) {
+            $country = array_search($country, config('app.countries')) ?: $country;
+        }
 
-            // Change country to a two-letter country code if it's not already
-            if ($country) {
-                $country = array_search($country, config('app.countries')) ?: $country;
-            }
-
-            $taxRate = TaxRate::whereIn('country', [$country, 'all'])
-                ->orderByRaw('country = ? desc', [$country])
-                ->first();
-
-            return $taxRate ?: 0;
-        });
+        return TaxRate::whereIn('country', [$country, 'all'])
+            ->orderByRaw('country = ? desc', [$country])->first() ?: 0;
     }
 
     public static function settingsObject()

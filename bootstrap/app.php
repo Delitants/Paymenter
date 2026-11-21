@@ -10,6 +10,7 @@ use App\Http\Middleware\ProxyMiddleware;
 use App\Http\Middleware\ResolveUserSession;
 use App\Http\Middleware\SetLocale;
 use App\Models\DebugLog;
+use Illuminate\Contracts\Auth\Middleware\AuthenticatesRequests;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -24,6 +25,11 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->append(ProxyMiddleware::class);
+        // Restore and validate remembered sessions before protected-route authentication.
+        $middleware->prependToPriorityList(
+            AuthenticatesRequests::class,
+            ResolveUserSession::class,
+        );
         $middleware->alias([
             'has' => EnsureUserHasPermissions::class,
             'scope' => CheckForAnyScope::class,

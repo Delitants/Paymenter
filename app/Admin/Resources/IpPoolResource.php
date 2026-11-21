@@ -7,20 +7,16 @@ use App\Admin\Resources\IpPoolResource\Pages\EditIpPool;
 use App\Admin\Resources\IpPoolResource\Pages\ListIpPools;
 use App\Admin\Resources\IpPoolResource\RelationManagers\IpAddressesRelationManager;
 use App\Models\IpPool;
-use App\Models\Server;
+use App\Rules\UniqueNetwork;
+use Closure;
 use Filament\Actions\Action;
 use Filament\Actions\BulkActionGroup;
-use Filament\Actions\CreateAction;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
-use Filament\Actions\EditBulkAction;
 use Filament\Forms\Components\Select;
-use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Textarea;
-use Filament\Forms\Get;
-use Illuminate\Support\Facades\DB;
-use App\Rules\UniqueNetwork;
+use Filament\Forms\Components\TextInput;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Schema;
@@ -57,47 +53,20 @@ class IpPoolResource extends Resource
                             ->placeholder('e.g., 192.168.1.0/24 or 2001:db8::/64')
                             ->live(onBlur: true)
                             ->debounce(500)
-                            ->regex('/^[0-9a-fA-F.:]+\/[0-9]{1,3}$/', 'Invalid CIDR notation. Use format like 192.168.1.0/24')
-                            ->rule(new UniqueNetwork())
-                            ->afterStateUpdated(function (callable $set, $state) {
-                                if (empty($state)) {
+                            ->rule('bail')
+                            ->rule(fn () => function (string $attribute, mixed $value, Closure $fail): void {
+                                if (self::networkDefaults($value) === null) {
+                                    $fail('The :attribute must be a valid IPv4 or IPv6 CIDR subnet.');
+                                }
+                            })
+                            ->rule(fn (?IpPool $record) => new UniqueNetwork($record?->id))
+                            ->afterStateUpdated(function (callable $set, $state): void {
+                                $defaults = self::networkDefaults($state);
+                                if ($defaults === null) {
                                     return;
                                 }
-
-                                // Parse network address
-                                if (strpos($state, '/') === false) {
-                                    return;
-                                }
-
-                                [$ip, $cidr] = explode('/', $state);
-                                $cidr = (int) $cidr;
-                                $ipVersion = filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? 'ipv6' : 'ipv4';
-
-                                // Auto-populate name from network
-                                $set('name', $state);
-
-                                // Detect IP version
-                                $set('ip_version', $ipVersion);
-
-                                // Calculate subnet mask
-                                if ($ipVersion === 'ipv4') {
-                                    $mask = -1 << (32 - $cidr);
-                                    $subnetMask = long2ip($mask);
-                                    $set('subnet_mask', $subnetMask);
-
-                                    // Calculate gateway (first usable IP)
-                                    $ipLong = ip2long($ip);
-                                    $gatewayLong = $ipLong + 1;
-                                    $set('gateway', long2ip($gatewayLong));
-
-                                    // Calculate broadcast
-                                    $broadcastLong = $ipLong + pow(2, (32 - $cidr)) - 1;
-                                    $set('broadcast_address', long2ip($broadcastLong));
-                                } else {
-                                    // IPv6
-                                    $set('subnet_mask', '/' . $cidr);
-                                    $set('gateway', $ip . '::1');
-                                    $set('broadcast_address', null); // No broadcast in IPv6
+                                foreach ($defaults as $field => $value) {
+                                    $set($field, $value);
                                 }
                             })
                             ->columnSpanFull(),
@@ -125,7 +94,13 @@ class IpPoolResource extends Resource
                         TextInput::make('gateway')
                             ->label('Gateway IP')
                             ->placeholder('Auto-calculated, can be overridden')
-                            ->maxLength(255),
+                            ->maxLength(255)
+                            ->rule(fn (callable $get) => function (string $attribute, mixed $value, Closure $fail) use ($get): void {
+                                $version = self::networkDefaults($get('network_address'))['ip_version'] ?? null;
+                                if ($version !== null && !filter_var($value, FILTER_VALIDATE_IP, $version === 'ipv6' ? FILTER_FLAG_IPV6 : FILTER_FLAG_IPV4)) {
+                                    $fail('The :attribute must be a valid address matching the pool IP version.');
+                                }
+                            }),
 
                         TextInput::make('broadcast_address')
                             ->label('Broadcast Address')
@@ -148,6 +123,43 @@ class IpPoolResource extends Resource
                             ->rows(2),
                     ]),
             ]);
+    }
+
+    private static function networkDefaults(mixed $state): ?array
+    {
+        if (!is_string($state) || !preg_match('/^(.+)\/([0-9]{1,3})$/D', $state, $parts)) {
+            return null;
+        }
+        $ip = $parts[1];
+        $cidr = (int) $parts[2];
+        $version = filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) ? 'ipv6'
+            : (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) ? 'ipv4' : null);
+        if ($version === null || $cidr > ($version === 'ipv6' ? 128 : 32)) {
+            return null;
+        }
+        if ($version === 'ipv4') {
+            $ipLong = ip2long($ip);
+            $mask = long2ip(-1 << (32 - $cidr));
+            $gateway = long2ip($ipLong + 1);
+            $broadcast = long2ip($ipLong + pow(2, 32 - $cidr) - 1);
+        } else {
+            $network = inet_pton($ip);
+            for ($index = 0; $index < 16; $index++) {
+                $bits = max(0, min(8, $cidr - $index * 8));
+                $network[$index] = chr(ord($network[$index]) & (0xFF << (8 - $bits)));
+            }
+            $mask = '/' . $cidr;
+            $gateway = null;
+            if ($cidr < 128) {
+                // The masked network has a clear final host bit, so +1 stays in this subnet.
+                $network[15] = chr(ord($network[15]) + 1);
+                $gateway = inet_ntop($network);
+            }
+            $broadcast = null;
+        }
+
+        return ['name' => $state, 'ip_version' => $version, 'subnet_mask' => $mask,
+            'gateway' => $gateway, 'broadcast_address' => $broadcast];
     }
 
     public static function getRelationManagers(): array

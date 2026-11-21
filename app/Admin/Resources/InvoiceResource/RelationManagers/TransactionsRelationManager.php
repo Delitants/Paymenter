@@ -2,53 +2,18 @@
 
 namespace App\Admin\Resources\InvoiceResource\RelationManagers;
 
+use App\Admin\Actions\PaymentActions;
+use Filament\Actions\ActionGroup;
 use Filament\Actions\BulkActionGroup;
-use Filament\Actions\CreateAction;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\DeleteBulkAction;
-use Filament\Forms\Components\Select;
-use Filament\Forms\Components\TextInput;
 use Filament\Resources\RelationManagers\RelationManager;
-use Filament\Schemas\Schema;
-use Filament\Support\RawJs;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
 
 class TransactionsRelationManager extends RelationManager
 {
     protected static string $relationship = 'transactions';
-
-    public function form(Schema $schema): Schema
-    {
-        return $schema
-            ->components([
-                Select::make('gateway.name')
-                    ->label('Gateway')
-                    ->relationship('gateway', 'name')
-                    ->searchable()
-                    ->preload()
-                    ->placeholder('Select the gateway'),
-                TextInput::make('transaction_id')
-                    ->label('Transaction ID'),
-                TextInput::make('amount')
-                    ->label('Amount')
-                    ->numeric()
-                    ->mask(RawJs::make(
-                        <<<'JS'
-                            $money($input, '.', '', 2)
-                        JS
-                    ))
-                    ->required(),
-                TextInput::make('fee')
-                    ->numeric()
-                    ->mask(RawJs::make(
-                        <<<'JS'
-                            $money($input, '.', '', 2)
-                        JS
-                    ))
-                    ->label('Fee'),
-            ]);
-    }
 
     public function table(Table $table): Table
     {
@@ -57,22 +22,26 @@ class TransactionsRelationManager extends RelationManager
             ->columns([
                 TextColumn::make('gateway.name')->label('Gateway'),
                 TextColumn::make('transaction_id'),
+                TextColumn::make('status')->label('Original status')->badge()->formatStateUsing(fn ($state) => ucfirst($state->value)),
                 TextColumn::make('formattedAmount')->label('Amount'),
                 TextColumn::make('formattedFee')->label('Fee'),
+                ...PaymentActions::columns(),
                 TextColumn::make('created_at'),
             ])
             ->filters([
                 //
             ])
             ->headerActions([
-                CreateAction::make(),
+                PaymentActions::receipt(fn () => $this->getOwnerRecord()),
+                PaymentActions::capture(fn () => $this->getOwnerRecord()),
             ])
             ->recordActions([
-                DeleteAction::make(),
+                ActionGroup::make(PaymentActions::transactionActions()),
+                DeleteAction::make()->visible(fn ($record) => !$record->isManaged()),
             ])
             ->toolbarActions([
                 BulkActionGroup::make([
-                    DeleteBulkAction::make(),
+                    DeleteBulkAction::make()->authorizeIndividualRecords(),
                 ]),
             ]);
     }

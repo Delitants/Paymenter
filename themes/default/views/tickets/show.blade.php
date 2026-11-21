@@ -1,6 +1,6 @@
 <div class="container mt-14">
     <div class="bg-primary-800 p-6 rounded-lg mt-2">
-        <h1 class="text-2xl font-semibold">Ticket #{{ $ticket->id }} - {{ $ticket->subject }}</h1>
+        <h1 class="text-2xl font-semibold">Ticket #{{ $ticket->id }} @if($ticket->legacy_reference)<span class="text-sm">(BILLmanager #{{ $ticket->legacy_reference }})</span>@endif - {{ $ticket->subject }}</h1>
 
         <div class="md:grid grid-cols-4 flex flex-col gap-4">
             <div class="md:col-span-3">
@@ -10,9 +10,11 @@
                         @if ($loop->last) x-data x-init="$nextTick(() => $el.scrollIntoView({ block: 'end' }))" @endif>
                         <div class="flex items-center justify-between gap-4">
                             <div class="flex items-center gap-3">
-                                <img src="{{ $message->user->avatar }}" class="size-8 rounded-full border border-neutral bg-background" alt="{{ $message->user->name }} avatar" />
+                                @if($message->user)
+                                <img src="{{ $message->user->avatar }}" class="size-8 rounded-full border border-neutral bg-background" alt="{{ $message->author_name }} avatar" />
+                                @endif
                                 <div class="flex flex-col">
-                                    <h2 class="text-lg font-semibold">{{ $message->user->name }}</h2>
+                                    <h2 class="text-lg font-semibold">{{ $message->author_name }}</h2>
                                     <p class="text-sm text-gray-500">{{ $message->created_at->diffForHumans() }}</p>
                                 </div>
                             </div>
@@ -44,6 +46,7 @@
                     @endforeach
                 </div>
                 <!-- Reply Form -->
+                @if(auth()->user()->can('update', $ticket) && !\App\Services\BillmanagerMigration\MigrationHold::isHeld($ticket))
                 <div class="mt-4">
                     <form wire:submit.prevent="save">
                         <label for="editor" class="block text-sm font-medium text-primary-100">
@@ -153,6 +156,9 @@
                     </form>
                     <x-easymde-editor />
                 </div>
+                @else
+                    <p class="mt-4 text-sm">This ticket is available for viewing. Replies are currently disabled.</p>
+                @endif
 
             </div>
 

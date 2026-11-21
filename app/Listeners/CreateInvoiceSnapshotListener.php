@@ -2,8 +2,8 @@
 
 namespace App\Listeners;
 
-use App\Classes\Settings;
 use App\Events\Invoice\Paid;
+use App\Services\Billing\InvoicePricing;
 
 class CreateInvoiceSnapshotListener
 {
@@ -29,11 +29,10 @@ class CreateInvoiceSnapshotListener
             'bill_to' => config('settings.bill_to_text', config('settings.company_name')),
         ];
 
-        if ($tax = Settings::tax($invoice->user)) {
-            $snapshotData['tax_name'] = $tax->name;
-            $snapshotData['tax_rate'] = $tax->rate;
-            $snapshotData['tax_country'] = $tax->country;
-        }
+        $tax = (new InvoicePricing)->context($invoice);
+        $snapshotData['tax_name'] = $tax['name'];
+        $snapshotData['tax_rate'] = $tax['rate'];
+        $snapshotData['tax_country'] = $tax['country'];
 
         $invoice->snapshot()->create($snapshotData);
     }
