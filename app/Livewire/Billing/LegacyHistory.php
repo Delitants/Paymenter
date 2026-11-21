@@ -35,23 +35,37 @@ class LegacyHistory extends Component
     public function render()
     {
         $owners = AccountAccess::visibleOwnerIds(Auth::user());
-        $query = BillmanagerFinancialRecord::whereIn('user_id', $owners)->where('status', '!=', 'preliminary');
+        $query = BillmanagerFinancialRecord::whereIn('billmanager_financial_records.user_id', $owners)
+            ->where('billmanager_financial_records.status', '!=', 'preliminary');
         $record = null;
         if ($this->recordId !== null) {
             $record = (clone $query)->findOrFail($this->recordId);
             Gate::authorize('view', $record);
         }
-        // Only the latest imported snapshot per account is shown in the list.
-        $query->where('import_id', function ($latest) {
-            $latest->from('billmanager_financial_records as latest_records')
-                ->selectRaw('MAX(latest_records.import_id)')
-                ->whereColumn('latest_records.user_id', 'billmanager_financial_records.user_id');
-        });
+        // Keep the newest version of each historical record and the latest account balance snapshot.
+        $query->select('billmanager_financial_records.*')
+            ->join('billmanager_imports as archive_import', 'archive_import.id', '=', 'billmanager_financial_records.import_id')
+            ->whereNotExists(function ($newer) {
+                $newer->selectRaw('1')
+                    ->from('billmanager_financial_records as newer_record')
+                    ->join('billmanager_imports as newer_import', 'newer_import.id', '=', 'newer_record.import_id')
+                    ->whereColumn('newer_import.source_host', 'archive_import.source_host')
+                    ->whereColumn('newer_record.user_id', 'billmanager_financial_records.user_id')
+                    ->whereColumn('newer_record.source_account_id', 'billmanager_financial_records.source_account_id')
+                    ->whereColumn('newer_record.import_id', '>', 'billmanager_financial_records.import_id')
+                    ->where(function ($identity) {
+                        $identity->where('billmanager_financial_records.source_table', 'subaccounts')
+                            ->orWhere(function ($record) {
+                                $record->whereColumn('newer_record.source_table', 'billmanager_financial_records.source_table')
+                                    ->whereColumn('newer_record.source_id', 'billmanager_financial_records.source_id');
+                            });
+                    });
+            });
         if (in_array($this->kind, ['payments', 'invoices', 'subaccounts'], true)) {
-            $query->where('source_table', $this->kind);
+            $query->where('billmanager_financial_records.source_table', $this->kind);
         }
 
-        return view('billing.legacy-history', ['records' => $query->orderByDesc('id')->paginate(20), 'record' => $record])->layoutData([
+        return view('billing.legacy-history', ['records' => $query->orderByDesc('billmanager_financial_records.id')->paginate(20), 'record' => $record])->layoutData([
             'title' => __('Billing history'), 'sidebar' => true,
         ]);
     }
