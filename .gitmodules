@@ -1,0 +1,9 @@
+[submodule "extensions/Others/Cloudflare"]
+	path = extensions/Others/Cloudflare
+	url = https://github.com/Delitants/paymenter-cloudflare-extension.git
+[submodule "extensions/Others/IPPool"]
+	path = extensions/Others/IPPool
+	url = https://github.com/Delitants/paymenter-ippool-extension.git
+[submodule "extensions/Servers/ResellerClub"]
+	path = extensions/Servers/ResellerClub
+	url = https://github.com/Delitants/paymenter-resellerclub-extension.git
