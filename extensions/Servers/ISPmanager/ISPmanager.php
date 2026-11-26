@@ -65,7 +65,7 @@ class ISPmanager extends ReadOnlyServer
         return $xml;
     }
 
-    private function accountStatus(SimpleXMLElement $row): string
+    private function accountStatus(SimpleXMLElement $row, bool $lifecycle): string
     {
         if (!isset($row->active)) {
             return 'suspended';
@@ -74,7 +74,8 @@ class ISPmanager extends ReadOnlyServer
         return match (strtolower(trim((string) $row->active))) {
             '', '1', 'on', 'true', 'yes' => 'active',
             '0', 'off', 'false', 'no' => 'suspended',
-            default => throw new RuntimeException('Provider account status is invalid'),
+            // A legacy active marker is enough for display. A write requires a known status.
+            default => $lifecycle ? throw new RuntimeException('Provider account status is invalid') : 'active',
         };
     }
 
@@ -91,7 +92,7 @@ class ISPmanager extends ReadOnlyServer
                 throw new RuntimeException('Provider account identity is incomplete');
             }
             $status = $lifecycle || static::class === self::class
-                ? $this->accountStatus($row)
+                ? $this->accountStatus($row, $lifecycle)
                 : (isset($row->active) ? 'active' : 'suspended');
             $resources[] = ['username' => (string) $row->name, 'owner' => (string) $row->owner, 'status' => $status, 'plan' => (string) $row->preset];
         }

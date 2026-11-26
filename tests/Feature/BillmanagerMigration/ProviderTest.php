@@ -134,6 +134,26 @@ class ProviderTest extends TestCase
         $this->assertSame('suspended', $adapter->getResourceInventory()[0]['status']);
     }
 
+    public function test_ispmanager_keeps_legacy_statuses_readable_without_accepting_them_for_writes(): void
+    {
+        [$service, $adapter] = $this->fixture(lifecycle: true);
+        Http::fake(['*' => Http::response(
+            '<doc><elem><name>client</name><owner>reseller</owner><active>off</active></elem>'
+            . '<elem><name>legacy</name><owner>reseller</owner><active>enabled</active></elem></doc>'
+        )]);
+
+        $this->assertSame('suspended', $adapter->getServerInfo($service)['status']);
+        $this->assertSame(['suspended', 'active'], array_column($adapter->getResourceInventory(), 'status'));
+
+        try {
+            $adapter->unsuspendServer($service);
+            $this->fail('Provider change accepted an unconfirmed account status');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('Provider account status is invalid', $e->getMessage());
+            Http::assertNotSent(fn ($request) => $request['func'] !== 'user');
+        }
+    }
+
     public function test_ispmanager_refuses_an_unconfirmed_provider_change_without_repeating_it(): void
     {
         [$service, $adapter] = $this->fixture(lifecycle: true);
