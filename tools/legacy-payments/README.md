@@ -20,6 +20,12 @@ Use `webmoney_receipt.authenticate` to check a retained WebMoney result against 
 
 Use `authorizenet_receipt.authenticate` with the original callback target, webhook ID and merchant signature key to verify a retained Authorize.net payment notification. Preserve both the merchant reference and provider transaction ID. Confirm ownership in BILLmanager and current transaction status at Authorize.net before settling anything. A verified refund or other notification may have no merchant reference and needs separate reconciliation.
 
+## Keep Authorize.net notifications before native processing
+
+Run `python2.7 tools/legacy-payments/authorizenet_ingress.py --help` for the collector options. Configure the original notification path and webhook ID, a private file containing the merchant signature key, and the custody directory. The collector requires no database access.
+
+Proxy signed POST requests on that path to the collector through a private socket. Keep request buffering enabled and upstream retries disabled. Route `@paymenter_legacy_authorizenet_native` to the existing handler so it receives the original method, path, headers and body. The collector records a verified notification before nginx calls the handler. A custody failure returns HTTP 503 so Authorize.net can retry. Other requests retain the original handler's behavior. Use the recorded notification and provider settlement evidence for reconciliation.
+
 ## Route WebMoney callbacks through the cutoff
 
 Run `python2.7 tools/legacy-payments/webmoney_ingress.py --help` for the receiver options. The receiver accepts one buffered nginx request on a private socket. Give its MariaDB account read access to `migration_route_state`, `migration_route_accounts`, `payment`, `paymethod`, `subaccount` and `billorder`.
