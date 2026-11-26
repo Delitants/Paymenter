@@ -110,6 +110,41 @@ class TicketTest extends TestCase
         (new TicketImporter)->import($refresh, $next);
     }
 
+    public function test_refresh_preserves_recovered_mail_references_without_rewriting_existing_ticket_messages(): void
+    {
+        [$snapshot, $context] = $this->source();
+        $importer = new TicketImporter;
+        $importer->import($snapshot, $context);
+        $original = DB::table('billmanager_records')->where('import_id', $context->importId)
+            ->where('source_table', 'ticket_messages')->where('source_id', '31')->first();
+        $visible = TicketMessage::findOrFail($context->mappedId('ticket_messages', '31'));
+
+        $messages = $snapshot->rows('ticket_messages');
+        $messages[0]['email_message_id'] = '<legacy-reply@EXAMPLE.TEST>';
+        $messages[2]['email_message_id'] = 'Old nonstandard mail identifier';
+        $messages[] = ['id' => '34', 'ticket' => '22', 'user' => '11', 'message' => 'Different ticket',
+            'date_post' => '2021-02-03 14:30:00', 'date_delete' => null, 'email_message_id' => 'legacy-reply@example.test'];
+        [$refresh, $next] = $this->source('UTC', null, ['ticket_messages' => $messages]);
+        $importer->import($refresh, $next);
+        $importer->import($refresh, $next);
+
+        $references = DB::table('billmanager_records')->where('import_id', $next->importId)
+            ->where('source_table', 'ticket_mail_references')->orderBy('source_id')->get();
+        $this->assertSame(['31', '33', '34'], $references->pluck('source_id')->all());
+        $first = json_decode(Crypt::decryptString($references[0]->payload), true, flags: JSON_THROW_ON_ERROR);
+        $invalid = json_decode(Crypt::decryptString($references[1]->payload), true, flags: JSON_THROW_ON_ERROR);
+        $other = json_decode(Crypt::decryptString($references[2]->payload), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertSame('23', $first['source_ticket_id']);
+        $this->assertSame('22', $other['source_ticket_id']);
+        $this->assertSame('<legacy-reply@EXAMPLE.TEST>', $first['email_message_id']);
+        $this->assertSame('Old nonstandard mail identifier', $invalid['email_message_id']);
+        $this->assertNull($invalid['message_id_sha256']);
+        $this->assertSame(hash('sha256', 'legacy-reply@example.test'), $first['message_id_sha256']);
+        $this->assertSame($first['message_id_sha256'], $other['message_id_sha256']);
+        $this->assertSame($visible->getAttributes(), $visible->fresh()->getAttributes());
+        $this->assertEquals($original, DB::table('billmanager_records')->find($original->id));
+    }
+
     #[DataProvider('invalidRetainedArchive')]
     public function test_refresh_rejects_invalid_archive_evidence_for_an_excluded_account(string $kind, string $exception): void
     {

@@ -48,8 +48,13 @@ final class TicketImporter
                     // account's history without treating its absence as deletion.
                     continue;
                 }
-                if (!$previous || !isset($incoming[$mapping->source_id]) || $previous != $incoming[$mapping->source_id]
-                    || ($previous['message'] ?? null) !== ($incoming[$mapping->source_id]['message'] ?? null)) {
+                $proposed = $incoming[$mapping->source_id] ?? [];
+                $originalMail = $previous['email_message_id'] ?? '';
+                $proposedMail = $proposed['email_message_id'] ?? '';
+                unset($previous['email_message_id'], $proposed['email_message_id']);
+                if (!$previous || !$proposed || $previous != $proposed
+                    || ($previous['message'] ?? null) !== ($proposed['message'] ?? null)
+                    || ($originalMail !== '' && $originalMail !== $proposedMail)) {
                     throw new RuntimeException('Mapped support message drift requires explicit reconciliation');
                 }
             }
@@ -93,6 +98,10 @@ final class TicketImporter
             foreach ($snapshot->rows('ticket_messages') as $row) {
                 $account = $ticketAccounts[$row['ticket']] ?? throw new RuntimeException('Message has no selected ticket');
                 $context->archive('ticket_messages', (string) $row['id'], $row, $account);
+                $reference = TicketMailReference::payload($row);
+                if ($reference !== null) {
+                    $context->archive(TicketMailReference::TABLE, (string) $row['id'], $reference, $account);
+                }
                 if (!empty($row['user_delete']) || (!empty($row['date_delete']) && !str_starts_with($row['date_delete'], '0000-'))) {
                     $deleted++;
 
