@@ -18,6 +18,8 @@ The `retain` command reads the `PAYMENTER-LEGACY-CUSTODY-V1` line, followed by f
 
 Use `webmoney_receipt.authenticate` to check a retained WebMoney result against the original source payment and the configured merchant key. Confirm the returned transaction reference with WebMoney before using it for settlement.
 
+Use `authorizenet_receipt.authenticate` with the original callback target, webhook ID and merchant signature key to verify a retained Authorize.net payment notification. Preserve both the merchant reference and provider transaction ID. Confirm ownership in BILLmanager and current transaction status at Authorize.net before settling anything. A verified refund or other notification may have no merchant reference and needs separate reconciliation.
+
 ## Route WebMoney callbacks through the cutoff
 
 Run `python2.7 tools/legacy-payments/webmoney_ingress.py --help` for the receiver options. The receiver accepts one buffered nginx request on a private socket. Give its MariaDB account read access to `migration_route_state`, `migration_route_accounts`, `payment`, `paymethod`, `subaccount` and `billorder`.
