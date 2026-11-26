@@ -9,3 +9,9 @@ Run `python2.7 tools/legacy-payments/dispatch.py --help` for the dispatcher opti
 On Paymenter, configure the dedicated SSH key for the fixed request `receive-legacy-payment`. Its forced command runs `php artisan billmanager:legacy-payment:receive --no-interaction --no-ansi` from the intended release. Disable PTY allocation and forwarding for the key, disable console telemetry, and enable the protected legacy receipt trust for the intended source. The receiver reads one frame from standard input and returns one JSON line.
 
 `stored_pending` confirms custody. Financial results are available once Paymenter's separate posting process commits them. After a signature expires, the dispatcher can request the status of the identical retained observation while the original trust policy remains in force. Automatic checks stop at the configured attempt limit. Exhausted, invalid, expired and quarantined deliveries remain in the source dispatch records for review.
+
+## Keep original callback arrivals
+
+Run `python2.7 tools/legacy-payments/custody.py --help` for the retention and verification options. Use an existing private directory with mode `0700` and supply explicit record, byte and free-space limits. Keep the returned sequence and receipt hash in a separate protected record for later verification.
+
+The `retain` command reads the `PAYMENTER-LEGACY-CUSTODY-V1` line, followed by four lines giving the decimal byte lengths of the method, request target, ordered header block and body. The exact original bytes follow in that order. A successful command records custody with `delivery_acknowledged` set to `false`. Authentication, provider responses and settlement require the provider-specific handler. An interrupted write leaves its pending file available for review.
