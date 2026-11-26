@@ -15,6 +15,7 @@ use RuntimeException;
 use Tests\Concerns\UsesCommittedDatabase;
 use Tests\Fixtures\Opening\AcceptedFixture;
 use Tests\Fixtures\Opening\CaptureProofFixture;
+use Tests\Fixtures\Opening\MigrationFixture;
 use Tests\Fixtures\Opening\ProofFactory;
 use Tests\TestCase;
 
@@ -50,7 +51,7 @@ class OpeningVersionCompatibilityTest extends TestCase
 
             return;
         }
-        self::fail('Mixed opening versions were accepted.');
+        self::fail('Invalid opening proof was accepted.');
     }
 
     public function test_schema1_input_and_historical_receipts_keep_original_contracts(): void
@@ -97,5 +98,24 @@ class OpeningVersionCompatibilityTest extends TestCase
         $this->denied(fn () => (new InactiveOpeningAuthority($p['bundle'], $p['dir'] . '/approval.json', $p['dir'] . '/approval-signature.json', $p['process']))->assertApproved($p['evidence']));
         self::assertSame($v2Bytes, file_get_contents($p['bundle_path']));
         self::assertSame(0, DB::table('account_opening_receipts')->count());
+    }
+
+    public function test_shared_snapshot_parse_still_checks_both_original_files(): void
+    {
+        $fixture = MigrationFixture::input();
+        $bundle = OpeningBundle::load($fixture['path']);
+        self::assertSame($bundle->snapshot(), OpeningBundle::load($fixture['path'])->snapshot());
+
+        foreach (['snapshot', 'snapshot_checksum'] as $name) {
+            $path = $bundle->reference($name);
+            $original = file_get_contents($path);
+            try {
+                ProofFactory::write($path, $original . ' ');
+                $this->denied(fn () => $bundle->snapshot());
+            } finally {
+                ProofFactory::write($path, $original);
+            }
+        }
+        self::assertSame($bundle->snapshot(), OpeningBundle::load($fixture['path'])->snapshot());
     }
 }

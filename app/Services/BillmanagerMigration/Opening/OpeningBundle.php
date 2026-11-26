@@ -7,13 +7,16 @@ use App\Services\BillmanagerMigration\Snapshot;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
-final readonly class OpeningBundle
+final class OpeningBundle
 {
     private const LINEAGE_FIELDS = ['source_capture_id', 'control_epoch_sha256', 'capture_fence_sha256', 'capture_acceptance_sha256', 'preparation_history_sha256'];
 
     private const CAPTURE_REFERENCES = ['control_epoch', 'capture_fence', 'capture_fence_signature', 'collector_receipt', 'capture_history', 'capture_acceptance', 'capture_acceptance_signature', 'preparation_history'];
 
-    private function __construct(private array $data, private string $hash, private string $path, private int $device, private int $inode) {}
+    /** @var array{identity:array{string,string,string},snapshot:Snapshot}|null */
+    private static ?array $parsedSnapshot = null;
+
+    private function __construct(private readonly array $data, private readonly string $hash, private readonly string $path, private readonly int $device, private readonly int $inode) {}
 
     public static function load(string $bundlePath): self
     {
@@ -178,13 +181,32 @@ final readonly class OpeningBundle
 
     public function snapshot(): Snapshot
     {
-        $path = $this->reference('snapshot');
-        if ($this->reference('snapshot_checksum') !== $path . '.sha256') {
+        $reference = $this->referenceRecord('snapshot');
+        $checksum = $this->referenceRecord('snapshot_checksum');
+        if ($checksum['path'] !== $reference['path'] . '.sha256') {
             throw new RuntimeException('Snapshot checksum path conflicts.');
         }
-        StrictProofJson::decode(PrivateProofFile::read($path, 0)['bytes']);
+        $sidecar = PrivateProofFile::read($checksum['path'], 0);
+        if (!hash_equals($checksum['sha256'], $sidecar['sha256']) || trim($sidecar['bytes']) !== $reference['sha256']) {
+            throw new RuntimeException('Opening snapshot checksum changed.');
+        }
+        $identity = [$reference['sha256'], $this->data['source_identity'], $this->data['login_cutoff']];
+        $cached = self::$parsedSnapshot;
+        $same = $cached !== null && $cached['identity'] === $identity;
+        // Revalidate the exact current bytes and their custody on every call.
+        // Only the decoding of an already verified original can be reused.
+        $file = $same ? PrivateProofFile::fingerprint($reference['path'], 0) : PrivateProofFile::read($reference['path'], 0);
+        if (!hash_equals($reference['sha256'], $file['sha256'])) {
+            throw new RuntimeException('Opening evidence bytes changed.');
+        }
+        if ($same) {
+            return $cached['snapshot'];
+        }
+        StrictProofJson::decode($file['bytes']);
+        $snapshot = Snapshot::fromBytes($file['bytes'], ...$identity);
+        self::$parsedSnapshot = ['identity' => $identity, 'snapshot' => $snapshot];
 
-        return Snapshot::load($path, $this->data['source_identity'], $this->data['login_cutoff']);
+        return $snapshot;
     }
 
     public function context(): ImportContext

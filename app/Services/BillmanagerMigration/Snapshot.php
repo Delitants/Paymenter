@@ -10,8 +10,11 @@ final class Snapshot
 
     public static function load(string $path, string $expectedSource, string $expectedCutoff): self
     {
-        $payload = file_get_contents($path);
-        $digest = trim(file_get_contents($path . '.sha256'));
+        return self::fromBytes(file_get_contents($path), trim(file_get_contents($path . '.sha256')), $expectedSource, $expectedCutoff);
+    }
+
+    public static function fromBytes(string $payload, string $digest, string $expectedSource, string $expectedCutoff): self
+    {
         if (!preg_match('/^[a-f0-9]{64}$/', $digest) || !hash_equals($digest, hash('sha256', $payload))) {
             throw new InvalidArgumentException('Snapshot checksum mismatch');
         }
