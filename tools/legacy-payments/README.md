@@ -15,3 +15,5 @@ On Paymenter, configure the dedicated SSH key for the fixed request `receive-leg
 Run `python2.7 tools/legacy-payments/custody.py --help` for the retention and verification options. Use an existing private directory with mode `0700` and supply explicit record, byte and free-space limits. Keep the returned sequence and receipt hash in a separate protected record for later verification.
 
 The `retain` command reads the `PAYMENTER-LEGACY-CUSTODY-V1` line, followed by four lines giving the decimal byte lengths of the method, request target, ordered header block and body. The exact original bytes follow in that order. A successful command records custody with `delivery_acknowledged` set to `false`. Authentication, provider responses and settlement require the provider-specific handler. An interrupted write leaves its pending file available for review.
+
+Use `webmoney_receipt.authenticate` to check a retained WebMoney result against the original source payment and the configured merchant key. Confirm the returned transaction reference with WebMoney before using it for settlement.
