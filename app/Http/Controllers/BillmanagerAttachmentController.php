@@ -12,6 +12,6 @@ class BillmanagerAttachmentController extends Controller
         $root = realpath(storage_path('app/tickets/legacy'));
         abort_unless($path && $root && str_starts_with($path, $root . '/') && is_file($path), 404);
 
-        return response()->download($path, $legacyAttachment->filename, ['X-Content-Type-Options' => 'nosniff']);
+        return response()->download($path, $legacyAttachment->downloadFilename(), ['X-Content-Type-Options' => 'nosniff']);
     }
 }

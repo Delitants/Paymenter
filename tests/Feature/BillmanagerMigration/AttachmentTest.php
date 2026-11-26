@@ -96,6 +96,45 @@ class AttachmentTest extends TestCase
         $this->assertSame(2, BillmanagerAttachment::count());
     }
 
+    public function test_imported_downloads_use_the_original_display_name(): void
+    {
+        [$root, $context, $user] = $this->fixture();
+        $this->app->useStoragePath($root . '/storage');
+        $manifest = json_decode(file_get_contents($root . '/manifest.json'), true, flags: JSON_THROW_ON_ERROR);
+        $manifest[0]['filename'] = 'stored-41.txt';
+        $manifest[0]['original'] = ['name' => 'original-41.txt'];
+        $manifest[1]['filename'] = 'stored-42.txt';
+        $manifest[1]['original'] = ['name' => 'original-42.txt'];
+        file_put_contents($root . '/manifest.json', json_encode($manifest, JSON_THROW_ON_ERROR));
+        $importer = new AttachmentImporter;
+        $importer->import($root . '/manifest.json', $root . '/source', $context);
+        $importer->import($root . '/manifest.json', $root . '/source', $context);
+
+        $native = TicketMessageAttachment::sole();
+        $this->assertSame('stored-41.txt', $native->getRawOriginal('filename'));
+        $this->assertSame('original-41.txt', $native->filename);
+        $this->actingAs($user)->withSession($this->loginUser($user))
+            ->get(route('tickets.attachments.show', $native))->assertDownload('original-41.txt');
+
+        $archived = BillmanagerAttachment::where('source_id', '42')->sole();
+        $this->assertSame('stored-42.txt', $archived->getRawOriginal('filename'));
+        $role = Role::create(['name' => 'Archive support', 'permissions' => ['admin.tickets.view']]);
+        $support = User::factory()->create(['role_id' => $role->id]);
+        $this->actingAs($support)->withSession($this->loginUser($support))
+            ->get(route('billmanager.attachments.show', $archived))->assertDownload('original-42.txt');
+    }
+
+    public function test_imported_display_name_with_a_path_falls_back_to_the_stored_name(): void
+    {
+        [$root, $context] = $this->fixture();
+        $manifest = json_decode(file_get_contents($root . '/manifest.json'), true, flags: JSON_THROW_ON_ERROR);
+        $manifest[0]['original'] = ['name' => '../file.txt'];
+        file_put_contents($root . '/manifest.json', json_encode($manifest, JSON_THROW_ON_ERROR));
+        (new AttachmentImporter($root . '/destination'))->import($root . '/manifest.json', $root . '/source', $context);
+
+        $this->assertSame($manifest[0]['filename'], TicketMessageAttachment::sole()->filename);
+    }
+
     private function attachmentSequence(): ?int
     {
         if (DB::getDriverName() === 'sqlite') {
