@@ -17,3 +17,11 @@ Run `python2.7 tools/legacy-payments/custody.py --help` for the retention and ve
 The `retain` command reads the `PAYMENTER-LEGACY-CUSTODY-V1` line, followed by four lines giving the decimal byte lengths of the method, request target, ordered header block and body. The exact original bytes follow in that order. A successful command records custody with `delivery_acknowledged` set to `false`. Authentication, provider responses and settlement require the provider-specific handler. An interrupted write leaves its pending file available for review.
 
 Use `webmoney_receipt.authenticate` to check a retained WebMoney result against the original source payment and the configured merchant key. Confirm the returned transaction reference with WebMoney before using it for settlement.
+
+## Route WebMoney callbacks through the cutoff
+
+Run `python2.7 tools/legacy-payments/webmoney_ingress.py --help` for the receiver options. The receiver accepts one buffered nginx request on a private socket. Give its MariaDB account read access to `migration_route_state`, `migration_route_accounts`, `payment`, `paymethod`, `subaccount` and `billorder`.
+
+Proxy the exact WebMoney result location to the receiver. Keep request buffering enabled and disable upstream retries. Route `@paymenter_legacy_webmoney_native` to the existing native handler with its original proxy settings. nginx handles this internal redirect using the original request. The receiver records the exact body and ordered headers it receives from nginx.
+
+While the cutoff is armed, known retained accounts continue through the native handler. A result for a retired account is retained and returns HTTP 503 to defer acknowledgement. A database read or storage failure also returns HTTP 503 and records a fixed error in the service log. Before arming, verify that WebMoney prerequests include the payment number and that callbacks reach the gate through the configured result URL. Settlement still requires verification and posting.
