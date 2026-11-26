@@ -16,6 +16,7 @@ use App\Services\BillmanagerMigration\ProxmoxAttacher;
 use App\Services\BillmanagerMigration\ProxmoxMatcher;
 use App\Services\BillmanagerMigration\ServiceImporter;
 use App\Services\BillmanagerMigration\Snapshot;
+use Brick\Math\BigDecimal;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -23,6 +24,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Once;
 use Livewire\Livewire;
 use Paymenter\Extensions\Servers\Proxmox\Proxmox;
+use PHPUnit\Framework\Attributes\TestWith;
 use Tests\TestCase;
 
 class ServiceTest extends TestCase
@@ -109,7 +111,7 @@ class ServiceTest extends TestCase
             (new ServiceImporter)->import($snapshot, $context);
         }
         $service = Service::sole();
-        $this->assertSame('11.23', $service->price);
+        $this->assertTrue(BigDecimal::of($service->price)->isEqualTo('11.23'));
         $this->assertTrue(MigrationHold::isHeld($service));
         $this->assertTrue((bool) $service->product->hidden);
         $this->assertSame(0, $service->product->stock);
@@ -199,11 +201,15 @@ class ServiceTest extends TestCase
         Http::assertNotSent(fn ($r) => $r->method() !== 'GET');
     }
 
-    public function test_replay_detects_plan_drift(): void
+    #[TestWith(['plans', 'id', ['billing_period' => 12]])]
+    #[TestWith(['prices', 'plan_id', ['price' => '11.24']])]
+    #[TestWith(['prices', 'plan_id', ['setup_fee' => '0.01']])]
+    #[TestWith(['prices', 'plan_id', ['setup_fee' => null]])]
+    public function test_replay_detects_plan_drift(string $table, string $planColumn, array $changes): void
     {
         [$snapshot, $context] = $this->fixture();
         (new ServiceImporter)->import($snapshot, $context);
-        DB::table('plans')->where('id', Service::sole()->plan_id)->update(['billing_period' => 12]);
+        DB::table($table)->where($planColumn, Service::sole()->plan_id)->update($changes);
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('Mapped service plan changed');
         (new ServiceImporter)->import($snapshot, $context);

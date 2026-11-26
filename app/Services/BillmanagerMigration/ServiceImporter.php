@@ -6,6 +6,7 @@ use App\Models\BillmanagerServiceDetail;
 use App\Models\Currency;
 use App\Models\Product;
 use App\Models\Service;
+use Brick\Math\BigDecimal;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
@@ -102,9 +103,12 @@ final class ServiceImporter
                     }
                     $plan = DB::table('plans')->where('id', $native->plan_id)->first();
                     $nativePrices = DB::table('prices')->where('plan_id', $native->plan_id)->get();
+                    $nativePrice = $nativePrices->first();
                     if (!$plan || !(bool) $plan->price_includes_tax || $plan->priceable_type !== Product::class || $plan->priceable_id != $native->product_id ||
                         $plan->type !== $price['type'] || $plan->billing_period != $price['billing_period'] || $plan->billing_unit !== $price['billing_unit'] ||
-                        $nativePrices->count() !== 1 || $nativePrices[0]->currency_code !== $currency || $nativePrices[0]->price !== $price['native_amount'] || $nativePrices[0]->setup_fee !== '0.00') {
+                        $nativePrices->count() !== 1 || $nativePrice->currency_code !== $currency ||
+                        !is_numeric($nativePrice->price) || !BigDecimal::of($nativePrice->price)->isEqualTo($price['native_amount']) ||
+                        !is_numeric($nativePrice->setup_fee) || !BigDecimal::of($nativePrice->setup_fee)->isZero()) {
                         throw new RuntimeException('Mapped service plan changed; explicit reconciliation required');
                     }
                     $productKey = $row['pricelist'] . ':' . ($row['processingmodule'] ?? 'manual');

@@ -11,8 +11,10 @@ use App\Services\BillmanagerMigration\ImportContext;
 use App\Services\BillmanagerMigration\LegacyCredentialVerifier;
 use App\Services\BillmanagerMigration\MigrationHold;
 use App\Services\BillmanagerMigration\Snapshot;
+use Brick\Math\BigDecimal;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
@@ -83,14 +85,15 @@ class EndToEndTest extends TestCase
 
     private function stage(string $stage, bool $succeeds = true): void
     {
-        $command = $this->artisan('billmanager:import', [
+        $exit = Artisan::call('billmanager:import', [
             'snapshot' => $this->directory . '/snapshot.json', '--source' => '192.0.2.10', '--login-cutoff' => '2024-01-01 00:00:00',
             '--apply' => true, '--stage' => $stage, '--credential-bundle' => $this->directory . '/credentials.enc',
         ]);
         if ($succeeds) {
-            $command->assertSuccessful();
+            $this->assertSame(0, $exit, trim(Artisan::output()));
         } else {
-            $command->expectsOutputToContain('Injected financial-stage failure')->assertFailed();
+            $this->assertNotSame(0, $exit);
+            $this->assertStringContainsString('Injected financial-stage failure', Artisan::output());
         }
     }
 
@@ -118,7 +121,7 @@ class EndToEndTest extends TestCase
     public function test_staged_import_rolls_back_a_failed_stage_then_replays_one_snapshot_without_side_effects(array $order): void
     {
         $snapshot = $this->fixture();
-        $unrelated = User::factory()->create(['email' => 'existing@example.test']);
+        $unrelated = User::factory()->createQuietly(['email' => 'existing@example.test']);
         $this->stage('customers');
         $this->stage('credentials');
         foreach ($order as $stage) {
@@ -127,8 +130,9 @@ class EndToEndTest extends TestCase
         $beforeFailure = $this->counts();
         $inject = true;
         $inserts = 0;
-        DB::listen(function (QueryExecuted $query) use (&$inject, &$inserts) {
-            if ($inject && str_starts_with(strtolower($query->sql), 'insert into `billmanager_financial_records`') && ++$inserts === 2) {
+        $financialTable = DB::connection()->getQueryGrammar()->wrapTable('billmanager_financial_records');
+        DB::listen(function (QueryExecuted $query) use (&$inject, &$inserts, $financialTable) {
+            if ($inject && str_starts_with($query->sql, 'insert into ' . $financialTable . ' ') && ++$inserts === 2) {
                 throw new \RuntimeException('Injected financial-stage failure');
             }
         });
@@ -158,7 +162,7 @@ class EndToEndTest extends TestCase
         $this->stage('credentials');
         $this->assertSame('', Crypt::decryptString(DB::table('billmanager_legacy_credentials')->where('user_id', $member->id)->value('credential')));
         $this->assertTrue(MigrationHold::isHeld(Service::sole()));
-        $this->assertSame('5.00', Service::sole()->price);
+        $this->assertTrue(BigDecimal::of(Service::sole()->price)->isEqualTo('5.00'));
         $ticket = Ticket::sole();
         $this->assertSame($owner->id, $ticket->user_id);
         $this->assertSame(Service::sole()->id, $ticket->service_id);
@@ -166,7 +170,8 @@ class EndToEndTest extends TestCase
         $this->assertSame(str_repeat('Привіт. ', 9000), $ticket->messages()->sole()->message);
         $this->assertSame('2021-02-03 14:00:00', $ticket->messages()->sole()->created_at->format('Y-m-d H:i:s'));
         $this->assertSame(3, BillmanagerFinancialRecord::count());
-        $this->assertSame('-12.3456', BillmanagerFinancialRecord::where('source_table', 'subaccounts')->value('amount'));
+        $openingBalance = BillmanagerFinancialRecord::where('source_table', 'subaccounts')->value('amount');
+        $this->assertTrue(BigDecimal::of($openingBalance)->isEqualTo('-12.3456'));
         $this->assertSame('19.9900', (new FinancialReconciler)->compare($snapshot, $context)->totals['payments']['USD']['paid']);
         foreach (['jobs', 'invoices', 'invoice_transactions', 'credits', 'gateway_payment_attempts'] as $table) {
             $this->assertSame(0, DB::table($table)->count(), $table . ' must remain empty');
