@@ -28,7 +28,7 @@ final class ProofSchema
 
     public static function date(mixed $value): DateTimeImmutable
     {
-        if (!is_string($value)) {
+        if (!is_string($value) || str_contains($value, "\0")) {
             throw new RuntimeException('An exact UTC timestamp is required.');
         }
         $date = DateTimeImmutable::createFromFormat('!Y-m-d\TH:i:s\Z', $value, new \DateTimeZone('UTC'));
@@ -42,8 +42,8 @@ final class ProofSchema
     public static function attestation(array $value, string $purpose): void
     {
         $version = $value['schema_version'] ?? null;
-        if ($purpose === 'legacy-opening-membership') {
-            self::legacyOpeningMembership($value);
+        if (in_array($purpose, ['legacy-opening-membership', 'legacy-opening-exclusion'], true)) {
+            self::legacyOpening($value, $purpose);
 
             return;
         }
@@ -129,20 +129,30 @@ final class ProofSchema
         return (int) $value;
     }
 
-    private static function legacyOpeningMembership(array $value): void
+    private static function legacyOpening(array $value, string $purpose): void
     {
+        $fields = $purpose === 'legacy-opening-membership'
+            ? ['source_identity', 'snapshot_sha256', 'scope_sha256', 'policy_sha256', 'control_epoch_sha256',
+                'controlled_writers_fingerprint', 'incoming_payment_boundary_fingerprint']
+            : ['effect_key', 'economic_sha256', 'opening_receipt_sha256', 'observation_key', 'observation_policy_sha256', 'source_commit'];
         self::keys($value, ['schema_version', 'purpose', 'issuer', 'nonce', 'not_before', 'expires_at',
-            'source_identity', 'source_instance', 'bundle_sha256', 'snapshot_sha256', 'scope_sha256', 'policy_sha256', 'verification_sha256',
-            'control_epoch_sha256', 'controlled_writers_fingerprint', 'incoming_payment_boundary_fingerprint', 'membership_sha256']);
-        if ($value['schema_version'] !== 1 || $value['purpose'] !== 'legacy-opening-membership') {
-            throw new RuntimeException('Unsupported legacy opening membership attestation.');
+            'source_instance', 'bundle_sha256', 'verification_sha256', 'membership_sha256', ...$fields]);
+        if ($value['schema_version'] !== 1 || $value['purpose'] !== $purpose) {
+            throw new RuntimeException('Unsupported legacy opening attestation.');
         }
         self::identities($value);
         self::bounded($value['nonce'], 128);
         self::bounded($value['source_instance'], 512);
         self::hashFields($value);
         if (self::date($value['expires_at']) <= self::date($value['not_before'])) {
-            throw new RuntimeException('Positive legacy opening membership validity is required.');
+            throw new RuntimeException('Positive legacy opening attestation validity is required.');
+        }
+        if ($purpose === 'legacy-opening-exclusion') {
+            self::hash($value['effect_key']);
+            self::hash($value['observation_key']);
+            if (!is_array($value['source_commit'])) {
+                throw new RuntimeException('Original legacy wallet commit evidence is required.');
+            }
         }
     }
 

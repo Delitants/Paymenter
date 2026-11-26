@@ -11,4 +11,9 @@ return [
         'trust_path' => env('LEGACY_OPENING_TRUST_PATH'),
         'reader_gid' => env('LEGACY_OPENING_READER_GID') === null ? null : filter_var(env('LEGACY_OPENING_READER_GID'), FILTER_VALIDATE_INT),
     ],
+    'opening_exclusion' => [
+        'directory' => env('LEGACY_OPENING_EXCLUSION_DIRECTORY'),
+        'trust_path' => env('LEGACY_OPENING_EXCLUSION_TRUST_PATH'),
+        'reader_gid' => env('LEGACY_OPENING_EXCLUSION_READER_GID') === null ? null : filter_var(env('LEGACY_OPENING_EXCLUSION_READER_GID'), FILTER_VALIDATE_INT),
+    ],
 ];

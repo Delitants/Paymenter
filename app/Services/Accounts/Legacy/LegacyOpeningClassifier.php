@@ -14,14 +14,14 @@ use App\Services\BillmanagerMigration\Opening\ProofSchema;
 use App\Services\BillmanagerMigration\Opening\RuntimeProofFile;
 use App\Services\BillmanagerMigration\Opening\SignedAttestation;
 use App\Services\BillmanagerMigration\Opening\StrictProofJson;
+use DateTimeImmutable;
+use DomainException;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
-/** Read-only evidence that a legacy effect was included in an accepted opening. */
+/** Classifies a legacy effect against its accepted opening without moving funds. */
 final class LegacyOpeningClassifier
 {
-    private const PURPOSE = 'legacy-opening-membership';
-
     private const CONTROL_FIELDS = ['control_epoch_sha256', 'controlled_writers_fingerprint', 'incoming_payment_boundary_fingerprint'];
 
     private const FILE_LIMITS = [
@@ -37,28 +37,22 @@ final class LegacyOpeningClassifier
     {
         EffectIdentity::sha256($effectKey);
         $files = $this->readProofs();
-        $trust = StrictProofJson::decode($files['trust_path']['bytes']);
-        foreach (['revoked_keys', 'revoked_nonces'] as $field) {
-            if (!is_array($trust[$field] ?? null) || !array_is_list($trust[$field])) {
-                throw new RuntimeException('Legacy opening revocations require a list of identifiers.');
-            }
-            foreach ($trust[$field] as $identifier) {
-                EffectIdentity::id($identifier);
-            }
-        }
-        $acceptance = SignedAttestation::verifyBytes($files['acceptance_path']['bytes'],
-            StrictProofJson::decode($files['signature_path']['bytes']), self::PURPOSE,
-            $trust, $this->clock->now());
-        if ($files['acceptance_path']['bytes'] !== CanonicalPolicy::bytes($acceptance) ||
-            $files['membership_path']['sha256'] !== $acceptance['membership_sha256']) {
+        $now = $this->clock->now();
+        [$acceptance, $membershipKey] = $this->verifyAttestation($files, 'legacy-opening-membership', $now);
+        if ($files['membership_path']['sha256'] !== $acceptance['membership_sha256']) {
             throw new RuntimeException('Accepted opening membership bytes changed.');
         }
         $member = $this->findMember($files['membership_path']['bytes'], $effectKey);
+        $excludedEvidence = $this->readExclusion($effectKey, $acceptance, $membershipKey, $now, $member === null);
+        [$exclusion, $exclusionKey, $exclusionFiles] = $excludedEvidence;
+        $exclusionHash = $exclusionFiles['acceptance_path']['sha256'] ?? null;
+        $sourceTrust = $exclusion !== null && $member === null ? LegacyOpeningExclusion::sourceTrust() : null;
+        $approvalKeys = [$membershipKey, $exclusionKey];
 
         if (DB::transactionLevel() !== 0 || DB::connection()->getPdo()->inTransaction()) {
             throw new RuntimeException('Legacy membership requires a fresh database snapshot.');
         }
-        $classified = DB::transaction(function () use ($acceptance, $member, $effectKey) {
+        $classified = DB::transaction(function () use ($acceptance, $member, $exclusion, $exclusionHash, $effectKey, $sourceTrust, $approvalKeys) {
             $batch = AccountOpeningBatch::where('bundle_sha256', $acceptance['bundle_sha256'])->sole();
             $boundary = array_intersect_key($acceptance, array_flip(['bundle_sha256', 'source_identity', 'snapshot_sha256', 'scope_sha256', 'policy_sha256', 'verification_sha256']));
             if ($batch->state !== 'sealed' || $batch->sealed_at === null || $batch->only(array_keys($boundary)) !== $boundary) {
@@ -72,29 +66,96 @@ final class LegacyOpeningClassifier
             }
             $result = ['classification' => 'ambiguous', 'effect_key' => $effectKey,
                 'membership_sha256' => $acceptance['membership_sha256'], 'opening_receipt_sha256' => null];
-            if ($member === null || $member['economic_sha256'] !== $effect->economic_sha256 ||
+            $entry = $member ?? $exclusion;
+            if ($entry === null || ($member !== null && $exclusion !== null) || $entry['economic_sha256'] !== $effect->economic_sha256 ||
                 $identity->data()['source_instance'] !== $acceptance['source_instance'] ||
-                LegacyReceiptConflict::where('effect_id', $effect->id)->exists() ||
-                !LegacyObservation::where('effect_id', $effect->id)->where('economic_sha256', $effect->economic_sha256)
-                    ->where('disposition', 'pending_source_qualification')->exists()) {
+                LegacyReceiptConflict::where('effect_id', $effect->id)->exists()) {
+                return $result;
+            }
+            if ($member !== null && !LegacyObservation::where('effect_id', $effect->id)->where('economic_sha256', $effect->economic_sha256)
+                ->where('disposition', 'pending_source_qualification')->exists()) {
                 return $result;
             }
             $receipt = AccountOpeningReceipt::where('batch_id', $batch->id)
-                ->where('receipt_sha256', $member['opening_receipt_sha256'])->sole();
+                ->where('receipt_sha256', $entry['opening_receipt_sha256'])->sole();
             $this->assertSealedMembership($batch, $receipt);
             $this->assertOriginalOpening($receipt, $batch, $facts, $acceptance);
+            if ($sourceTrust !== null) {
+                $net = LegacyOpeningExclusion::netDelta($exclusion, $acceptance, $effect, $sourceTrust, $approvalKeys);
+
+                return $net === null ? $result : array_replace($result, ['classification' => 'excluded',
+                    'opening_receipt_sha256' => $receipt->receipt_sha256, 'exclusion_sha256' => $exclusionHash, 'net_delta' => $net]);
+            }
 
             return array_replace($result, ['classification' => 'included', 'opening_receipt_sha256' => $receipt->receipt_sha256]);
         }, 1);
-        if ($this->readProofs() !== $files) {
-            throw new RuntimeException('Accepted legacy opening membership changed during verification.');
+        if ($this->readProofs() !== $files ||
+            $this->readExclusion($effectKey, $acceptance, $membershipKey, $now, $member === null) !== $excludedEvidence ||
+            ($sourceTrust !== null && LegacyOpeningExclusion::sourceTrust()->sha256 !== $sourceTrust->sha256)) {
+            throw new RuntimeException('Accepted legacy opening evidence changed during verification.');
         }
         $now = $this->clock->now();
-        if ($now < ProofSchema::date($acceptance['not_before']) || $now >= ProofSchema::date($acceptance['expires_at'])) {
-            throw new RuntimeException('Legacy opening membership expired during verification.');
+        foreach ([$acceptance, $exclusion] as $attestation) {
+            if ($attestation !== null && ($now < ProofSchema::date($attestation['not_before']) || $now >= ProofSchema::date($attestation['expires_at']))) {
+                throw new RuntimeException('Legacy opening evidence expired during verification.');
+            }
         }
 
         return $classified;
+    }
+
+    /** @return array{?array,?string,array} */
+    private function readExclusion(string $effectKey, array $membership, string $membershipKey, DateTimeImmutable $now, bool $requireValid): array
+    {
+        try {
+            $files = LegacyOpeningExclusion::proofFiles($effectKey);
+            if ($files === []) {
+                return [null, null, []];
+            }
+            [$exclusion, $signer] = $this->verifyAttestation($files, 'legacy-opening-exclusion', $now);
+            if ($exclusion['effect_key'] !== $effectKey || $signer === $membershipKey) {
+                throw new RuntimeException('Excluded payment requires the original effect and an independent approval key.');
+            }
+            foreach (['source_instance', 'bundle_sha256', 'membership_sha256', 'verification_sha256'] as $field) {
+                if ($exclusion[$field] !== $membership[$field]) {
+                    throw new RuntimeException('Excluded payment does not match its accepted opening.');
+                }
+            }
+
+            return [$exclusion, $signer, $files];
+        } catch (RuntimeException|DomainException $error) {
+            if ($requireValid) {
+                throw $error;
+            }
+
+            // A stale or invalid exclusion certificate is not evidence against a proved member.
+            return [null, null, []];
+        }
+    }
+
+    /** @return array{array,string} */
+    private function verifyAttestation(array $files, string $purpose, DateTimeImmutable $now): array
+    {
+        $trust = StrictProofJson::decode($files['trust_path']['bytes']);
+        foreach (['revoked_keys', 'revoked_nonces'] as $field) {
+            if (!is_array($trust[$field] ?? null) || !array_is_list($trust[$field])) {
+                throw new RuntimeException('Legacy opening revocations require a list of identifiers.');
+            }
+            foreach ($trust[$field] as $identifier) {
+                EffectIdentity::id($identifier);
+            }
+        }
+        $bytes = $files['acceptance_path']['bytes'];
+        $signature = StrictProofJson::decode($files['signature_path']['bytes']);
+        $keyId = $signature['key_id'] ?? null;
+        $key = is_string($keyId) ? ($trust['keys'][$keyId]['public_key'] ?? null) : null;
+        $signer = LegacyTransportTrust::keyFingerprint($key);
+        $attestation = SignedAttestation::verifyBytes($bytes, $signature, $purpose, $trust, $now);
+        if (CanonicalPolicy::bytes($attestation) !== $bytes) {
+            throw new RuntimeException('Canonical accepted legacy opening evidence is required.');
+        }
+
+        return [$attestation, $signer];
     }
 
     private function readProofs(): array

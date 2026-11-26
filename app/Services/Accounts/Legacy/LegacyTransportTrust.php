@@ -56,13 +56,7 @@ final readonly class LegacyTransportTrust
                     }
                 }
             }
-            if (!is_string($key['public_key']) || !($public = @openssl_pkey_get_public($key['public_key']))) {
-                throw new RuntimeException('A legacy RSA public key is required.');
-            }
-            $details = openssl_pkey_get_details($public);
-            if (!$details || $details['type'] !== OPENSSL_KEYTYPE_RSA || $details['bits'] < 3072) {
-                throw new RuntimeException('Legacy RSA keys must have at least 3072 bits.');
-            }
+            self::keyFingerprint($key['public_key']);
         }
         foreach (['revoked_keys', 'revoked_nonces'] as $field) {
             self::list($data[$field]);
@@ -76,6 +70,19 @@ final readonly class LegacyTransportTrust
         }
 
         return new self($data, hash('sha256', $bytes));
+    }
+
+    public static function keyFingerprint(mixed $key): string
+    {
+        if (!is_string($key) || !str_starts_with(ltrim($key), '-----BEGIN ') || !($public = @openssl_pkey_get_public($key))) {
+            throw new RuntimeException('A literal legacy RSA public key is required.');
+        }
+        $details = openssl_pkey_get_details($public);
+        if (!$details || $details['type'] !== OPENSSL_KEYTYPE_RSA || $details['bits'] < 3072) {
+            throw new RuntimeException('Legacy RSA keys must have at least 3072 bits.');
+        }
+
+        return hash('sha256', $details['key']);
     }
 
     private static function list(mixed $value): void
