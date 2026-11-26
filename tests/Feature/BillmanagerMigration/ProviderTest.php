@@ -123,6 +123,17 @@ class ProviderTest extends TestCase
         $this->assertSame(['user', 'user.suspend', 'user'], $functions);
     }
 
+    public function test_ispmanager_client_view_recognizes_an_explicitly_inactive_account(): void
+    {
+        [$service, $adapter] = $this->fixture();
+        Http::fake(['*' => Http::response(
+            '<doc><elem><name>client</name><owner>reseller</owner><active>off</active></elem></doc>'
+        )]);
+
+        $this->assertSame('suspended', $adapter->getServerInfo($service)['status']);
+        $this->assertSame('suspended', $adapter->getResourceInventory()[0]['status']);
+    }
+
     public function test_ispmanager_refuses_an_unconfirmed_provider_change_without_repeating_it(): void
     {
         [$service, $adapter] = $this->fixture(lifecycle: true);

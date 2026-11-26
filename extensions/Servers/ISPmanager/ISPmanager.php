@@ -90,7 +90,9 @@ class ISPmanager extends ReadOnlyServer
             if (!isset($row->name, $row->owner)) {
                 throw new RuntimeException('Provider account identity is incomplete');
             }
-            $status = $lifecycle ? $this->accountStatus($row) : (isset($row->active) ? 'active' : 'suspended');
+            $status = $lifecycle || static::class === self::class
+                ? $this->accountStatus($row)
+                : (isset($row->active) ? 'active' : 'suspended');
             $resources[] = ['username' => (string) $row->name, 'owner' => (string) $row->owner, 'status' => $status, 'plan' => (string) $row->preset];
         }
 
