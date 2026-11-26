@@ -211,7 +211,7 @@ final class OpeningReceiptVerifier
         $baseline = StrictProofJson::decode(PrivateProofFile::read($bundle->reference('target_inventory'), 0)['bytes']);
         ($state ?? new OpeningTargetState)->assertExpected($baseline, $rows);
         $identities = array_map(fn ($row) => ['receipt_id' => $row['receipt_row']['id'], 'receipt_sha256' => $row['receipt_row']['receipt_sha256'], 'wallet_id' => $row['wallet_row']['id']], array_slice($rows, 1));
-        $hash = hash('sha256', CanonicalPolicy::bytes(['bundle_sha256' => $bundle->digest(), 'grant_sha256' => $batch->grant_sha256, 'scope_sha256' => $batch->scope_sha256, 'receipts' => $identities]));
+        $hash = self::verificationHash($bundle->digest(), $batch->grant_sha256, $batch->scope_sha256, $identities);
         $expected = count($bundle->accounts());
         $committed = count($identities);
         if ($committed > $expected || ($batch->state === 'sealed' && ($committed !== $expected || $batch->verification_sha256 !== $hash))) {
@@ -221,5 +221,13 @@ final class OpeningReceiptVerifier
 
         return ['status' => $batch->state === 'sealed' ? 'sealed' : ($committed === $expected ? 'complete_inactive' : 'partial_inactive'), 'expected' => $expected, 'committed' => $committed,
             'sealed' => $batch->state === 'sealed', 'verification_sha256' => $hash];
+    }
+
+    /** @param list<array{receipt_id:int,receipt_sha256:string,wallet_id:int}> $receipts */
+    public static function verificationHash(string $bundleHash, string $grantHash, string $scopeHash, array $receipts): string
+    {
+        return hash('sha256', CanonicalPolicy::bytes([
+            'bundle_sha256' => $bundleHash, 'grant_sha256' => $grantHash, 'scope_sha256' => $scopeHash, 'receipts' => $receipts,
+        ]));
     }
 }

@@ -42,6 +42,11 @@ final class ProofSchema
     public static function attestation(array $value, string $purpose): void
     {
         $version = $value['schema_version'] ?? null;
+        if ($purpose === 'legacy-opening-membership') {
+            self::legacyOpeningMembership($value);
+
+            return;
+        }
         if ($version === 1 && in_array($purpose, ['account-opening-fence', 'account-funding-release', 'account-funding-runtime-acceptance', 'opening-backup-acceptance', 'billmanager-inactive-opening-approval'], true)) {
             self::legacyAttestation($value, $purpose);
 
@@ -122,6 +127,23 @@ final class ProofSchema
         }
 
         return (int) $value;
+    }
+
+    private static function legacyOpeningMembership(array $value): void
+    {
+        self::keys($value, ['schema_version', 'purpose', 'issuer', 'nonce', 'not_before', 'expires_at',
+            'source_identity', 'source_instance', 'bundle_sha256', 'snapshot_sha256', 'scope_sha256', 'policy_sha256', 'verification_sha256',
+            'control_epoch_sha256', 'controlled_writers_fingerprint', 'incoming_payment_boundary_fingerprint', 'membership_sha256']);
+        if ($value['schema_version'] !== 1 || $value['purpose'] !== 'legacy-opening-membership') {
+            throw new RuntimeException('Unsupported legacy opening membership attestation.');
+        }
+        self::identities($value);
+        self::bounded($value['nonce'], 128);
+        self::bounded($value['source_instance'], 512);
+        self::hashFields($value);
+        if (self::date($value['expires_at']) <= self::date($value['not_before'])) {
+            throw new RuntimeException('Positive legacy opening membership validity is required.');
+        }
     }
 
     public static function runtimeTargetIdentity(array $value): void
