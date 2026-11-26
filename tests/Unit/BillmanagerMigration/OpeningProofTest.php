@@ -56,6 +56,9 @@ class OpeningProofTest extends TestCase
         $read = PrivateProofFile::read($p['payload'], posix_geteuid());
         self::assertSame(hash('sha256', file_get_contents($p['payload'])), $read['sha256']);
         self::assertSame(fileinode($p['payload']), $read['inode']);
+        $fingerprint = PrivateProofFile::fingerprint($p['payload'], posix_geteuid(), strlen($read['bytes']));
+        self::assertSame(array_diff_key($read, ['bytes' => true]), $fingerprint);
+        $this->denied(fn () => PrivateProofFile::fingerprint($p['payload'], posix_geteuid(), strlen($read['bytes']) - 1));
         chmod($p['payload'], 0644);
         $this->denied(fn () => PrivateProofFile::read($p['payload'], posix_geteuid()));
         chmod($p['payload'], 0600);
@@ -63,6 +66,7 @@ class OpeningProofTest extends TestCase
         $this->denied(fn () => PrivateProofFile::read('php://memory', posix_geteuid()));
         symlink($p['payload'], $p['dir'] . '/link');
         $this->denied(fn () => PrivateProofFile::read($p['dir'] . '/link', posix_geteuid()));
+        $this->denied(fn () => PrivateProofFile::fingerprint($p['dir'] . '/link', posix_geteuid()));
         symlink($p['dir'], $p['dir'] . '/linked-parent');
         $this->denied(fn () => PrivateProofFile::read($p['dir'] . '/linked-parent/payload.json', posix_geteuid()));
         $this->denied(fn () => SignedAttestation::verify($p['payload'], $p['signature'], 'account-funding-release', $p['trust'], new DateTimeImmutable('2026-01-01T00:00:30Z')));

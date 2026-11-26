@@ -142,7 +142,7 @@ final readonly class OpeningBundle
 
             return $ref['path'];
         }
-        $file = PrivateProofFile::read($ref['path'], 0);
+        $file = PrivateProofFile::fingerprint($ref['path'], 0);
         if (!hash_equals($ref['sha256'], $file['sha256'])) {
             throw new RuntimeException('Opening evidence bytes changed.');
         }

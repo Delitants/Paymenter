@@ -35,6 +35,8 @@ final class OpeningBatchOperator
 
     private ?string $databaseMutex = null;
 
+    private ?OpeningTargetState $targetState = null;
+
     public function apply(OpeningBundle $bundle, string $approvalPath, string $signaturePath): array
     {
         $process = OpeningProcessContext::capture();
@@ -55,29 +57,33 @@ final class OpeningBatchOperator
             $this->authority->assertApproved($firstEvidence);
             $journal = new OpeningAttemptJournal($this->authority->grantHash());
             $baseline = StrictProofJson::decode(PrivateProofFile::read($bundle->reference('target_inventory'), 0)['bytes']);
+            $state = $this->targetState = new OpeningTargetState;
+            if ($baseline['schema_version'] === 2) {
+                $state->lockArchives();
+            }
             $anchor = $journal->initialize($bundle);
             $batchAttempts = $journal->batchAttempts($bundle);
             if (!$this->batch) {
-                (new OpeningTargetState)->assertInitial($baseline, $batchAttempts);
-                (new OpeningBackupVerifier)->assertReady($bundle, $batchAttempts);
+                $state->assertInitial($baseline, $batchAttempts);
+                (new OpeningBackupVerifier)->assertReady($bundle, $batchAttempts, $state);
             } else {
                 OpeningReceiptVerifier::assertBatch($bundle, $this->batch);
                 if ($this->batch->grant_sha256 !== $this->authority->grantHash()) {
                     throw new RuntimeException('A resumed batch requires its original external approval.');
                 }
             }
-            $store = new OpeningBatchStore($bundle, $this->authority, $anchor);
+            $store = new OpeningBatchStore($bundle, $this->authority, $anchor, $state);
             if (!$this->batch) {
                 $journal->beginBatch($bundle);
-                $this->batch = DB::transaction(function () use ($store, $bundle, $baseline) {
+                $this->batch = DB::transaction(function () use ($store, $bundle, $baseline, $state) {
                     $batch = $store->open($bundle, $this->authority->grantHash());
-                    (new OpeningTargetState)->assertExpected($baseline, $store->committed($batch));
+                    $state->assertExpected($baseline, $store->committed($batch));
                     $this->authority->assertFenceCurrent();
 
                     return $batch;
                 });
             }
-            $verified = (new OpeningReceiptVerifier)->verify($bundle, $this->batch);
+            $verified = (new OpeningReceiptVerifier)->verify($bundle, $this->batch, $state);
             $replayed = $verified['committed'];
             foreach (OpeningReceiptVerifier::committedRows($bundle, $this->batch) as $row) {
                 if (isset($row['fence'])) {
@@ -90,7 +96,7 @@ final class OpeningBatchOperator
             }
             foreach ($bundle->accounts() as $account) {
                 $rows = $store->committed($this->batch);
-                (new OpeningTargetState)->assertExpected($baseline, $rows);
+                $state->assertExpected($baseline, $rows);
                 $this->account = OpeningReceiptVerifier::evidence($bundle, $this->batch, $account);
                 $this->authority->assertApproved($this->account);
                 $existing = array_filter(array_slice($rows, 1), fn ($row) => $row['receipt_row']['source_account'] === $account['source_account'] && $row['receipt_row']['currency'] === $account['currency']);
@@ -101,7 +107,7 @@ final class OpeningBatchOperator
                 }
                 $this->attempt = $journal->begin($bundle, $this->account);
                 try {
-                    $this->authority->duringAccount($this->account, function ($permit) use ($store, $baseline) {
+                    $this->authority->duringAccount($this->account, function ($permit) use ($store, $baseline, $state) {
                         $query = DB::table('credits')->where('user_id', $this->account->ownerId)->where('currency_code', $this->account->currency);
                         // The ledger takes the credit lock after owner/currency,
                         // native receipts and wallet. This read is not an earlier
@@ -110,7 +116,7 @@ final class OpeningBatchOperator
                         $before = $credit ? (array) $credit : null;
                         $wallet = (new WalletLedger)->initializeHeldInactive($this->account, $this->authority, $permit);
                         $store->append($this->batch, $this->account, $wallet, $before);
-                        (new OpeningTargetState)->assertExpected($baseline, $store->committed($this->batch));
+                        $state->assertExpected($baseline, $store->committed($this->batch));
                         $this->authority->assertFenceCurrent();
                     });
                 } finally {
@@ -118,16 +124,18 @@ final class OpeningBatchOperator
                     $this->attempt = null;
                 }
             }
-            $report = (new OpeningReceiptVerifier)->verify($bundle, $this->batch);
+            $report = (new OpeningReceiptVerifier)->verify($bundle, $this->batch, $state);
             DB::transaction(function () use ($store, $report) {
                 $this->batch = AccountOpeningBatch::whereKey($this->batch->id)->lockForUpdate()->firstOrFail();
                 $this->authority->assertAcceptedRelease();
                 $store->seal($this->batch, $report['verification_sha256']);
             });
-            $report = (new OpeningReceiptVerifier)->verify($bundle, $this->batch->refresh());
+            $report = (new OpeningReceiptVerifier)->verify($bundle, $this->batch->refresh(), $state);
 
             return ['status' => $report['status'], 'expected' => $report['expected'], 'committed' => $report['committed'], 'replayed' => $replayed, 'sealed' => $report['sealed']];
         } finally {
+            $this->targetState?->releaseArchives();
+            $this->targetState = null;
             $this->unlock();
         }
     }
@@ -237,6 +245,7 @@ final class OpeningBatchOperator
             $row = array_values($matches)[0];
             $authority->assertRecordedFenceNotBefore($row['fence'], $row['fence_history']);
         }
+        self::$active->targetState?->assertArchiveLocks();
     }
 
     public static function attemptHash(): string

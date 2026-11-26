@@ -38,10 +38,10 @@ class OpeningBatchTest extends TestCase
         $this->committedTearDown();
     }
 
-    private function fixture(): array
+    private function fixture(int $inventoryVersion = 1): array
     {
         self::assertTrue(class_exists(OpeningBatchOperator::class), 'Atomic native opening batch operator is missing.');
-        $p = AcceptedFixture::make(realBackup: true);
+        $p = AcceptedFixture::make(realBackup: true, inventoryVersion: $inventoryVersion);
         config(['account-opening.journal_directory' => $p['dir']]);
 
         return $p;
@@ -79,8 +79,8 @@ class OpeningBatchTest extends TestCase
 
     public function test_unrelated_target_delta_and_direct_receipt_write_are_denied(): void
     {
-        $p = $this->fixture();
-        $this->apply($p);
+        $p = $this->fixture(inventoryVersion: 2);
+        self::assertSame('sealed', $this->apply($p)['status']);
         $before = (new OpeningTargetState)->capture();
         try {
             AccountOpeningReceipt::sole()->delete();

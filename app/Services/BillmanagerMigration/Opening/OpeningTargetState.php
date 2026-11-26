@@ -7,11 +7,41 @@ use RuntimeException;
 
 final class OpeningTargetState
 {
-    public function capture(): array
+    private const RECEIPT_TABLES = ['account_opening_batches', 'account_wallets', 'account_opening_receipts', 'credits'];
+
+    private ?OpeningArchiveReadLock $archiveLock = null;
+
+    private array $lockedRows = [];
+
+    public function lockArchives(): void
     {
-        $state = ['schema_version' => 1, 'tables' => [], 'routines' => [], 'triggers' => [], 'events' => []];
+        if ($this->archiveLock !== null) {
+            throw new RuntimeException('Opening archives are already locked.');
+        }
+        $this->archiveLock = OpeningArchiveReadLock::acquire(DB::connection());
+    }
+
+    public function releaseArchives(): void
+    {
+        $this->lockedRows = [];
+        $this->archiveLock = null;
+    }
+
+    public function assertArchiveLocks(): void
+    {
+        $this->archiveLock?->assertCurrent(DB::connection());
+    }
+
+    public function capture(int $schemaVersion = 1): array
+    {
+        if (!in_array($schemaVersion, [1, 2], true)) {
+            throw new RuntimeException('Unknown opening target inventory version.');
+        }
+        $state = ['schema_version' => $schemaVersion, 'tables' => [], 'routines' => [], 'triggers' => [], 'events' => []];
         $connection = DB::connection();
         $grammar = $connection->getQueryGrammar();
+        $inventory = $schemaVersion === 2 ? new OpeningTableInventory($connection) : null;
+        $this->assertArchiveLocks();
         foreach ($connection->select('SHOW FULL TABLES') as $row) {
             $values = array_values((array) $row);
             $name = $values[0];
@@ -22,10 +52,19 @@ final class OpeningTargetState
             // is not a schema change; read the actual allocator independently.
             $counter = $connection->selectOne('SELECT AUTO_INCREMENT AS allocator FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?', [$name]);
             $allocator = $counter->allocator === null ? null : (int) $counter->allocator;
-            $rows = array_map(fn ($row) => self::encodeRow((array) $row), DB::table($name)->get()->all());
-            self::sortRows($rows);
-            $state['tables'][$name] = ['type' => $type, 'ddl' => base64_encode($ddl), 'auto_increment' => $allocator, 'rows' => $rows];
+            $entry = ['type' => $type, 'ddl' => base64_encode($ddl), 'auto_increment' => $allocator];
+            if ($inventory !== null && !in_array($name, self::RECEIPT_TABLES, true)) {
+                $rows = $this->archiveLock?->covers($name)
+                    ? ($this->lockedRows[$name] ??= $this->archiveLock->fingerprint($inventory, $name))
+                    : $inventory->fingerprint($name);
+                $state['tables'][$name] = $entry + $rows;
+            } else {
+                $rows = array_map(fn ($row) => self::encodeRow((array) $row), DB::table($name)->get()->all());
+                self::sortRows($rows);
+                $state['tables'][$name] = $entry + ['rows' => $rows];
+            }
         }
+        $this->assertArchiveLocks();
         ksort($state['tables']);
         foreach (['routines' => ['ROUTINES', 'ROUTINE_SCHEMA'], 'triggers' => ['TRIGGERS', 'TRIGGER_SCHEMA'], 'events' => ['EVENTS', 'EVENT_SCHEMA']] as $key => [$table, $schema]) {
             $state[$key] = array_map(fn ($row) => self::encodeRow((array) $row), $connection->select('SELECT * FROM information_schema.' . $table . ' WHERE ' . $schema . ' = DATABASE()'));
@@ -61,7 +100,7 @@ final class OpeningTargetState
 
     public function assertInitial(array $baseline, array $batchAttempts): void
     {
-        $current = $this->capture();
+        $current = $this->capture($baseline['schema_version']);
         $expected = $baseline;
         self::assertBatchAllocator($baseline, $current, $batchAttempts);
         $expected['tables']['account_opening_batches']['auto_increment'] = $current['tables']['account_opening_batches']['auto_increment'];
@@ -92,7 +131,7 @@ final class OpeningTargetState
 
     public function assertExpected(array $baseline, array $committed): void
     {
-        $current = $this->capture();
+        $current = $this->capture($baseline['schema_version']);
         if (!$committed) {
             if ($baseline !== $current) {
                 throw new RuntimeException('Unreceipted target state changed.');
@@ -166,7 +205,9 @@ final class OpeningTargetState
             $expected['tables'][$table]['auto_increment'] = $actual;
         }
         foreach ($expected['tables'] as &$table) {
-            self::sortRows($table['rows']);
+            if (array_key_exists('rows', $table)) {
+                self::sortRows($table['rows']);
+            }
         }
         unset($table);
         if ($expected !== $current) {

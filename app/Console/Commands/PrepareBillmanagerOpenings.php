@@ -5,13 +5,15 @@ namespace App\Console\Commands;
 use App\Services\BillmanagerMigration\Opening\OpeningBundle;
 use App\Services\BillmanagerMigration\Opening\OpeningPreparation;
 use App\Services\BillmanagerMigration\Opening\OpeningProcessContext;
+use App\Services\BillmanagerMigration\Opening\OpeningReportFile;
+use App\Services\BillmanagerMigration\Opening\OpeningTargetState;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
 final class PrepareBillmanagerOpenings extends Command
 {
-    protected $signature = 'billmanager:openings:prepare {bundle} {--report=}';
+    protected $signature = 'billmanager:openings:prepare {bundle} {--report=} {--inventory= : Create a compact target inventory at a private path}';
 
     protected $description = 'Prepare an immutable inactive account opening report without financial writes';
 
@@ -23,7 +25,14 @@ final class PrepareBillmanagerOpenings extends Command
             if ($bundle->executable()) {
                 throw new RuntimeException('Preparation requires a non-executable input manifest.');
             }
-            $report = DB::transaction(fn () => (new OpeningPreparation)->prepare($bundle));
+            $inventoryPath = $this->option('inventory');
+            if ($inventoryPath !== null && (!is_string($inventoryPath) || $inventoryPath === '' || $inventoryPath === $this->option('report'))) {
+                throw new RuntimeException('A distinct private inventory destination is required.');
+            }
+            [$report, $inventory] = DB::transaction(fn () => [
+                (new OpeningPreparation)->prepare($bundle),
+                $inventoryPath === null ? null : (new OpeningTargetState)->capture(2),
+            ]);
             if (!is_string($path = $this->option('report')) || $path === '' || $path[0] !== '/' || str_contains($path, '://') || realpath(dirname($path)) !== dirname($path) || (fileperms(dirname($path)) & 0777) !== 0700 || fileowner(dirname($path)) !== 0) {
                 throw new RuntimeException('A new private report destination is required.');
             }
@@ -52,6 +61,9 @@ final class PrepareBillmanagerOpenings extends Command
                 }
             } finally {
                 fclose($file);
+            }
+            if ($inventory !== null) {
+                OpeningReportFile::write($inventoryPath, $inventory);
             }
             $this->line(json_encode(['status' => 'prepared', 'application_authorized' => false, 'counts' => $report['counts']], JSON_THROW_ON_ERROR));
 

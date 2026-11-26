@@ -9,6 +9,32 @@ final class PrivateProofFile
     /** @return array{bytes:string,sha256:string,device:int,inode:int} */
     public static function read(string $path, int $ownerUid, ?int $maxBytes = null): array
     {
+        return self::inspect($path, $ownerUid, static function ($file, int $size): array {
+            $bytes = stream_get_contents($file, $size);
+            if ($bytes === false || strlen($bytes) !== $size) {
+                throw new RuntimeException('Incomplete private proof.');
+            }
+
+            return ['bytes' => $bytes, 'sha256' => hash('sha256', $bytes)];
+        }, $maxBytes);
+    }
+
+    /** @return array{sha256:string,device:int,inode:int} */
+    public static function fingerprint(string $path, int $ownerUid, ?int $maxBytes = null): array
+    {
+        return self::inspect($path, $ownerUid, static function ($file, int $size): array {
+            $hash = hash_init('sha256');
+            if (hash_update_stream($hash, $file, $size) !== $size) {
+                throw new RuntimeException('Incomplete private proof.');
+            }
+
+            return ['sha256' => hash_final($hash)];
+        }, $maxBytes);
+    }
+
+    /** Consume the exact opened file while checking its original custody. */
+    public static function inspect(string $path, int $ownerUid, callable $consume, ?int $maxBytes = null): array
+    {
         if ($maxBytes !== null && $maxBytes < 0) {
             throw new RuntimeException('Invalid private proof byte limit.');
         }
@@ -44,35 +70,20 @@ final class PrivateProofFile
             if ($maxBytes !== null && $opened['size'] > $maxBytes) {
                 throw new RuntimeException('Private proof byte limit exceeded.');
             }
-            if ($maxBytes === null) {
-                $bytes = stream_get_contents($file);
-            } else {
-                $bytes = '';
-                while (!feof($file)) {
-                    $remaining = $maxBytes - strlen($bytes);
-                    $part = fread($file, $remaining === 0 ? 1 : min(8192, $remaining));
-                    if ($part === false) {
-                        throw new RuntimeException('Incomplete private proof.');
-                    }
-                    if (strlen($part) > $remaining) {
-                        throw new RuntimeException('Private proof byte limit exceeded.');
-                    }
-                    $bytes .= $part;
-                }
+            $result = $consume($file, $opened['size']);
+            if (ftell($file) !== $opened['size']) {
+                throw new RuntimeException('Incomplete private proof.');
             }
             $after = fstat($file);
             clearstatcache(true, $path);
             $named = @lstat($path);
             foreach (['dev', 'ino', 'mode', 'uid', 'gid', 'size', 'mtime', 'ctime', 'nlink'] as $key) {
-                if ($opened[$key] !== $after[$key] || !$named || $after[$key] !== $named[$key]) {
+                if (!$after || !$named || $opened[$key] !== $after[$key] || $after[$key] !== $named[$key]) {
                     throw new RuntimeException('Private proof changed during read.');
                 }
             }
-            if ($bytes === false || strlen($bytes) !== $opened['size']) {
-                throw new RuntimeException('Incomplete private proof.');
-            }
 
-            return ['bytes' => $bytes, 'sha256' => hash('sha256', $bytes), 'device' => $opened['dev'], 'inode' => $opened['ino']];
+            return [...$result, 'device' => $opened['dev'], 'inode' => $opened['ino']];
         } finally {
             fclose($file);
         }

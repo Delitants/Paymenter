@@ -15,8 +15,13 @@ final class OpeningReceiptVerifier
 {
     public static function evidence(OpeningBundle $bundle, AccountOpeningBatch $batch, array $account): OpeningEvidence
     {
+        return self::fromSourceFacts($batch, $account, $bundle->snapshot()->checksum(), $bundle->data()['policy_sha256']);
+    }
+
+    private static function fromSourceFacts(AccountOpeningBatch $batch, array $account, string $snapshotHash, string $policyHash): OpeningEvidence
+    {
         return new OpeningEvidence($account['source_system'], $account['source_account'], $account['owner_id'], $account['currency'], $account['opening'], $account['limit_exact'],
-            $bundle->snapshot()->checksum(), $bundle->data()['policy_sha256'], $batch->grant_sha256, false);
+            $snapshotHash, $policyHash, $batch->grant_sha256, false);
     }
 
     public static function assertBatch(OpeningBundle $bundle, AccountOpeningBatch $batch): void
@@ -48,7 +53,8 @@ final class OpeningReceiptVerifier
     public static function committedRows(OpeningBundle $bundle, AccountOpeningBatch $batch): array
     {
         self::assertBatch($bundle, $batch);
-        $accounts = (new OpeningPreparation)->sourceFacts($bundle)['accounts'];
+        $source = (new OpeningPreparation)->sourceFacts($bundle);
+        $accounts = $source['accounts'];
         $attempts = (new OpeningAttemptJournal($batch->grant_sha256))->attempts($bundle);
         $attemptIndex = [];
         foreach ($attempts as $attempt) {
@@ -72,7 +78,7 @@ final class OpeningReceiptVerifier
             if (count($matches) !== 1 || $matches[0]['disposition'] !== 'candidate') {
                 throw new RuntimeException('Durable receipt is outside the original scope.');
             }
-            $evidence = self::evidence($bundle, $batch, $matches[0]);
+            $evidence = self::fromSourceFacts($batch, $matches[0], $source['snapshot_sha256'], $source['policy_sha256']);
             $expected = AccountWriteContext::openingAttributesFrom($evidence);
             $wallet = AccountWallet::findOrFail($receipt->wallet_id);
             $cash = DB::table('credits')->where('user_id', $evidence->ownerId)->where('currency_code', $evidence->currency)->get();
@@ -183,7 +189,7 @@ final class OpeningReceiptVerifier
         return $history['entries'][array_key_last($history['entries'])]['payload'];
     }
 
-    public function verify(OpeningBundle $bundle, AccountOpeningBatch $batch): array
+    public function verify(OpeningBundle $bundle, AccountOpeningBatch $batch, ?OpeningTargetState $state = null): array
     {
         $process = OpeningProcessContext::capture();
         if ($process->targetIdentity() !== $bundle->target()) {
@@ -191,7 +197,7 @@ final class OpeningReceiptVerifier
         }
         $rows = self::committedRows($bundle, $batch);
         $baseline = StrictProofJson::decode(PrivateProofFile::read($bundle->reference('target_inventory'), 0)['bytes']);
-        (new OpeningTargetState)->assertExpected($baseline, $rows);
+        ($state ?? new OpeningTargetState)->assertExpected($baseline, $rows);
         $identities = array_map(fn ($row) => ['receipt_id' => $row['receipt_row']['id'], 'receipt_sha256' => $row['receipt_row']['receipt_sha256'], 'wallet_id' => $row['wallet_row']['id']], array_slice($rows, 1));
         $hash = hash('sha256', CanonicalPolicy::bytes(['bundle_sha256' => $bundle->digest(), 'grant_sha256' => $batch->grant_sha256, 'scope_sha256' => $batch->scope_sha256, 'receipts' => $identities]));
         $expected = count($bundle->accounts());

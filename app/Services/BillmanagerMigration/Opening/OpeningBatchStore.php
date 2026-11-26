@@ -23,7 +23,7 @@ final class OpeningBatchStore
 
     private ?Builder $pendingBuilder = null;
 
-    public function __construct(private OpeningBundle $bundle, private InactiveOpeningAuthority $authority, private array $journal)
+    public function __construct(private OpeningBundle $bundle, private InactiveOpeningAuthority $authority, private array $journal, private ?OpeningTargetState $targetState = null)
     {
         OpeningBatchOperator::assertMutex($bundle, $authority);
     }
@@ -95,14 +95,14 @@ final class OpeningBatchStore
         $first = $this->bundle->accounts()[0];
         $evidence = OpeningReceiptVerifier::evidence($this->bundle, $batch, $first);
         $this->authority->assertApproved($evidence);
-        $report = (new OpeningReceiptVerifier)->verify($this->bundle, $batch);
+        $report = (new OpeningReceiptVerifier)->verify($this->bundle, $batch, $this->targetState);
         if ($batch->state !== 'opening' || $report['committed'] !== $report['expected'] || $verificationHash !== $report['verification_sha256']) {
             throw new RuntimeException('Only an exactly verified complete inactive batch can seal.');
         }
         $this->authority->assertFenceCurrent();
         $batch->fill(['state' => 'sealed', 'sealed_at' => gmdate('Y-m-d H:i:s'), 'verification_sha256' => $verificationHash]);
         $this->save($batch, 'update');
-        (new OpeningReceiptVerifier)->verify($this->bundle, $batch->refresh());
+        (new OpeningReceiptVerifier)->verify($this->bundle, $batch->refresh(), $this->targetState);
         $this->authority->assertApproved($evidence);
         $this->authority->assertFenceCurrent();
     }

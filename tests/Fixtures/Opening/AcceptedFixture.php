@@ -15,7 +15,7 @@ use Illuminate\Support\Facades\DB;
 /** Generated, fictional external-custodian proofs; never a product approval API. */
 final class AcceptedFixture
 {
-    public static function make(string $opening = '12.3400', string $limit = '0.0000', ?string $captured = null, bool $heartbeat = true, bool $realBackup = false, array $tables = []): array
+    public static function make(string $opening = '12.3400', string $limit = '0.0000', ?string $captured = null, bool $heartbeat = true, bool $realBackup = false, array $tables = [], int $inventoryVersion = 1): array
     {
         $openedAt = gmdate('Y-m-d\TH:i:s\Z');
         $captured ??= $openedAt;
@@ -28,7 +28,7 @@ final class AcceptedFixture
         $scope = array_values(array_filter($report['accounts'], fn ($row) => $row['disposition'] === 'candidate'));
         $write = static fn ($name, $value) => ProofFactory::write($dir . '/' . $name . '.json', json_encode($value, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
         $write('preparation', $report);
-        $write('inventory', (new OpeningTargetState)->capture());
+        $write('inventory', (new OpeningTargetState)->capture($inventoryVersion));
         // These are generated synthetic proofs. Independent cold restore is a
         // separate acceptance, not implied by this test-only issuer.
         ProofFactory::write($dir . '/baseline.sql', $realBackup ? self::dump($target) : '-- synthetic permit fixture only');
