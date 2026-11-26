@@ -107,6 +107,28 @@ class FinancialTest extends TestCase
         (new FinancialReconciler)->compare($snapshot, $context);
     }
 
+    public function test_reconciliation_reads_large_histories_in_bounded_batches(): void
+    {
+        [$snapshot, $context] = $this->fixture([
+            'payments' => array_map(fn ($id) => ['id' => (string) $id, 'subaccount' => '31', 'currency' => '1',
+                'status' => '4', 'subaccountamount' => '1.2345', 'paydate' => '2020-01-03 00:00:00'], range(41, 440)),
+        ]);
+        (new FinancialImporter)->import($snapshot, $context);
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        try {
+            $report = (new FinancialReconciler)->compare($snapshot, $context);
+            $queries = count(DB::getQueryLog());
+        } finally {
+            DB::disableQueryLog();
+            DB::flushQueryLog();
+        }
+
+        $this->assertSame(400, $report->counts['payments']);
+        $this->assertSame('493.8000', $report->totals['payments']['USD']['paid']);
+        $this->assertLessThan(40, $queries);
+    }
+
     public function test_customer_history_renders_exact_amounts_and_denies_unrelated_readers(): void
     {
         [$snapshot, $context] = $this->fixture();
