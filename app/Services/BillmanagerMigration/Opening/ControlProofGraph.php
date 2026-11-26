@@ -23,6 +23,8 @@ final class ControlProofGraph
     /** @var array<string,array{sha256:string,device:int,inode:int}> */
     private array $paths = [];
 
+    private array $limits = [];
+
     /** @return array{bytes:string,sha256:string,device:int,inode:int} */
     public function read(array $reference, string $kind, array $ancestors = []): array
     {
@@ -49,6 +51,16 @@ final class ControlProofGraph
     public function usage(): array
     {
         return ['bytes' => $this->bytes, 'documents' => count($this->documents)];
+    }
+
+    public function assertUnchanged(): void
+    {
+        foreach ($this->paths as $path => $original) {
+            $current = PrivateProofFile::fingerprint($path, 0, $this->limits[$path]);
+            if ($current !== $original) {
+                throw new RuntimeException('Control proof identity changed within verification.');
+            }
+        }
     }
 
     private function load(string $path, string $kind, array $ancestors): array
@@ -90,6 +102,7 @@ final class ControlProofGraph
             $this->documents[$openedIdentity] = $facts;
         }
         $this->paths[$path] = $facts;
+        $this->limits[$path] = min($limit, $this->limits[$path] ?? $limit);
 
         return $file;
     }

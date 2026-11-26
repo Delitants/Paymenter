@@ -37,6 +37,8 @@ final class OpeningBatchOperator
 
     private ?OpeningTargetState $targetState = null;
 
+    private ?array $baseline = null;
+
     public function apply(OpeningBundle $bundle, string $approvalPath, string $signaturePath): array
     {
         $process = OpeningProcessContext::capture();
@@ -56,7 +58,8 @@ final class OpeningBatchOperator
                 $bundle->snapshot()->checksum(), $bundle->data()['policy_sha256'], $this->authority->grantHash(), false);
             $this->authority->assertApproved($firstEvidence);
             $journal = new OpeningAttemptJournal($this->authority->grantHash());
-            $baseline = StrictProofJson::decode(PrivateProofFile::read($bundle->reference('target_inventory'), 0)['bytes']);
+            $baseline = $this->baseline = StrictProofJson::decode(PrivateProofFile::read($bundle->reference('target_inventory'), 0)['bytes']);
+            $version2 = $bundle->data()['schema_version'] === 2;
             $state = $this->targetState = new OpeningTargetState;
             if ($baseline['schema_version'] === 2) {
                 $state->lockArchives();
@@ -98,16 +101,25 @@ final class OpeningBatchOperator
                 $rows = $store->committed($this->batch);
                 $state->assertExpected($baseline, $rows);
                 $this->account = OpeningReceiptVerifier::evidence($bundle, $this->batch, $account);
-                $this->authority->assertApproved($this->account);
                 $existing = array_filter(array_slice($rows, 1), fn ($row) => $row['receipt_row']['source_account'] === $account['source_account'] && $row['receipt_row']['currency'] === $account['currency']);
+                if (!$version2 || $existing) {
+                    $this->authority->assertApproved($this->account);
+                }
                 if ($existing) {
                     $this->account = null;
 
                     continue;
                 }
-                $this->attempt = $journal->begin($bundle, $this->account);
+                if (!$version2) {
+                    $this->attempt = $journal->begin($bundle, $this->account);
+                }
                 try {
-                    $this->authority->duringAccount($this->account, function ($permit) use ($store, $baseline, $state) {
+                    $this->authority->duringAccount($this->account, function ($permit) use ($store, $baseline, $state, $bundle, $journal, $version2) {
+                        if ($version2) {
+                            // The locked account has already passed full approval.
+                            // Persist the attempt before allocating any opening rows.
+                            $this->attempt = $journal->begin($bundle, $this->account);
+                        }
                         $query = DB::table('credits')->where('user_id', $this->account->ownerId)->where('currency_code', $this->account->currency);
                         // The ledger takes the credit lock after owner/currency,
                         // native receipts and wallet. This read is not an earlier
@@ -115,9 +127,11 @@ final class OpeningBatchOperator
                         $credit = $query->first();
                         $before = $credit ? (array) $credit : null;
                         $wallet = (new WalletLedger)->initializeHeldInactive($this->account, $this->authority, $permit);
-                        $store->append($this->batch, $this->account, $wallet, $before);
-                        $state->assertExpected($baseline, $store->committed($this->batch));
-                        $this->authority->assertFenceCurrent();
+                        $store->append($this->batch, $this->account, $wallet, $before, $permit);
+                        if (!$version2) {
+                            $state->assertExpected($baseline, $store->committed($this->batch));
+                            $this->authority->assertFenceCurrent();
+                        }
                     });
                 } finally {
                     $this->account = null;
@@ -136,6 +150,7 @@ final class OpeningBatchOperator
         } finally {
             $this->targetState?->releaseArchives();
             $this->targetState = null;
+            $this->baseline = null;
             $this->unlock();
         }
     }
@@ -224,10 +239,15 @@ final class OpeningBatchOperator
         }
     }
 
+    public static function ownsAccount(InactiveOpeningAuthority $authority, OpeningEvidence $evidence): bool
+    {
+        return self::$active?->authority === $authority && self::$active->account === $evidence;
+    }
+
     public static function assertAccountScope(InactiveOpeningAuthority $authority, OpeningEvidence $evidence): void
     {
         $scope = self::$active;
-        if (!$scope || $scope->authority !== $authority || $scope->account !== $evidence || $scope->batch?->state !== 'opening' || $scope->attempt === null || DB::transactionLevel() < 1) {
+        if (!self::ownsAccount($authority, $evidence) || $scope->batch?->state !== 'opening' || $scope->attempt === null || DB::transactionLevel() < 1) {
             throw new RuntimeException('A held opening requires its live atomic batch receipt scope.');
         }
         self::assertMutex($scope->bundle, $authority);
@@ -236,16 +256,18 @@ final class OpeningBatchOperator
     public static function assertAccountCommitted(InactiveOpeningAuthority $authority, OpeningEvidence $evidence): void
     {
         self::assertAccountScope($authority, $evidence);
-        $rows = OpeningReceiptVerifier::committedRows(self::$active->bundle, self::$active->batch);
-        $matches = array_filter(array_slice($rows, 1), fn ($row) => $row['receipt_row']['source_account'] === $evidence->sourceAccount && $row['receipt_row']['currency'] === $evidence->currency && $row['receipt_row']['attempt_sha256'] === self::$active->attempt);
+        $scope = self::$active;
+        $rows = OpeningReceiptVerifier::committedRows($scope->bundle, $scope->batch);
+        $matches = array_filter(array_slice($rows, 1), fn ($row) => $row['receipt_row']['source_account'] === $evidence->sourceAccount && $row['receipt_row']['currency'] === $evidence->currency && $row['receipt_row']['attempt_sha256'] === $scope->attempt);
         if (count($matches) !== 1) {
             throw new RuntimeException('An opening must commit with its exact durable receipt.');
         }
-        if (self::$active->bundle->data()['schema_version'] === 2) {
+        if ($scope->bundle->data()['schema_version'] === 2) {
+            $scope->targetState->assertExpected($scope->baseline, $rows);
             $row = array_values($matches)[0];
             $authority->assertRecordedFenceNotBefore($row['fence'], $row['fence_history']);
         }
-        self::$active->targetState?->assertArchiveLocks();
+        $scope->targetState?->assertArchiveLocks();
     }
 
     public static function attemptHash(): string

@@ -9,18 +9,42 @@ final class OpeningFenceHistoryVerifier
 {
     private const RUNTIME_FIELDS = ['machine_id_sha256', 'runtime_realpath', 'db_database', 'db_socket_realpath', 'db_server_uuid_or_fingerprint'];
 
+    private array $verifiedEntries = [];
+
+    private ?string $trustHash = null;
+
     /** @return array{reference:array{path:string,sha256:string},entries:list<array{payload:array,signature:array,payload_ref:array,signature_ref:array,payload_bytes:string}>} */
     public static function verify(array $historyRef, ControlProofGraph $graph, string $trustPath): array
     {
+        return (new self)->verifyHistory($historyRef, $graph, $trustPath);
+    }
+
+    /** Reuse validation of an identical signed prefix only after reopening every referenced file. */
+    public function verifyHistory(array $historyRef, ControlProofGraph $graph, string $trustPath): array
+    {
         $index = StrictProofJson::decode($graph->read($historyRef, 'history')['bytes']);
         ProofSchema::leaseHistory($index);
-        $trust = StrictProofJson::decode(PrivateProofFile::read($trustPath, 0)['bytes']);
+        $trustFile = PrivateProofFile::read($trustPath, 0);
+        $trust = StrictProofJson::decode($trustFile['bytes']);
+        $samePrefix = $trustFile['sha256'] === $this->trustHash;
         $entries = [];
         $seen = [];
         $ready = null;
         foreach ($index['leases'] as $pair) {
             $file = $graph->read($pair['payload'], 'control', [$historyRef['path']]);
-            $signature = StrictProofJson::decode($graph->read($pair['signature'], 'control', [$historyRef['path']])['bytes']);
+            $signatureFile = $graph->read($pair['signature'], 'control', [$historyRef['path']]);
+            $verified = $this->verifiedEntries[count($entries)] ?? null;
+            if ($samePrefix && $verified !== null && $verified['payload_ref'] === $pair['payload'] && $verified['signature_ref'] === $pair['signature']) {
+                $seen[$file['sha256']] = true;
+                if ($verified['payload']['purpose'] === 'account-opening-fence') {
+                    $ready ??= $verified['payload'];
+                }
+                $entries[] = $verified;
+
+                continue;
+            }
+            $samePrefix = false;
+            $signature = StrictProofJson::decode($signatureFile['bytes']);
             $value = StrictProofJson::decode($file['bytes']);
             $capture = ($value['purpose'] ?? null) === 'account-opening-capture-fence' && ($value['schema_version'] ?? null) === 1;
             $opening = ($value['purpose'] ?? null) === 'account-opening-fence' && ($value['schema_version'] ?? null) === 2;
@@ -78,6 +102,11 @@ final class OpeningFenceHistoryVerifier
             }
             $seen[$file['sha256']] = true;
             $entries[] = ['payload' => $value, 'signature' => $signature, 'payload_ref' => $pair['payload'], 'signature_ref' => $pair['signature'], 'payload_bytes' => $file['bytes']];
+        }
+        // Reading an older complete prefix must not evict its proven extension.
+        if (!$samePrefix) {
+            $this->trustHash = $trustFile['sha256'];
+            $this->verifiedEntries = $entries;
         }
 
         return ['reference' => $historyRef, 'entries' => $entries];

@@ -54,11 +54,11 @@ final class OpeningBatchStore
         return $row->refresh();
     }
 
-    public function append(AccountOpeningBatch $batch, OpeningEvidence $evidence, AccountWallet $wallet, ?array $creditBefore): AccountOpeningReceipt
+    public function append(AccountOpeningBatch $batch, OpeningEvidence $evidence, AccountWallet $wallet, ?array $creditBefore, HeldOpeningPermit $permit): AccountOpeningReceipt
     {
         $this->assertScope();
         OpeningBatchOperator::assertAccountScope($this->authority, $evidence);
-        $this->authority->assertApproved($evidence);
+        $permit->assertFor($evidence);
         OpeningReceiptVerifier::assertBatch($this->bundle, $batch);
         if ($batch->state !== 'opening') {
             throw new RuntimeException('Sealed opening batches cannot initialize.');
@@ -78,7 +78,6 @@ final class OpeningBatchStore
             'created_at' => gmdate('Y-m-d H:i:s')]);
         $row->receipt_sha256 = self::receiptHash($row->getAttributes());
         $this->save($row, 'create');
-        OpeningReceiptVerifier::committedRows($this->bundle, $batch);
 
         return $row->refresh();
     }

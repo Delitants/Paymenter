@@ -41,12 +41,17 @@ final class InactiveOpeningAuthority implements OpeningAuthority
 
     private ?array $committingFence = null;
 
+    private ?array $accountVerification = null;
+
+    private OpeningFenceHistoryVerifier $historyVerifier;
+
     public function __construct(private OpeningBundle $bundle, private string $approvalPath, private string $signaturePath, private OpeningProcessContext $process)
     {
         if (!$bundle->executable() || $bundle->target() !== $process->targetIdentity()) {
             throw new RuntimeException('An executable bundle for this operator target is required.');
         }
         $this->approvalFile = PrivateProofFile::read($approvalPath, 0);
+        $this->historyVerifier = new OpeningFenceHistoryVerifier;
         $weak = \WeakReference::create($this);
         $listener = static function ($event) use ($weak) {
             $scope = $weak->get();
@@ -80,6 +85,11 @@ final class InactiveOpeningAuthority implements OpeningAuthority
 
     public function assertAcceptedRelease(): void
     {
+        ReleaseVerifier::assertCurrent($this->acceptedRelease());
+    }
+
+    private function acceptedRelease(): array
+    {
         $this->process->assertCurrent();
         $this->bundle->assertCurrent();
         if ($this->bundle->data()['schema_version'] === 2) {
@@ -94,13 +104,17 @@ final class InactiveOpeningAuthority implements OpeningAuthority
         if (hash_file('sha256', $this->bundle->reference('release')) !== $this->bundle->data()['release_sha256']) {
             throw new RuntimeException('Accepted opening release identity changed.');
         }
-        ReleaseVerifier::assertCurrent($release);
+
+        return $release;
     }
 
     public function assertFenceCurrent(): void
     {
         if ($this->bundle->data()['schema_version'] === 2) {
-            $this->assertFenceV2();
+            if ($this->current !== null) {
+                $this->assertScope($this->current);
+            }
+            $this->assertFenceV2($this->accountVerification);
 
             return;
         }
@@ -143,13 +157,23 @@ final class InactiveOpeningAuthority implements OpeningAuthority
         $this->lastFenceProof = ['payload_b64' => base64_encode($payload['bytes']), 'signature' => $signature];
     }
 
-    private function assertFenceV2(): void
+    /** @return array{lineage:array, originals:ControlProofGraph} */
+    private function assertFenceV2(?array $verification = null): array
     {
         $this->process->assertCurrent();
-        $graph = new ControlProofGraph;
-        $lineage = CaptureLineageVerifier::verify($this->bundle, $graph, $this->trust());
+        if ($verification === null) {
+            $graph = new ControlProofGraph;
+            $lineage = CaptureLineageVerifier::verify($this->bundle, $graph, $this->trust());
+            $verification = ['lineage' => $lineage, 'originals' => clone $graph];
+        } else {
+            // The original capture controls are fixed. The live head below
+            // may advance and is read in full on every use.
+            $graph = clone $verification['originals'];
+            $graph->assertUnchanged();
+            $lineage = $verification['lineage'];
+        }
         $reference = OpeningFenceReference::currentV2($graph);
-        $history = OpeningFenceHistoryVerifier::verify($reference['history'], $graph, $this->trust());
+        $history = $this->historyVerifier->verifyHistory($reference['history'], $graph, $this->trust());
         OpeningFenceHistoryVerifier::assertPrefix($lineage['preparation_history'], $history);
         $position = count($lineage['preparation_history']['entries']);
         $firstReady = $history['entries'][$position] ?? null;
@@ -168,7 +192,11 @@ final class InactiveOpeningAuthority implements OpeningAuthority
         if ($head['payload_ref'] !== $reference['payload'] || $head['signature_ref'] !== $reference['signature'] || $head['payload']['schema_version'] !== 2 || $head['payload']['purpose'] !== 'account-opening-fence') {
             throw new RuntimeException('Current v2 readiness head changed.');
         }
-        $trust = StrictProofJson::decode(PrivateProofFile::read($this->trust(), 0)['bytes']);
+        $trustFile = PrivateProofFile::read($this->trust(), 0);
+        if ($trustFile['sha256'] !== $lineage['trust_sha256']) {
+            throw new RuntimeException('Opening trust changed during capture verification.');
+        }
+        $trust = StrictProofJson::decode($trustFile['bytes']);
         $lease = SignedAttestation::verifyBytes($head['payload_bytes'], $head['signature'], 'account-opening-fence', $trust, $this->now());
         if ($lease['target_identity'] !== $this->process->targetIdentity()) {
             throw new RuntimeException('Current readiness does not belong to the actual root operator.');
@@ -177,6 +205,8 @@ final class InactiveOpeningAuthority implements OpeningAuthority
         $this->lastHistory = $history;
         $this->lastFence = $lease;
         $this->lastFenceProof = ['schema_version' => 2, 'payload_b64' => base64_encode($head['payload_bytes']), 'signature' => $head['signature'], 'history' => $reference['history']];
+
+        return $verification;
     }
 
     public function fenceFacts(): array
@@ -207,7 +237,7 @@ final class InactiveOpeningAuthority implements OpeningAuthority
         if ($this->bundle->data()['schema_version'] !== 2) {
             throw new RuntimeException('Recorded custody history is available only for v2 batches.');
         }
-        $prior = OpeningFenceHistoryVerifier::verify($priorHistoryRef, new ControlProofGraph, $this->trust());
+        $prior = $this->historyVerifier->verifyHistory($priorHistoryRef, new ControlProofGraph, $this->trust());
         $head = $prior['entries'][array_key_last($prior['entries'])];
         OpeningFenceHistoryVerifier::assertRecordedHead($prior, $head['payload_bytes'], $head['signature']);
         if ($head['payload'] !== $priorFence) {
@@ -223,10 +253,31 @@ final class InactiveOpeningAuthority implements OpeningAuthority
 
     public function assertApproved(OpeningEvidence $evidence): void
     {
+        $this->verifyApproval($evidence);
+    }
+
+    /** @return array{lineage:array, originals:ControlProofGraph}|null */
+    private function verifyApproval(OpeningEvidence $evidence): ?array
+    {
         $this->assertAcceptedRelease();
-        $this->assertFenceCurrent();
+        $verification = null;
+        if ($this->bundle->data()['schema_version'] === 2) {
+            $verification = $this->assertFenceV2();
+        } else {
+            $this->assertFenceCurrent();
+        }
         $this->assertFinancialApprovalCurrent($evidence);
-        $report = (new OpeningPreparation)->sourceFacts($this->bundle);
+        $report = $verification['lineage']['source_facts'] ?? (new OpeningPreparation)->sourceFacts($this->bundle);
+        $this->assertAccountFacts($evidence, $report);
+        if ($verification !== null) {
+            $this->assertFinancialApprovalCurrent($evidence);
+        }
+
+        return $verification;
+    }
+
+    private function assertAccountFacts(OpeningEvidence $evidence, array $report): void
+    {
         $matches = array_values(array_filter($report['accounts'], fn ($row) => $row['source_account'] === $evidence->sourceAccount && $row['currency'] === $evidence->currency));
         if (count($matches) !== 1 || $matches[0]['disposition'] !== 'candidate') {
             throw new RuntimeException('Opening account is not an approved candidate.');
@@ -235,9 +286,6 @@ final class InactiveOpeningAuthority implements OpeningAuthority
         if ($row['source_system'] !== $evidence->sourceSystem || $row['owner_id'] !== $evidence->ownerId || $row['opening'] !== $evidence->opening || $row['limit_exact'] !== $evidence->limit ||
             $row['hold_fingerprint'] !== OpeningPreparation::holdFingerprint(DB::transactionLevel() > 0) || NativeOpeningHistory::forOpening($evidence->ownerId, $evidence->currency) !== $row['receipt_exclusions']) {
             throw new RuntimeException('Original owner, amount, holds or receipt exclusions changed.');
-        }
-        if ($this->bundle->data()['schema_version'] === 2) {
-            $this->assertFinancialApprovalCurrent($evidence);
         }
     }
 
@@ -280,7 +328,9 @@ final class InactiveOpeningAuthority implements OpeningAuthority
         if ($this->current !== null) {
             throw new RuntimeException('Nested opening authority is denied.');
         }
-        $this->assertApproved($evidence);
+        if ($this->bundle->data()['schema_version'] === 1) {
+            $this->assertApproved($evidence);
+        }
         $container = app();
         $bindings = $container->getBindings();
         $bound = $container->bound(OpeningAuthority::class);
@@ -299,24 +349,28 @@ final class InactiveOpeningAuthority implements OpeningAuthority
                     throw new RuntimeException('Opening currency identity is missing.');
                 }
                 NativeOpeningHistory::current($evidence->ownerId, $evidence->currency);
-                $this->assertApproved($evidence);
+                $this->accountVerification = $this->verifyApproval($evidence);
                 $this->current = $evidence;
                 $this->committingFence = null;
                 $this->token = bin2hex(random_bytes(32));
-                $this->issuing = true;
                 try {
-                    $this->permit = HeldOpeningPermit::issue($this, $evidence, $this->token);
-                } finally {
-                    $this->issuing = false;
-                }
-                try {
+                    $this->issuing = true;
+                    try {
+                        $this->permit = HeldOpeningPermit::issue($this, $evidence, $this->token);
+                    } finally {
+                        $this->issuing = false;
+                    }
                     $result = $write($this->permit);
                     $this->permit->assertFor($evidence);
-                    if (AccountWallet::where('user_id', $evidence->ownerId)->where('currency_code', $evidence->currency)->exists()) {
+                    if (OpeningBatchOperator::ownsAccount($this, $evidence) ||
+                        AccountWallet::where('user_id', $evidence->ownerId)->where('currency_code', $evidence->currency)->exists()) {
                         OpeningBatchOperator::assertAccountCommitted($this, $evidence);
                     }
-                    // All potentially slow source and durable-receipt reads
-                    // precede the live lease check immediately before commit.
+                    // Recheck the complete source and installed release in
+                    // this same transaction before the final live checks.
+                    if ($this->accountVerification !== null) {
+                        $this->verifyApproval($evidence);
+                    }
                     $this->assertFenceCurrent();
                     if ($this->bundle->data()['schema_version'] === 2) {
                         $this->assertFinancialApprovalCurrent($evidence);
@@ -333,6 +387,7 @@ final class InactiveOpeningAuthority implements OpeningAuthority
                     $this->permit = null;
                     $this->current = null;
                     $this->committingFence = null;
+                    $this->accountVerification = null;
                     $this->token = null;
                     $this->level = 0;
                     $this->connection = null;
@@ -357,13 +412,26 @@ final class InactiveOpeningAuthority implements OpeningAuthority
             throw new RuntimeException('Permit issuance is outside its private authority scope.');
         }
         $this->assertScope($evidence);
-        $this->assertApproved($evidence);
+        $this->assertScopedApproval($evidence);
     }
 
     public function assertPermit(HeldOpeningPermit $permit, OpeningEvidence $evidence, string $token): void
     {
         $this->assertPermitScope($permit, $evidence, $token);
-        $this->assertApproved($evidence);
+        $this->assertScopedApproval($evidence);
+    }
+
+    private function assertScopedApproval(OpeningEvidence $evidence): void
+    {
+        if ($this->accountVerification === null) {
+            $this->assertApproved($evidence);
+
+            return;
+        }
+        ReleaseVerifier::assertConfiguration($this->acceptedRelease());
+        $this->assertAccountFacts($evidence, $this->accountVerification['lineage']['source_facts']);
+        $this->assertFenceCurrent();
+        $this->assertFinancialApprovalCurrent($evidence);
     }
 
     public function assertPermitScope(HeldOpeningPermit $permit, OpeningEvidence $evidence, string $token): void

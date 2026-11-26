@@ -9,7 +9,7 @@ final class CaptureLineageVerifier
 {
     private const RUNTIME_FIELDS = ['machine_id_sha256', 'runtime_realpath', 'db_database', 'db_socket_realpath', 'db_server_uuid_or_fingerprint'];
 
-    /** @return array{epoch:array,collector:array,acceptance:array,capture_history:array,preparation_history:array,first_ready:array} */
+    /** @return array{epoch:array,collector:array,acceptance:array,capture_history:array,preparation_history:array,first_ready:array,source_facts:array,trust_sha256:string} */
     public static function verify(OpeningBundle $bundle, ControlProofGraph $graph, string $trustPath): array
     {
         $data = $bundle->data();
@@ -17,7 +17,8 @@ final class CaptureLineageVerifier
             throw new RuntimeException('Static capture lineage requires an executable v2 bundle.');
         }
         $read = static fn (string $name, string $kind = 'control') => $graph->read($bundle->referenceRecord($name), $kind);
-        $trust = StrictProofJson::decode(PrivateProofFile::read($trustPath, 0)['bytes']);
+        $trustFile = PrivateProofFile::read($trustPath, 0);
+        $trust = StrictProofJson::decode($trustFile['bytes']);
         $epochFile = $read('control_epoch');
         $epoch = StrictProofJson::decode($epochFile['bytes']);
         ProofSchema::controlEpoch($epoch);
@@ -143,7 +144,7 @@ final class CaptureLineageVerifier
         }
         $bundle->reference('target_sql');
 
-        return ['epoch' => $epoch, 'collector' => $collector, 'acceptance' => $acceptance, 'capture_history' => $capture, 'preparation_history' => $preparation,
+        return ['epoch' => $epoch, 'collector' => $collector, 'acceptance' => $acceptance, 'capture_history' => $capture, 'preparation_history' => $preparation, 'source_facts' => $facts, 'trust_sha256' => $trustFile['sha256'],
             'first_ready' => ['payload' => $ready, 'signature' => $readySignature, 'payload_ref' => $bundle->referenceRecord('freeze_receipt'), 'signature_ref' => $bundle->referenceRecord('freeze_signature'), 'payload_bytes' => $readyFile['bytes']]];
     }
 }

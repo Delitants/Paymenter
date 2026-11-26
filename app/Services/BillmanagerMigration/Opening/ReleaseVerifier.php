@@ -47,6 +47,11 @@ final class ReleaseVerifier
             self::$parsedHash = $manifest['sha256'];
         }
         self::assertManifest($target['runtime_realpath'], self::$parsedManifest);
+        self::assertConfiguration($acceptedRelease);
+    }
+
+    public static function assertConfiguration(array $acceptedRelease): void
+    {
         if (!hash_equals(ProofSchema::hash($acceptedRelease['configuration_sha256']), self::configurationHash())) {
             throw new RuntimeException('Persisted accepted configuration changed.');
         }
