@@ -19,10 +19,10 @@ final class ReleaseVerifier
         self::assertAccepted($acceptedRelease, PrivateProofFile::read($acceptedRelease['manifest_path'], 0), OpeningProcessContext::capture()->targetIdentity());
     }
 
-    public static function assertRuntimeCurrent(array $acceptedRelease, int $readerGid): void
+    public static function assertRuntimeCurrent(array $acceptedRelease, int $readerGid, bool $currentRead = false): void
     {
         self::assertEvidence($acceptedRelease);
-        self::assertAccepted($acceptedRelease, RuntimeProofFile::read($acceptedRelease['manifest_path'], $readerGid), OpeningProcessContext::runtimeTargetIdentity());
+        self::assertAccepted($acceptedRelease, RuntimeProofFile::read($acceptedRelease['manifest_path'], $readerGid), OpeningProcessContext::runtimeTargetIdentity(), $currentRead);
     }
 
     private static function assertEvidence(array $acceptedRelease): void
@@ -32,7 +32,7 @@ final class ReleaseVerifier
         }
     }
 
-    private static function assertAccepted(array $acceptedRelease, array $manifest, array $target): void
+    private static function assertAccepted(array $acceptedRelease, array $manifest, array $target, bool $currentRead = false): void
     {
         if (!hash_equals(ProofSchema::hash($acceptedRelease['manifest_sha256']), $manifest['sha256'])) {
             throw new RuntimeException('Accepted release manifest changed.');
@@ -47,12 +47,12 @@ final class ReleaseVerifier
             self::$parsedHash = $manifest['sha256'];
         }
         self::assertManifest($target['runtime_realpath'], self::$parsedManifest);
-        self::assertConfiguration($acceptedRelease);
+        self::assertConfiguration($acceptedRelease, $currentRead);
     }
 
-    public static function assertConfiguration(array $acceptedRelease): void
+    public static function assertConfiguration(array $acceptedRelease, bool $currentRead = false): void
     {
-        if (!hash_equals(ProofSchema::hash($acceptedRelease['configuration_sha256']), self::configurationHash())) {
+        if (!hash_equals(ProofSchema::hash($acceptedRelease['configuration_sha256']), self::configurationHash($currentRead))) {
             throw new RuntimeException('Persisted accepted configuration changed.');
         }
     }
@@ -96,11 +96,13 @@ final class ReleaseVerifier
         }
     }
 
-    public static function configurationHash(): string
+    public static function configurationHash(bool $currentRead = false): string
     {
         $env = base_path('.env');
 
+        $settings = DB::table('settings')->orderBy('id')->when($currentRead, fn ($query) => $query->sharedLock())->get();
+
         return hash('sha256', CanonicalPolicy::bytes(['env_sha256' => is_file($env) ? hash_file('sha256', $env) : null,
-            'settings' => array_map(fn ($row) => (array) $row, DB::table('settings')->orderBy('id')->get()->all())]));
+            'settings' => array_map(fn ($row) => (array) $row, $settings->all())]));
     }
 }

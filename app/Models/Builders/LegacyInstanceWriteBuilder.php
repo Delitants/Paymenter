@@ -2,6 +2,8 @@
 
 namespace App\Models\Builders;
 
+use App\Models\LegacyPostingResult;
+use App\Services\Accounts\Legacy\LegacyPostingService;
 use App\Services\Accounts\Legacy\LegacyReceiptWriteGuard;
 use Illuminate\Database\Eloquent\Builder;
 
@@ -11,7 +13,12 @@ final class LegacyInstanceWriteBuilder extends Builder
     public function __call($method, $parameters)
     {
         if (in_array(strtolower($method), ['insert', 'insertgetid'], true)) {
-            LegacyReceiptWriteGuard::assertPendingSql($this->getModel(), 'create', $parameters[0]);
+            $model = $this->getModel();
+            if ($model instanceof LegacyPostingResult) {
+                LegacyPostingService::assertResultSql($model, $parameters[0]);
+            } else {
+                LegacyReceiptWriteGuard::assertPendingSql($model, 'create', $parameters[0]);
+            }
         }
 
         return parent::__call($method, $parameters);

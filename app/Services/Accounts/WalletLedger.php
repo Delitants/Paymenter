@@ -183,6 +183,12 @@ final class WalletLedger
 
         (new AccountFundingGate)->assertEnabled();
 
+        if ($context->action === 'legacy_effect') {
+            $context->assertReceiptCurrent();
+
+            return $this->postLocked($context, $delta, $kind, $requestKey, $fingerprint);
+        }
+
         return DB::transaction(function () use ($context, $delta, $kind, $requestKey, $fingerprint) {
             if ($context->action === 'invoice_funding') {
                 if (AccountPaymentLocks::active()) {
@@ -223,6 +229,9 @@ final class WalletLedger
         $replay = AccountMovement::where('wallet_id', $wallet->id)->where('request_key', $requestKey)->lockForUpdate()->first();
         $source = $context->sourceKey() === null ? null : AccountMovement::where('source_key', $context->sourceKey())->lockForUpdate()->first();
         if ($replay || $source) {
+            if ($context->action === 'legacy_effect') {
+                throw new RuntimeException('A legacy movement already exists without its original posting result.');
+            }
             if (!$replay || ($context->sourceKey() !== null && (!$source || $replay->id !== $source->id)) ||
                 $replay->request_fingerprint !== $fingerprint || $replay->kind !== $kind || $replay->delta !== $principal) {
                 throw new RuntimeException('Original deposit receipt or request has already been used with different evidence.');

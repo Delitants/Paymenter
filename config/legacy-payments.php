@@ -16,4 +16,10 @@ return [
         'trust_path' => env('LEGACY_OPENING_EXCLUSION_TRUST_PATH'),
         'reader_gid' => env('LEGACY_OPENING_EXCLUSION_READER_GID') === null ? null : filter_var(env('LEGACY_OPENING_EXCLUSION_READER_GID'), FILTER_VALIDATE_INT),
     ],
+    'posting' => [
+        'enabled' => filter_var(env('LEGACY_POSTING_ENABLED', false), FILTER_VALIDATE_BOOLEAN),
+        'directory' => env('LEGACY_POSTING_DIRECTORY'),
+        'trust_path' => env('LEGACY_POSTING_TRUST_PATH'),
+        'reader_gid' => env('LEGACY_POSTING_READER_GID') === null ? null : filter_var(env('LEGACY_POSTING_READER_GID'), FILTER_VALIDATE_INT),
+    ],
 ];

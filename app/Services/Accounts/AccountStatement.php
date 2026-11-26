@@ -41,7 +41,18 @@ final class AccountStatement
             $movements = $wallet->movements()->orderByDesc('id')->paginate(25);
             $movements->through(function (AccountMovement $movement) use ($admin) {
                 $row = ['label' => match ($movement->kind) {
-                    'invoice_funding' => 'Account payment','internal_reversal' => 'Account payment reversal','deposit' => 'Deposit','downgrade' => 'Plan downgrade credit','deposit_refund' => 'Deposit refund','manual_unsettle' => 'Manual deposit unsettlement','manual_restore' => 'Manual deposit restoration',default => 'Account movement'
+                    'invoice_funding' => 'Account payment','internal_reversal' => 'Account payment reversal','deposit' => 'Deposit','downgrade' => 'Plan downgrade credit','deposit_refund' => 'Deposit refund','manual_unsettle' => 'Manual deposit unsettlement','manual_restore' => 'Manual deposit restoration',
+                    'legacy_effect' => match ($movement->payload['effect_kind'] ?? null) {
+                        'capture' => 'BILLmanager payment',
+                        'refund' => 'BILLmanager refund',
+                        'reversal' => 'BILLmanager payment reversal',
+                        'chargeback' => 'BILLmanager chargeback',
+                        'manual_settlement' => 'BILLmanager manual settlement',
+                        'manual_unsettlement' => 'BILLmanager manual unsettlement',
+                        'manual_restore' => 'BILLmanager manual restoration',
+                        default => 'BILLmanager account movement',
+                    },
+                    default => 'Account movement'
                 },
                     'delta' => $movement->delta, 'balance_before' => $movement->balance_before, 'balance_after' => $movement->balance_after, 'date' => $movement->created_at->utc()->format('Y-m-d H:i:s'),
                     'cash_portion' => $movement->kind === 'invoice_funding' ? ($movement->payload['cash'] ?? null) : null, 'borrowed_portion' => $movement->kind === 'invoice_funding' ? ($movement->payload['debt'] ?? null) : null];

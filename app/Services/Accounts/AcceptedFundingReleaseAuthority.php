@@ -13,12 +13,19 @@ final readonly class AcceptedFundingReleaseAuthority implements OpeningAuthority
 
     public function assertAcceptedRelease(): void
     {
+        $this->verifiedRuntime();
+    }
+
+    public function verifiedRuntime(bool $currentRead = false): array
+    {
         $gid = config('account-funding.runtime_reader_gid');
         if (!is_int($gid) || $gid < 0) {
             throw new RuntimeException('An explicit runtime acceptance reader group is required.');
         }
         $release = SignedAttestation::verifyRuntime($this->releasePath, $this->signaturePath, $this->trustPath, new DateTimeImmutable('now'), $gid);
-        ReleaseVerifier::assertRuntimeCurrent($release, $gid);
+        ReleaseVerifier::assertRuntimeCurrent($release, $gid, $currentRead);
+
+        return $release;
     }
 
     public function assertApproved(OpeningEvidence $evidence): void

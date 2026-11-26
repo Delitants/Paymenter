@@ -42,6 +42,11 @@ final class ProofSchema
     public static function attestation(array $value, string $purpose): void
     {
         $version = $value['schema_version'] ?? null;
+        if ($purpose === 'legacy-account-posting') {
+            self::legacyPosting($value);
+
+            return;
+        }
         if (in_array($purpose, ['legacy-opening-membership', 'legacy-opening-exclusion'], true)) {
             self::legacyOpening($value, $purpose);
 
@@ -154,6 +159,27 @@ final class ProofSchema
                 throw new RuntimeException('Original legacy wallet commit evidence is required.');
             }
         }
+    }
+
+    private static function legacyPosting(array $value): void
+    {
+        self::keys($value, ['schema_version', 'purpose', 'issuer', 'nonce', 'not_before', 'expires_at', 'source_instance',
+            'merchant_binding', 'effect_kind', 'effect_key', 'economic_sha256', 'observation_key', 'bundle_sha256', 'verification_sha256',
+            'membership_sha256', 'opening_receipt_sha256', 'exclusion_sha256', 'runtime_acceptance_sha256', 'net_delta', 'manual', 'parent_cap']);
+        if ($value['schema_version'] !== 1 || $value['purpose'] !== 'legacy-account-posting' ||
+            self::date($value['expires_at']) <= self::date($value['not_before'])) {
+            throw new RuntimeException('A current, supported legacy posting grant is required.');
+        }
+        self::identities($value);
+        foreach (['source_instance', 'merchant_binding', 'effect_kind', 'nonce'] as $field) {
+            self::bounded($value[$field], 512);
+        }
+        self::hash($value['effect_key']);
+        self::hash($value['observation_key']);
+        if ($value['exclusion_sha256'] === null) {
+            unset($value['exclusion_sha256']);
+        }
+        self::hashFields($value);
     }
 
     public static function runtimeTargetIdentity(array $value): void

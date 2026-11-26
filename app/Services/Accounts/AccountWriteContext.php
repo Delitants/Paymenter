@@ -8,9 +8,11 @@ use App\Models\AccountMovement;
 use App\Models\AccountWallet;
 use App\Models\Invoice;
 use App\Models\InvoicePaidProcessing;
+use App\Models\LegacyEffect;
 use App\Models\PaymentOperation;
 use App\Models\ServiceUpgrade;
 use App\Models\User;
+use App\Services\Accounts\Legacy\LegacyPostingReceipt;
 use App\Services\BillmanagerMigration\Opening\HeldOpeningPermit;
 use App\Services\BillmanagerMigration\Opening\InactiveOpeningAuthority;
 use DomainException;
@@ -19,7 +21,7 @@ use RuntimeException;
 
 final readonly class AccountWriteContext
 {
-    public const MOVEMENTS = ['deposit', 'downgrade', 'invoice_funding', 'deposit_refund', 'manual_unsettle', 'manual_restore', 'internal_reversal'];
+    public const MOVEMENTS = ['deposit', 'downgrade', 'invoice_funding', 'deposit_refund', 'manual_unsettle', 'manual_restore', 'internal_reversal', 'legacy_effect'];
 
     private function __construct(
         public string $action,
@@ -30,7 +32,19 @@ final readonly class AccountWriteContext
         public ?int $invoiceId = null,
         public ?array $receiptProof = null,
         public ?HeldOpeningPermit $heldOpeningPermit = null,
+        public ?LegacyPostingReceipt $legacyReceipt = null,
     ) {}
+
+    public static function legacyEffect(LegacyPostingReceipt $receipt): self
+    {
+        $receipt->assertCurrent();
+        if ($receipt->facts['disposition'] !== 'applied') {
+            throw new RuntimeException('Only an authorized nonzero legacy receipt can create a movement.');
+        }
+
+        return new self('legacy_effect', $receipt->facts['user_id'], $receipt->facts['currency'],
+            receiptProof: ['receipt_sha256' => $receipt->digest()], legacyReceipt: $receipt);
+    }
 
     public static function invoiceFunding(Invoice $invoice, ?User $actor, mixed $amount, bool $automatic = false, bool $maximum = false): self
     {
@@ -71,6 +85,9 @@ final readonly class AccountWriteContext
 
     public function delta(): string
     {
+        if ($this->legacyReceipt !== null) {
+            return $this->legacyReceipt->facts['net_delta'];
+        }
         $principal = in_array($this->action, ['deposit', 'downgrade', 'deposit_refund', 'manual_unsettle', 'manual_restore'], true) ? AccountAmount::parse($this->receiptProof['principal']) : AccountAmount::positiveCents($this->receiptProof['principal']);
 
         return in_array($this->action, ['invoice_funding', 'deposit_refund', 'manual_unsettle'], true) ? AccountAmount::parse('0')->subtract($principal)->exact() : $principal->exact();
@@ -94,6 +111,11 @@ final readonly class AccountWriteContext
 
     public function assertReceiptFactsCurrent(): void
     {
+        if ($this->legacyReceipt !== null) {
+            $this->legacyReceipt->assertCurrent();
+
+            return;
+        }
         if ($this->outgoing()) {
             DepositReversals::authorize(PaymentOperation::findOrFail($this->receiptProof['operation_id']), true);
         }
@@ -119,6 +141,11 @@ final readonly class AccountWriteContext
 
     public function assertReceiptCurrent(): void
     {
+        if ($this->legacyReceipt !== null) {
+            $this->legacyReceipt->assertCurrent();
+
+            return;
+        }
         if ($this->action === 'internal_reversal') {
             $allocation = AccountFundingAllocation::whereKey($this->receiptProof['allocation_id'])->lockForUpdate()->firstOrFail();
             (new AccountFundingPolicy)->authorizeReversal(User::findOrFail($this->receiptProof['actor_id']), $allocation);
@@ -154,6 +181,9 @@ final readonly class AccountWriteContext
 
     public function sourceKey(): ?string
     {
+        if ($this->legacyReceipt !== null) {
+            return $this->legacyReceipt->sourceKey();
+        }
         if ($this->outgoing()) {
             return DepositReversalReceipt::sourceKey($this->receiptProof['operation_id']);
         }
@@ -172,6 +202,26 @@ final readonly class AccountWriteContext
 
     public function movementAttributes(AccountWallet $wallet, string $requestKey): array
     {
+        if ($this->legacyReceipt !== null) {
+            $receipt = $this->legacyReceipt;
+            if ($requestKey !== $receipt->requestKey() || $wallet->id !== $receipt->facts['wallet_id'] ||
+                $wallet->user_id !== $this->ownerId || $wallet->currency_code !== $this->currency ||
+                $wallet->opening_identity !== $receipt->facts['opening_identity']) {
+                throw new RuntimeException('Legacy movement requires its original wallet and request key.');
+            }
+            $before = AccountAmount::parse($wallet->balance);
+            $delta = AccountAmount::parse($this->delta());
+
+            return ['wallet_id' => $wallet->id, 'user_id' => $this->ownerId, 'currency_code' => $this->currency, 'kind' => 'legacy_effect',
+                'delta' => $delta->exact(), 'balance_before' => $before->exact(), 'balance_after' => $before->add($delta)->exact(),
+                'actor_id' => null, 'origin' => $receipt->manual() ? 'legacy_manual' : 'legacy',
+                'request_key' => $requestKey, 'request_fingerprint' => $this->fingerprint($requestKey), 'source_key' => $receipt->sourceKey(),
+                'reference_type' => LegacyEffect::class, 'reference_id' => $receipt->facts['effect_id'],
+                'linked_reversal_id' => $receipt->facts['parent_movement_id'], 'payload' => [
+                    'effect_kind' => $receipt->identity->data()['effect_kind'], 'effect_key' => $receipt->effectKey(),
+                    'receipt_sha256' => $receipt->digest(), 'parent_effect_key' => $receipt->economic->data()['parent_effect_key'],
+                ]];
+        }
         if ($this->action === 'internal_reversal') {
             $original = $this->receiptProof['original']['allocation'];
             if ($wallet->id !== $original['wallet_id'] || $wallet->user_id !== $this->ownerId || $wallet->currency_code !== $this->currency) {

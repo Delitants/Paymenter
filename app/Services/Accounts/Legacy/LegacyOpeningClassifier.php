@@ -7,12 +7,12 @@ use App\Models\AccountOpeningReceipt;
 use App\Models\LegacyEffect;
 use App\Models\LegacyObservation;
 use App\Models\LegacyReceiptConflict;
+use App\Services\Accounts\AccountPaymentLocks;
 use App\Services\BillmanagerMigration\Opening\CanonicalPolicy;
 use App\Services\BillmanagerMigration\Opening\OpeningBatchStore;
 use App\Services\BillmanagerMigration\Opening\OpeningReceiptVerifier;
 use App\Services\BillmanagerMigration\Opening\ProofSchema;
 use App\Services\BillmanagerMigration\Opening\RuntimeProofFile;
-use App\Services\BillmanagerMigration\Opening\SignedAttestation;
 use App\Services\BillmanagerMigration\Opening\StrictProofJson;
 use DateTimeImmutable;
 use DomainException;
@@ -33,32 +33,47 @@ final class LegacyOpeningClassifier
 
     public function __construct(private readonly LegacyClock $clock) {}
 
-    public function classify(string $effectKey): array
+    public function classify(string $effectKey, bool $postingEvidence = false): array
+    {
+        if (DB::transactionLevel() !== 0 || DB::connection()->getPdo()->inTransaction()) {
+            throw new RuntimeException('Legacy membership requires a fresh database snapshot.');
+        }
+
+        return $this->inspect($effectKey, false, $postingEvidence);
+    }
+
+    public function classifyLocked(string $effectKey, int $ownerId): array
+    {
+        AccountPaymentLocks::assertFinancialUsers([$ownerId]);
+
+        return $this->inspect($effectKey, true, true);
+    }
+
+    private function inspect(string $effectKey, bool $locked, bool $postingEvidence): array
     {
         EffectIdentity::sha256($effectKey);
         $files = $this->readProofs();
         $now = $this->clock->now();
-        [$acceptance, $membershipKey] = $this->verifyAttestation($files, 'legacy-opening-membership', $now);
+        [$acceptance, $membershipKey] = LegacyProof::verify($files, 'legacy-opening-membership', $now);
         if ($files['membership_path']['sha256'] !== $acceptance['membership_sha256']) {
             throw new RuntimeException('Accepted opening membership bytes changed.');
         }
-        $member = $this->findMember($files['membership_path']['bytes'], $effectKey);
+        $members = $this->readMembers($files['membership_path']['bytes']);
+        $member = $members[$effectKey] ?? null;
         $excludedEvidence = $this->readExclusion($effectKey, $acceptance, $membershipKey, $now, $member === null);
         [$exclusion, $exclusionKey, $exclusionFiles] = $excludedEvidence;
         $exclusionHash = $exclusionFiles['acceptance_path']['sha256'] ?? null;
         $sourceTrust = $exclusion !== null && $member === null ? LegacyOpeningExclusion::sourceTrust() : null;
         $approvalKeys = [$membershipKey, $exclusionKey];
 
-        if (DB::transactionLevel() !== 0 || DB::connection()->getPdo()->inTransaction()) {
-            throw new RuntimeException('Legacy membership requires a fresh database snapshot.');
-        }
-        $classified = DB::transaction(function () use ($acceptance, $member, $exclusion, $exclusionHash, $effectKey, $sourceTrust, $approvalKeys) {
-            $batch = AccountOpeningBatch::where('bundle_sha256', $acceptance['bundle_sha256'])->sole();
+        $read = function () use ($acceptance, $member, $exclusion, $exclusionHash, $effectKey, $sourceTrust, $approvalKeys, $locked) {
+            $current = fn ($query) => $query->lockForUpdate();
+            $batch = AccountOpeningBatch::where('bundle_sha256', $acceptance['bundle_sha256'])->when($locked, $current)->sole();
             $boundary = array_intersect_key($acceptance, array_flip(['bundle_sha256', 'source_identity', 'snapshot_sha256', 'scope_sha256', 'policy_sha256', 'verification_sha256']));
             if ($batch->state !== 'sealed' || $batch->sealed_at === null || $batch->only(array_keys($boundary)) !== $boundary) {
                 throw new RuntimeException('Legacy membership requires its original sealed opening batch.');
             }
-            $effect = LegacyEffect::where('effect_key', $effectKey)->sole();
+            $effect = LegacyEffect::where('effect_key', $effectKey)->when($locked, $current)->sole();
             $identity = EffectIdentity::fromArray(StrictProofJson::decode($effect->identity_json));
             $facts = EconomicFacts::fromArray(StrictProofJson::decode($effect->economic_json));
             if ($identity->key() !== $effectKey || $facts->fingerprint() !== $effect->economic_sha256) {
@@ -69,26 +84,27 @@ final class LegacyOpeningClassifier
             $entry = $member ?? $exclusion;
             if ($entry === null || ($member !== null && $exclusion !== null) || $entry['economic_sha256'] !== $effect->economic_sha256 ||
                 $identity->data()['source_instance'] !== $acceptance['source_instance'] ||
-                LegacyReceiptConflict::where('effect_id', $effect->id)->exists()) {
+                LegacyReceiptConflict::where('effect_id', $effect->id)->when($locked, $current)->first(['id']) !== null) {
                 return $result;
             }
             if ($member !== null && !LegacyObservation::where('effect_id', $effect->id)->where('economic_sha256', $effect->economic_sha256)
-                ->where('disposition', 'pending_source_qualification')->exists()) {
+                ->where('disposition', 'pending_source_qualification')->when($locked, $current)->first(['id'])) {
                 return $result;
             }
             $receipt = AccountOpeningReceipt::where('batch_id', $batch->id)
-                ->where('receipt_sha256', $entry['opening_receipt_sha256'])->sole();
-            $this->assertSealedMembership($batch, $receipt);
+                ->where('receipt_sha256', $entry['opening_receipt_sha256'])->when($locked, $current)->sole();
+            $this->assertSealedMembership($batch, $receipt, $locked);
             $this->assertOriginalOpening($receipt, $batch, $facts, $acceptance);
             if ($sourceTrust !== null) {
-                $net = LegacyOpeningExclusion::netDelta($exclusion, $acceptance, $effect, $sourceTrust, $approvalKeys);
+                $net = LegacyOpeningExclusion::netDelta($exclusion, $acceptance, $effect, $sourceTrust, $approvalKeys, $locked);
 
                 return $net === null ? $result : array_replace($result, ['classification' => 'excluded',
                     'opening_receipt_sha256' => $receipt->receipt_sha256, 'exclusion_sha256' => $exclusionHash, 'net_delta' => $net]);
             }
 
             return array_replace($result, ['classification' => 'included', 'opening_receipt_sha256' => $receipt->receipt_sha256]);
-        }, 1);
+        };
+        $classified = $locked ? $read() : DB::transaction($read, 1);
         if ($this->readProofs() !== $files ||
             $this->readExclusion($effectKey, $acceptance, $membershipKey, $now, $member === null) !== $excludedEvidence ||
             ($sourceTrust !== null && LegacyOpeningExclusion::sourceTrust()->sha256 !== $sourceTrust->sha256)) {
@@ -101,18 +117,23 @@ final class LegacyOpeningClassifier
             }
         }
 
-        return $classified;
+        if (!$postingEvidence) {
+            return $classified;
+        }
+
+        return $classified + ['approval_keys' => $approvalKeys, 'membership_provenance' => $member,
+            'opening_members' => array_filter($members, fn (array $entry) => $entry['opening_receipt_sha256'] === $classified['opening_receipt_sha256'])];
     }
 
     /** @return array{?array,?string,array} */
     private function readExclusion(string $effectKey, array $membership, string $membershipKey, DateTimeImmutable $now, bool $requireValid): array
     {
         try {
-            $files = LegacyOpeningExclusion::proofFiles($effectKey);
+            $files = LegacyProof::forEffect($effectKey, config('legacy-payments.opening_exclusion'));
             if ($files === []) {
                 return [null, null, []];
             }
-            [$exclusion, $signer] = $this->verifyAttestation($files, 'legacy-opening-exclusion', $now);
+            [$exclusion, $signer] = LegacyProof::verify($files, 'legacy-opening-exclusion', $now);
             if ($exclusion['effect_key'] !== $effectKey || $signer === $membershipKey) {
                 throw new RuntimeException('Excluded payment requires the original effect and an independent approval key.');
             }
@@ -133,31 +154,6 @@ final class LegacyOpeningClassifier
         }
     }
 
-    /** @return array{array,string} */
-    private function verifyAttestation(array $files, string $purpose, DateTimeImmutable $now): array
-    {
-        $trust = StrictProofJson::decode($files['trust_path']['bytes']);
-        foreach (['revoked_keys', 'revoked_nonces'] as $field) {
-            if (!is_array($trust[$field] ?? null) || !array_is_list($trust[$field])) {
-                throw new RuntimeException('Legacy opening revocations require a list of identifiers.');
-            }
-            foreach ($trust[$field] as $identifier) {
-                EffectIdentity::id($identifier);
-            }
-        }
-        $bytes = $files['acceptance_path']['bytes'];
-        $signature = StrictProofJson::decode($files['signature_path']['bytes']);
-        $keyId = $signature['key_id'] ?? null;
-        $key = is_string($keyId) ? ($trust['keys'][$keyId]['public_key'] ?? null) : null;
-        $signer = LegacyTransportTrust::keyFingerprint($key);
-        $attestation = SignedAttestation::verifyBytes($bytes, $signature, $purpose, $trust, $now);
-        if (CanonicalPolicy::bytes($attestation) !== $bytes) {
-            throw new RuntimeException('Canonical accepted legacy opening evidence is required.');
-        }
-
-        return [$attestation, $signer];
-    }
-
     private function readProofs(): array
     {
         $config = config('legacy-payments.opening_membership');
@@ -175,35 +171,41 @@ final class LegacyOpeningClassifier
         return $files;
     }
 
-    private function findMember(string $bytes, string $effectKey): ?array
+    private function readMembers(string $bytes): array
     {
         $manifest = StrictProofJson::decode($bytes);
         ProofSchema::keys($manifest, ['schema_version', 'purpose', 'effects']);
-        if ($manifest['schema_version'] !== 1 || $manifest['purpose'] !== 'legacy-opening-effects' ||
+        if (!in_array($manifest['schema_version'], [1, 2], true) || $manifest['purpose'] !== 'legacy-opening-effects' ||
             !is_array($manifest['effects']) || !array_is_list($manifest['effects']) || CanonicalPolicy::bytes($manifest) !== $bytes) {
             throw new RuntimeException('Canonical legacy opening effect membership is required.');
         }
         $previous = null;
-        $found = null;
+        $members = [];
         foreach ($manifest['effects'] as $entry) {
             if (!is_array($entry)) {
                 throw new RuntimeException('A complete opening effect membership entry is required.');
             }
-            ProofSchema::keys($entry, ['effect_key', 'economic_sha256', 'opening_receipt_sha256']);
-            foreach ($entry as $digest) {
-                ProofSchema::hash($digest);
+            $fields = ['effect_key', 'economic_sha256', 'opening_receipt_sha256'];
+            if ($manifest['schema_version'] === 2) {
+                $fields = [...$fields, 'observation_key', 'source_commit_sha256', 'journal_id'];
+            }
+            ProofSchema::keys($entry, $fields);
+            foreach ($entry as $field => $value) {
+                if ($field === 'journal_id') {
+                    EffectIdentity::id($value);
+                } else {
+                    ProofSchema::hash($value);
+                }
             }
             $key = $entry['effect_key'];
             if ($previous !== null && strcmp($previous, $key) >= 0) {
                 throw new RuntimeException('Legacy opening effects must be unique and in bytewise order.');
             }
             $previous = $key;
-            if ($key === $effectKey) {
-                $found = $entry;
-            }
+            $members[$key] = $entry;
         }
 
-        return $found;
+        return $members;
     }
 
     private function assertOriginalOpening(AccountOpeningReceipt $receipt, AccountOpeningBatch $batch, EconomicFacts $facts, array $acceptance): void
@@ -241,9 +243,10 @@ final class LegacyOpeningClassifier
         }
     }
 
-    private function assertSealedMembership(AccountOpeningBatch $batch, AccountOpeningReceipt $selected): void
+    private function assertSealedMembership(AccountOpeningBatch $batch, AccountOpeningReceipt $selected, bool $locked): void
     {
         $sealed = AccountOpeningReceipt::where('batch_id', $batch->id)->orderBy('id')
+            ->when($locked, fn ($query) => $query->lockForUpdate())
             ->get(['id', 'receipt_sha256', 'wallet_id'])
             ->map(fn (AccountOpeningReceipt $receipt) => [
                 'receipt_id' => $receipt->id, 'receipt_sha256' => $receipt->receipt_sha256, 'wallet_id' => $receipt->wallet_id,
