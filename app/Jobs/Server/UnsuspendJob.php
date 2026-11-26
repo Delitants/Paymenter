@@ -11,6 +11,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Paymenter\Extensions\Servers\ISPmanager\ISPmanager;
 
 class UnsuspendJob implements ShouldQueue
 {
@@ -23,7 +24,12 @@ class UnsuspendJob implements ShouldQueue
     /**
      * Create a new job instance.
      */
-    public function __construct(public Service $service) {}
+    public function __construct(public Service $service)
+    {
+        if ($service->product?->server?->extension === 'ISPmanager') {
+            $this->timeout = ISPmanager::LIFECYCLE_JOB_TIMEOUT;
+        }
+    }
 
     /**
      * Execute the job.
@@ -32,7 +38,7 @@ class UnsuspendJob implements ShouldQueue
     {
         MigrationHold::assertAllowed($this->service, 'UnsuspendJob');
         try {
-            ExtensionHelper::unsuspendServer($this->service);
+            ExtensionHelper::unsuspendServer($this->service, queued: true);
         } catch (Exception $e) {
             if ($e->getMessage() !== 'No server assigned to this product') {
                 throw $e;

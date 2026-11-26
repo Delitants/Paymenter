@@ -19,6 +19,14 @@ class EditService extends EditRecord
 {
     protected static string $resource = ServiceResource::class;
 
+    protected function authorizeAccess(): void
+    {
+        parent::authorizeAccess();
+        if ($this->getRecord()->fresh(['product.server'])?->product?->server?->extension === 'ISPmanager') {
+            abort_unless(auth()->user()?->fresh()?->hasPermission('admin.services.update'), 403);
+        }
+    }
+
     protected function getHeaderActions(): array
     {
         return [
@@ -73,6 +81,7 @@ class EditService extends EditRecord
                         ->default(false),
                 ])
                 ->action(function (array $data, Service $record, Action $action): void {
+                    $this->authorizeAccess();
                     try {
                         switch ($data['action']) {
                             case 'create':

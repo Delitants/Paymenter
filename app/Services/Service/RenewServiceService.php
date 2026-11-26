@@ -9,6 +9,8 @@ use App\Jobs\Server\UnsuspendJob;
 use App\Models\InvoiceItem;
 use App\Models\Service;
 use App\Services\BillmanagerMigration\MigrationHold;
+use Illuminate\Support\Facades\DB;
+use Throwable;
 
 class RenewServiceService
 {
@@ -30,9 +32,13 @@ class RenewServiceService
 
             return;
         }
+        $restoreIspmanager = false;
         if ($service->product->server) {
             if ($service->status == Service::STATUS_SUSPENDED) {
-                UnsuspendJob::dispatch($service);
+                $restoreIspmanager = $service->product->server->extension === 'ISPmanager';
+                if (!$restoreIspmanager) {
+                    UnsuspendJob::dispatch($service);
+                }
             } elseif ($service->status == Service::STATUS_PENDING) {
                 CreateJob::dispatch($service);
             }
@@ -41,5 +47,14 @@ class RenewServiceService
         $service->expires_at = $service->calculateNextDueDate();
         $service->status = Service::STATUS_ACTIVE;
         $service->save();
+        if ($restoreIspmanager) {
+            DB::afterCommit(function () use ($service): void {
+                try {
+                    UnsuspendJob::dispatch($service);
+                } catch (Throwable $e) {
+                    report($e);
+                }
+            });
+        }
     }
 }

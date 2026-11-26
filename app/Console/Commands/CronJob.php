@@ -30,6 +30,7 @@ use Exception;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\DB;
+use Throwable;
 
 class CronJob extends Command
 {
@@ -232,9 +233,21 @@ class CronJob extends Command
                         $service->status !== Service::STATUS_ACTIVE || $service->expires_at >= now()->subDays((int) config('settings.cronjob_order_suspend', 2))) {
                         return;
                     }
-                    SuspendJob::dispatch($service);
+                    $ispmanager = $service->product->server?->extension === 'ISPmanager';
+                    if (!$ispmanager) {
+                        SuspendJob::dispatch($service);
+                    }
 
-                    $service->update(['status' => 'suspended']);
+                    $service->update(['status' => Service::STATUS_SUSPENDED]);
+                    if ($ispmanager) {
+                        DB::afterCommit(function () use ($service): void {
+                            try {
+                                SuspendJob::dispatch($service);
+                            } catch (Throwable $e) {
+                                report($e);
+                            }
+                        });
+                    }
                     $number++;
                 });
 
@@ -252,7 +265,10 @@ class CronJob extends Command
                         $service->status !== Service::STATUS_SUSPENDED || $service->expires_at >= now()->subDays((int) config('settings.cronjob_order_terminate', 14))) {
                         return;
                     }
-                    TerminateJob::dispatch($service);
+                    // Existing ISPmanager accounts are retained for operator-managed decommissioning.
+                    if ($service->product->server?->extension !== 'ISPmanager') {
+                        TerminateJob::dispatch($service);
+                    }
 
                     $service->update(['status' => 'cancelled']);
                     // Cancel outstanding invoices

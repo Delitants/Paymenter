@@ -20,12 +20,12 @@ abstract class ReadOnlyServer extends Server
         $this->unavailable($service, 'create');
     }
 
-    public function suspendServer(Service $service, $settings = [], $properties = []): never
+    public function suspendServer(Service $service, $settings = [], $properties = []): void
     {
         $this->unavailable($service, 'suspend');
     }
 
-    public function unsuspendServer(Service $service, $settings = [], $properties = []): never
+    public function unsuspendServer(Service $service, $settings = [], $properties = []): void
     {
         $this->unavailable($service, 'unsuspend');
     }

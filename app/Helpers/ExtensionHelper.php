@@ -673,27 +673,37 @@ class ExtensionHelper
     /**
      * Suspend server
      */
-    public static function suspendServer(Service $service)
+    public static function suspendServer(Service $service, bool $queued = false)
     {
         MigrationHold::assertAllowed($service, 'suspendServer');
         $server = self::checkServer($service, 'suspendServer');
 
         self::recordAudit($service, 'extension_action', [], ['action' => 'suspend_server']);
 
-        return self::getExtension('server', $server->extension, $server->settings)->suspendServer($service, self::settingsToArray($service->product->settings), self::getServiceProperties($service));
+        $extension = self::getExtension('server', $server->extension, $server->settings);
+        if ($queued && $server->extension === 'ISPmanager') {
+            return $extension->applyQueuedSuspension($service, true);
+        }
+
+        return $extension->suspendServer($service, self::settingsToArray($service->product->settings), self::getServiceProperties($service));
     }
 
     /**
      * Unsuspend server
      */
-    public static function unsuspendServer(Service $service)
+    public static function unsuspendServer(Service $service, bool $queued = false)
     {
         MigrationHold::assertAllowed($service, 'unsuspendServer');
         $server = self::checkServer($service, 'unsuspendServer');
 
         self::recordAudit($service, 'extension_action', [], ['action' => 'unsuspend_server']);
 
-        return self::getExtension('server', $server->extension, $server->settings)->unsuspendServer($service, self::settingsToArray($service->product->settings), self::getServiceProperties($service));
+        $extension = self::getExtension('server', $server->extension, $server->settings);
+        if ($queued && $server->extension === 'ISPmanager') {
+            return $extension->applyQueuedSuspension($service, false);
+        }
+
+        return $extension->unsuspendServer($service, self::settingsToArray($service->product->settings), self::getServiceProperties($service));
     }
 
     /**
