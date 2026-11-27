@@ -433,6 +433,12 @@ class Settings
                     'required' => fn (Get $get) => $get('ticket_mail_piping'),
                     'encrypted' => true,
                 ],
+                [
+                    'name' => 'ticket_mail_folder',
+                    'label' => 'IMAP Folder',
+                    'type' => 'text',
+                    'description' => 'Leave blank to use the inbox.',
+                ],
             ],
 
             'cronjob' => [

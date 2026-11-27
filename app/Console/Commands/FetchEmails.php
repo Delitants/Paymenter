@@ -2,14 +2,22 @@
 
 namespace App\Console\Commands;
 
+use App\Models\Ticket;
 use App\Models\TicketMailLog;
 use App\Models\TicketMessage;
+use App\Services\BillmanagerMigration\MigrationHold;
+use App\Services\BillmanagerMigration\TicketMailReference;
 use DirectoryTree\ImapEngine\Mailbox;
+use DirectoryTree\ImapEngine\MailboxInterface;
+use DirectoryTree\ImapEngine\MessageInterface;
 use EmailReplyParser\EmailReplyParser;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Str;
+use RuntimeException;
+use Throwable;
 
 class FetchEmails extends Command
 {
@@ -27,124 +35,176 @@ class FetchEmails extends Command
      */
     protected $description = 'Import ticket emails using IMAP';
 
-    /**
-     * Execute the console command.
-     */
-    public function handle()
+    public function handle(): int
     {
         if (!config('settings.ticket_mail_piping', false)) {
             $this->info('Email piping is not enabled. Skipping email fetch.');
 
-            return;
+            return self::SUCCESS;
         }
         Config::set('audit.console', true);
+        $folder = config('settings.ticket_mail_folder');
+        $dedicated = $folder !== null && $folder !== '';
+        $missingMessageId = false;
+        $mailbox = null;
 
         try {
-            $mailbox = new Mailbox([
-                'port' => config('settings.ticket_mail_port'),
-                'username' => config('settings.ticket_mail_email'),
-                'password' => config('settings.ticket_mail_password'),
-                'host' => config('settings.ticket_mail_host'),
-            ]);
+            $mailbox = $this->mailbox();
+            if ($dedicated) {
+                if (!is_string($folder) || strlen($folder) > 255 || preg_match('/[\x00-\x1f\x7f]/', $folder)) {
+                    throw new RuntimeException('Invalid configured ticket email folder.');
+                }
+                $source = $mailbox->folders()->find($folder);
+                if ($source === null || $source->path() !== $folder) {
+                    throw new RuntimeException('The configured ticket email folder was not found.');
+                }
+                $query = $source->messages()->unseen()->leaveUnread();
+            } else {
+                $query = $mailbox->inbox()->messages()->since(now()->subDays(1));
+            }
+            $archive = $dedicated ? new TicketMailReference : null;
 
-            // Fetch emails from the mailbox
-            $emails = $mailbox->inbox();
-
-            foreach ($emails->messages()->since(now()->subDays(1))->withHeaders()->withBody()->get() as $email) {
-                if (TicketMailLog::where('message_id', $email->messageId())->exists()) {
+            foreach ($query->withHeaders()->withBody()->get() as $email) {
+                $messageId = $email->messageId();
+                if ($dedicated && !$messageId) {
+                    $missingMessageId = true;
                     continue;
                 }
 
-                $body = EmailReplyParser::parseReply($email->text());
-
-                // Check headers to see if this email is a reply
-                $replyTo = $email->inReplyTo();
-                if (!$replyTo || count($replyTo) === 0) {
-                    // Create email log but don't process
-                    $this->failedEmailLog($email);
-
-                    continue;
+                if (!TicketMailLog::where('message_id', $messageId)->exists()) {
+                    $ticket = $archive ? $this->dedicatedTicket($email, $archive) : $this->inboxTicket($email);
+                    $sender = $email->from()?->email();
+                    if (!$ticket || !$sender || $sender !== $ticket->user?->email ||
+                        ($dedicated && MigrationHold::isHeld($ticket))) {
+                        $this->logMessage($email, 'unprocessed');
+                    } else {
+                        $this->importReply($email, $ticket);
+                    }
                 }
-
-                // Validate if in reply to another ticket (<ticket message id>@hostname)
-
-                if (!preg_match('/^(\d+)@/', $replyTo[0], $matches)) {
-                    $this->failedEmailLog($email);
-
-                    continue;
+                if ($dedicated) {
+                    $email->markSeen();
                 }
+            }
+        } catch (Throwable $error) {
+            if ($dedicated) {
+                $this->error('Ticket mail could not be imported from the configured folder.');
+                \Log::warning('Configured ticket mail import failed', ['exception_type' => $error::class]);
 
-                $ticketMessageId = $matches[1];
-                // Check if the ticket exists
-                $ticketMessage = TicketMessage::find($ticketMessageId);
-                if (!$ticketMessage) {
-                    $this->failedEmailLog($email);
+                return self::FAILURE;
+            }
+            \Log::error('FetchEmails failed: ' . $error->getMessage());
+        } finally {
+            $mailbox?->disconnect();
+        }
 
-                    continue;
+        if ($missingMessageId) {
+            $this->warn('Ticket mail without a Message-ID was left unread.');
+
+            return self::FAILURE;
+        }
+
+        return self::SUCCESS;
+    }
+
+    protected function mailbox(): MailboxInterface
+    {
+        return new Mailbox([
+            'port' => config('settings.ticket_mail_port'),
+            'username' => config('settings.ticket_mail_email'),
+            'password' => config('settings.ticket_mail_password'),
+            'host' => config('settings.ticket_mail_host'),
+        ]);
+    }
+
+    private function inboxTicket(MessageInterface $email): ?Ticket
+    {
+        $replyTo = $email->inReplyTo();
+        if (!isset($replyTo[0]) || !preg_match('/^(\d+)@/', $replyTo[0], $matches)) {
+            return null;
+        }
+
+        return TicketMessage::find($matches[1])?->ticket;
+    }
+
+    private function dedicatedTicket(MessageInterface $email, TicketMailReference $archive): ?Ticket
+    {
+        $replyTo = $email->inReplyTo();
+        $ticketIds = $archive->matchingTickets($replyTo);
+        if ($ticketIds === null) {
+            return null;
+        }
+        $host = parse_url((string) config('app.url'), PHP_URL_HOST);
+        foreach ($replyTo as $reference) {
+            if (!is_string($reference)) {
+                continue;
+            }
+            $reference = trim($reference, " \r\n\t");
+            if (str_starts_with($reference, '<') && str_ends_with($reference, '>')) {
+                $reference = substr($reference, 1, -1);
+            }
+            if (is_string($host) &&
+                preg_match('/\A([1-9][0-9]*)@([A-Za-z0-9.-]+)\z/D', $reference, $match) &&
+                strcasecmp($match[2], $host) === 0) {
+                $message = TicketMessage::find($match[1]);
+                if ($message && (string) $message->id === $match[1]) {
+                    $ticketIds[] = (int) $message->ticket_id;
                 }
+            }
+        }
+        if (!$ticketIds) {
+            // Native References headers can contain ticket IDs. Only an archived
+            // Message-ID provides evidence for the legacy fallback.
+            $references = array_map(static fn ($part) => $part->getValue(), $email->header('References')?->getParts() ?? []);
+            $ticketIds = $archive->matchingTickets($references);
+            if ($ticketIds === null) {
+                return null;
+            }
+        }
+        $ticketIds = array_values(array_unique($ticketIds));
 
-                $ticket = $ticketMessage->ticket;
+        return count($ticketIds) === 1 ? Ticket::find($ticketIds[0]) : null;
+    }
 
-                // Check if from email matches ticket's email
-                if ($email->from()->email() !== $ticket->user->email) {
-                    $this->failedEmailLog($email);
-
-                    continue;
-                }
-
-                // // Log the successful email processing
-                $ticketMailLog = TicketMailLog::create([
-                    'message_id' => $email->messageId(),
-                    'subject' => $email->subject(),
-                    'from' => $email->from()->email(),
-                    'to' => $email->to()[0]->email(),
-                    'body' => $email->text(),
-                    'status' => 'processed',
-                ]);
-
-                // // Add reply to ticket
+    private function importReply(MessageInterface $email, Ticket $ticket): void
+    {
+        $files = [];
+        try {
+            DB::transaction(function () use ($email, $ticket, &$files): void {
+                $log = $this->logMessage($email, 'processed');
                 $message = $ticket->messages()->create([
-                    'message' => $body,
+                    'message' => EmailReplyParser::parseReply($email->text()),
                     'user_id' => $ticket->user_id,
-                    'ticket_mail_log_id' => $ticketMailLog->id,
+                    'ticket_mail_log_id' => $log->id,
                 ]);
-
-                // Foreach attachment
                 foreach ($email->attachments() as $attachment) {
-                    $extension = pathinfo($attachment->filename(), PATHINFO_EXTENSION);
-                    // Randomize filename
-                    $newName = Str::ulid() . '.' . $extension;
-                    $path = 'tickets/uploads/' . $newName;
-
-                    $attachment->save(storage_path('app/' . $path));
-
+                    $name = Str::ulid() . '.' . pathinfo($attachment->filename(), PATHINFO_EXTENSION);
+                    $path = 'tickets/uploads/' . $name;
+                    $file = storage_path('app/' . $path);
+                    $files[] = $file;
+                    $attachment->save($file);
                     $message->attachments()->create([
                         'path' => $path,
                         'filename' => $attachment->filename(),
-                        'mime_type' => File::mimeType(storage_path('app/' . $path)),
-                        'filesize' => File::size(storage_path('app/' . $path)),
+                        'mime_type' => File::mimeType($file),
+                        'filesize' => File::size($file),
                     ]);
                 }
-            }
-        } catch (\Exception $e) {
-            \Log::error('FetchEmails failed: ' . $e->getMessage());
-        } finally {
-            // Ensure the mailbox is disconnected
-            if (isset($mailbox)) {
-                $mailbox->disconnect();
-            }
+            });
+        } catch (Throwable $error) {
+            File::delete($files);
+            throw $error;
         }
     }
 
-    private function failedEmailLog($email): TicketMailLog
+    private function logMessage(MessageInterface $email, string $status): TicketMailLog
     {
         return TicketMailLog::create([
             'message_id' => $email->messageId(),
             'subject' => $email->subject(),
-            'from' => $email->from()->email(),
-            'to' => $email->to()[0]->email(),
+            'from' => $email->from()?->email() ?? '',
+            'to' => ($email->to()[0] ?? null)?->email() ?? config('settings.ticket_mail_email'),
             'body' => $email->text(),
-            'status' => 'unprocessed',
+            'status' => $status,
         ]);
     }
 }
