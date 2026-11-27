@@ -3,6 +3,8 @@
 return [
     'journal_directory' => env('ACCOUNT_OPENING_JOURNAL_DIRECTORY'),
     'trust_path' => env('ACCOUNT_OPENING_TRUST_PATH'),
+    // Optional local MariaDB socket peer for the root-only backup readback.
+    'backup_socket_user' => env('ACCOUNT_OPENING_BACKUP_SOCKET_USER'),
     'accepted_release_path' => env('ACCOUNT_OPENING_RELEASE_PATH'),
     'accepted_release_signature_path' => env('ACCOUNT_OPENING_RELEASE_SIGNATURE_PATH'),
     'fence_index_path' => env('ACCOUNT_OPENING_FENCE_INDEX_PATH'),

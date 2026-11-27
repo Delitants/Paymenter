@@ -40,9 +40,16 @@ final class OpeningBackupVerifier
             throw new RuntimeException('Accepted local dump binary changed.');
         }
         $connection = DB::connection();
-        $env = ['PATH' => '/usr/bin:/bin', 'LC_ALL' => 'C', 'MYSQL_PWD' => (string) $connection->getConfig('password')];
+        $env = ['PATH' => '/usr/bin:/bin', 'LC_ALL' => 'C'];
+        $user = config('account-opening.backup_socket_user');
+        if ($user === null) {
+            $user = (string) $connection->getConfig('username');
+            $env['MYSQL_PWD'] = (string) $connection->getConfig('password');
+        } elseif (!is_string($user) || !preg_match('/^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,79}$/D', $user)) {
+            throw new RuntimeException('Invalid local backup socket user.');
+        }
         $pipes = [];
-        $child = proc_open([$binary, '--no-defaults', '--socket=' . $bundle->target()['db_socket_realpath'], '--user=' . $connection->getConfig('username'), ...self::OPTIONS, $bundle->target()['db_database']],
+        $child = proc_open([$binary, '--no-defaults', '--protocol=socket', '--socket=' . $bundle->target()['db_socket_realpath'], '--user=' . $user, ...self::OPTIONS, $bundle->target()['db_database']],
             [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes, base_path(), $env);
         if (!is_resource($child)) {
             throw new RuntimeException('Local baseline readback failed.');
