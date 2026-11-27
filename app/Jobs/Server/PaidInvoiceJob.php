@@ -44,6 +44,7 @@ class PaidInvoiceJob implements ShouldQueue
             throw new RuntimeException('Paid service server is disabled or unavailable');
         }
         if (PaidServiceLifecycle::claim($service, $item)) {
+            ExtensionHelper::validateRenewalInvoice($invoice);
             ExtensionHelper::call($server, 'handlePaidInvoice', [$service, $item]);
             PaidServiceLifecycle::complete($service, $item);
         }

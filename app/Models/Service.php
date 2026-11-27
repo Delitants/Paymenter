@@ -182,6 +182,27 @@ class Service extends Model implements Auditable
         return $this->hasManyThrough(Invoice::class, InvoiceItem::class, 'reference_id', 'id', 'id', 'invoice_id')->where('reference_type', Service::class);
     }
 
+    /** Create the pending renewal invoice while the caller holds the service row lock. */
+    public function createRenewalInvoice(): Invoice
+    {
+        $invoice = $this->invoices()->make([
+            'user_id' => $this->user_id,
+            'status' => Invoice::STATUS_PENDING,
+            'due_at' => $this->expires_at,
+            'currency_code' => $this->currency_code,
+        ]);
+        $invoice->save();
+        $invoice->items()->create([
+            'reference_id' => $this->id,
+            'reference_type' => self::class,
+            'price' => $this->price,
+            'quantity' => $this->quantity,
+            'description' => $this->description,
+        ]);
+
+        return $invoice->refresh();
+    }
+
     /**
      * Get cancellation requests
      */

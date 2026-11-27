@@ -50,8 +50,7 @@ class Show extends Component
         $this->buttons = [];
         $this->views = [];
         $this->fields = [];
-        // Only fetch the actions if the service is active
-        if ($this->service->status == Service::STATUS_ACTIVE) {
+        if (in_array($this->service->status, [Service::STATUS_ACTIVE, Service::STATUS_SUSPENDED], true)) {
             $actions = [];
             try {
                 $actions = ExtensionHelper::getActions($this->service);
@@ -79,6 +78,9 @@ class Show extends Component
     public function updateBillingAgreement()
     {
         $this->authorize('update', $this->service);
+        if (!ExtensionHelper::shouldScheduleRenewalInvoice($this->service)) {
+            return $this->notify(__('Automatic renewal is unavailable for this service.'), 'error');
+        }
         $agreement = Auth::user()->billingAgreements()->where('ulid', $this->selectedMethod)->first();
         $this->service->billing_agreement_id = $agreement->id;
         $this->service->save();

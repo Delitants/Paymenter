@@ -139,6 +139,15 @@ class Show extends Component
             });
     }
 
+    #[Computed]
+    public function automaticRenewalItems()
+    {
+        return $this->recurringServices()
+            ->with('reference.product.server.settings')
+            ->get()
+            ->filter(fn ($item) => $item->reference && ExtensionHelper::shouldScheduleRenewalInvoice($item->reference));
+    }
+
     public function updatedShowPayModal($value)
     {
         if ($value && $this->invoice->status !== 'pending') {
@@ -155,6 +164,13 @@ class Show extends Component
 
         if (($claim = $this->claimedAttempt()) && $this->selectedMethod !== 'gateway-' . $claim->gateway_id) {
             return $this->notify(__('Continue with the original payment method. Changing it requires reconciliation.'), 'error');
+        }
+        if (!$claim) {
+            try {
+                ExtensionHelper::validateRenewalInvoice($this->invoice);
+            } catch (\App\Exceptions\DisplayException $error) {
+                return $this->notify($error->getMessage(), 'error');
+            }
         }
 
         if ($this->selectedMethod === 'credit') {
@@ -200,6 +216,7 @@ class Show extends Component
                 $invoice = $locked->firstWhere('id', $this->invoice->id);
                 $this->authorize('update', $invoice);
                 (new PaymentWriteGuard)->assertEditable($invoice);
+                ExtensionHelper::validateRenewalInvoice($invoice);
                 $ownerIds = array_values(array_unique([Auth::id(), $invoice->user_id]));
                 sort($ownerIds, SORT_NUMERIC);
                 foreach ($ownerIds as $ownerId) {
@@ -249,7 +266,7 @@ class Show extends Component
         }
 
         if ($this->setAsDefault) {
-            $invoiceItems = $this->recurringServices()->get();
+            $invoiceItems = $this->automaticRenewalItems;
             $agreement = Auth::user()->billingAgreements()->where('ulid', $agreementUlid)->first();
 
             foreach ($invoiceItems as $invoiceItem) {

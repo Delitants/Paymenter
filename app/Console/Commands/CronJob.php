@@ -77,10 +77,15 @@ class CronJob extends Command
                             return;
                         }
 
-                        // Opt-in local pricing preparation; never perform provider writes here.
-                        if ($service->product->server && ExtensionHelper::hasFunction($service->product->server, 'prepareRenewalInvoice')) {
+                        $server = $service->product->server;
+                        if ($server) {
                             try {
-                                ExtensionHelper::call($service->product->server, 'prepareRenewalInvoice', [$service]);
+                                if (!ExtensionHelper::shouldScheduleRenewalInvoice($service)) {
+                                    return;
+                                }
+                                if (ExtensionHelper::hasFunction($server, 'prepareRenewalInvoice')) {
+                                    ExtensionHelper::call($server, 'prepareRenewalInvoice', [$service]);
+                                }
                             } catch (Exception $e) {
                                 report($e);
 
@@ -107,27 +112,10 @@ class CronJob extends Command
                             return;
                         }
 
-                        // Create invoice
-                        $invoice = $service->invoices()->make([
-                            'user_id' => $service->user_id,
-                            'status' => 'pending',
-                            'due_at' => $service->expires_at,
-                            'currency_code' => $service->currency_code,
-                        ]);
-
-                        $invoice->save();
-                        // Create invoice items
-                        $invoice->items()->create([
-                            'reference_id' => $service->id,
-                            'reference_type' => Service::class,
-                            'price' => $service->price,
-                            'quantity' => $service->quantity,
-                            'description' => $service->description,
-                        ]);
-
+                        $invoice = $service->createRenewalInvoice();
                         $number++;
 
-                        return $invoice->refresh();
+                        return $invoice;
                     }, 3);
                     if (!$invoice) {
                         return;

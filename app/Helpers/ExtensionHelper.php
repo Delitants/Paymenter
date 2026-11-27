@@ -5,6 +5,7 @@ namespace App\Helpers;
 use App\Attributes\ExtensionMeta;
 use App\Classes\FilamentInput;
 use App\Enums\InvoiceTransactionStatus;
+use App\Exceptions\DisplayException;
 use App\Models\BillingAgreement;
 use App\Models\Extension;
 use App\Models\Gateway;
@@ -37,6 +38,8 @@ use ReflectionClass;
 
 class ExtensionHelper
 {
+    public const SERVICE_RENEWAL_QUOTE = 'service_renewal_quote';
+
     /**
      * Used to read all Extensions in app/Extensions with or without type (e.g. 'gateway' or 'server' or 'other' (for non-gateway/server extensions))
      *
@@ -453,6 +456,7 @@ class ExtensionHelper
         if (!GatewayPaymentAttempt::where('invoice_id', $invoice->id)->where('gateway_id', $gateway->id)->whereIn('state', ['open', 'initializing'])->exists()) {
             (new PaymentWriteGuard)->assertEditable($invoice);
             (new GatewayFeePolicy)->assertSupported($gateway, $invoice->currency_code);
+            self::validateRenewalInvoice($invoice);
         }
 
         return self::getExtension('gateway', $gateway->extension, $gateway->settings)->bindRecord($gateway)->pay($invoice, $invoice->remaining);
@@ -464,6 +468,7 @@ class ExtensionHelper
 
         (new PaymentWriteGuard)->assertEditable($invoice);
         (new GatewayFeePolicy)->assertSupported($gateway, $invoice->currency_code);
+        self::validateRenewalInvoice($invoice);
 
         return self::getExtension('gateway', $gateway->extension, $gateway->settings)->bindRecord($gateway)->charge($invoice, $invoice->remaining, $billingAgreement);
     }
@@ -737,9 +742,65 @@ class ExtensionHelper
      */
     public static function getActions(Service $service)
     {
-        $server = self::checkServer($service, 'getActions');
+        $function = $service->status === Service::STATUS_SUSPENDED ? 'getSuspendedActions' : 'getActions';
+        $server = self::checkServer($service, $function);
 
-        return self::getExtension('server', $server->extension, $server->settings)->getActions($service, self::settingsToArray($service->product->settings), self::getServiceProperties($service));
+        return self::getExtension('server', $server->extension, $server->settings)->$function($service, self::settingsToArray($service->product->settings), self::getServiceProperties($service));
+    }
+
+    public static function shouldScheduleRenewalInvoice(Service $service): bool
+    {
+        $server = $service->product?->server;
+        if (!$server) {
+            return true;
+        }
+        try {
+            $extension = self::getExtension('server', $server->extension, $server->settings);
+
+            return !method_exists($extension, 'shouldScheduleRenewalInvoice') || $extension->shouldScheduleRenewalInvoice($service) !== false;
+        } catch (Exception $error) {
+            report($error);
+
+            return false;
+        }
+    }
+
+    public static function validateRenewalInvoice(Invoice $invoice, ?Service $service = null): void
+    {
+        $currentRead = DB::transactionLevel() > 0;
+        $contract = $invoice->properties()->where('key', self::SERVICE_RENEWAL_QUOTE);
+        if ($currentRead) {
+            $contract->lockForUpdate();
+        }
+        $stored = $contract->value('value');
+        if ($stored === null) {
+            return;
+        }
+        $quote = json_decode($stored, true);
+        $serviceId = $quote['service_id'] ?? null;
+        if (!$service && is_int($serviceId)) {
+            $query = Service::whereKey($serviceId);
+            if ($currentRead) {
+                $query->lockForUpdate();
+            }
+            $service = $query->first();
+        }
+        if ($currentRead && $service) {
+            $product = $service->product()->lockForUpdate()->first();
+            $server = $product?->server()->lockForUpdate()->first();
+            $server?->setRelation('settings', $server->settings()->lockForUpdate()->get());
+            $product?->setRelation('server', $server);
+            $service->setRelation('product', $product);
+            $service->setRelation('plan', $service->plan()->lockForUpdate()->first());
+            $service->setRelation('user', $service->user()->lockForUpdate()->first());
+        }
+        $server = $service?->product?->server;
+        if (!$server?->enabled || (int) $service->id !== $serviceId || (int) $server->id !== ($quote['server_id'] ?? null)
+            || $server->extension !== ($quote['extension'] ?? null) || !is_string($quote['terms'] ?? null)
+            || !self::hasFunction($server, 'validateRenewalInvoice')) {
+            throw new DisplayException(__('The renewal terms changed. Return to the service page to review the renewal.'));
+        }
+        self::call($server, 'validateRenewalInvoice', [$service, $invoice, $quote['terms']]);
     }
 
     /**

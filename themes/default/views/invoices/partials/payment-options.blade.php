@@ -145,7 +145,7 @@
     </div>
     @endif
 
-    @if(!$this->claimedAttempt && $selectedMethod && $selectedMethod !== 'credit' && !str_starts_with($selectedMethod, 'gateway-') && $this->recurringServices()->exists())
+    @if(!$this->claimedAttempt && $selectedMethod && $selectedMethod !== 'credit' && !str_starts_with($selectedMethod, 'gateway-') && $this->automaticRenewalItems->isNotEmpty())
     <div class="mt-4 p-2">
         <x-form.toggle :label="__('invoices.use_for_recurring')" wire:model.live="setAsDefault" />
     </div>

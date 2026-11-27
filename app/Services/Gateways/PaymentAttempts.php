@@ -99,6 +99,7 @@ final class PaymentAttempts
                 if ($expectedReference !== null) {
                     throw new RuntimeException('Checkout reference is no longer active.');
                 }
+                ExtensionHelper::validateRenewalInvoice($invoice);
                 $policy = new GatewayFeePolicy;
                 $policy->assertSupported($gateway, $invoice->currency_code);
                 $pricing = new InvoicePricing;
