@@ -80,7 +80,10 @@ class AuthorizeNetTest extends TestCase
         $this->fakeApi();
         ExtensionHelper::pay($gateway, $invoice->fresh());
         Http::assertSent(fn ($r) => ($r['getHostedPaymentPageRequest']['transactionRequest']['amount'] ?? null) === '109.88');
-        $this->assertSame('109.88', GatewayPaymentAttempt::sole()->amount);
+        $attempt = GatewayPaymentAttempt::sole();
+        $this->assertSame('109.88', $attempt->amount);
+        Http::assertSent(fn ($r) => ($r['getHostedPaymentPageRequest']['refId'] ?? null) === 'PMT-' . $attempt->reference
+            && ($r['getHostedPaymentPageRequest']['transactionRequest']['order']['invoiceNumber'] ?? null) === $attempt->reference);
         $this->sendNotification($gateway)->assertOk();
         $this->sendNotification($gateway)->assertOk();
         $this->assertSame('109.88', $invoice->transactions()->sole()->amount);

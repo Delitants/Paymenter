@@ -33,3 +33,9 @@ Run `python2.7 tools/legacy-payments/webmoney_ingress.py --help` for the receive
 Proxy the exact WebMoney result location to the receiver. Keep request buffering enabled and disable upstream retries. Route `@paymenter_legacy_webmoney_native` to the existing native handler with its original proxy settings. nginx handles this internal redirect using the original request. The receiver records the exact body and ordered headers it receives from nginx.
 
 While the cutoff is armed, known retained accounts continue through the native handler. A result for a retired account is retained and returns HTTP 503 to defer acknowledgement. A database read or storage failure also returns HTTP 503 and records a fixed error in the service log. Before arming, verify that WebMoney prerequests include the payment number and that callbacks reach the gate through the configured result URL. Settlement still requires verification and posting.
+
+## Forward new Paymenter callbacks from a shared merchant endpoint
+
+Once the Paymenter endpoints are ready, route the internal nginx locations `@paymenter_authorizenet_target` and `@paymenter_webmoney_target` to their respective fixed Paymenter notification URLs over verified HTTPS. Preserve the original POST body and pass `X-ANET-Signature` for Authorize.net. Propagate the destination's response.
+
+Enable `--forward-paymenter` on the Authorize.net collector to forward authenticated capture events with the Paymenter checkout reference. For WebMoney, provide both `--paymenter-purse-file` and `--paymenter-secret-file` for the destination merchant. Paymenter receives its prerequests and authenticated results. The collector preserves authenticated results before asking nginx to forward them.

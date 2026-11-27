@@ -7,23 +7,20 @@ import sys
 from authorizenet_receipt import GUID, notification
 from custody import Custody, CustodyError, require
 from dispatch import DispatchError, owned_file, token
-from webmoney_ingress import UNAVAILABLE, read_request
+from webmoney_ingress import UNAVAILABLE, paymenter_reference, read_request, redirect
 
 
-NATIVE = (
-    b'HTTP/1.1 200 OK\r\n'
-    b'X-Accel-Redirect: @paymenter_legacy_authorizenet_native\r\n'
-    b'Content-Length: 0\r\nConnection: close\r\n\r\n'
-)
+NATIVE = redirect(b'@paymenter_legacy_authorizenet_native')
+PAYMENTER = redirect(b'@paymenter_authorizenet_target')
 
 
-def serve(incoming, outgoing, path, webhook_id, signature_key, custody):
+def serve(incoming, outgoing, path, webhook_id, signature_key, custody, forward_paymenter=False):
     response = UNAVAILABLE
     disposition = 'request_refused'
     try:
         frame, _ = read_request(incoming, path)
         try:
-            notification(frame, path, webhook_id, signature_key)
+            event = notification(frame, path, webhook_id, signature_key)
         except CustodyError:
             # The original endpoint is shared. Its own validation still
             # decides how to handle requests outside this subscription.
@@ -32,8 +29,14 @@ def serve(incoming, outgoing, path, webhook_id, signature_key, custody):
         else:
             disposition = 'custody_unavailable'
             custody.retain('authorizenet', frame)
-            disposition = 'retained_native'
-            response = NATIVE
+            reference = (event['merchant_reference'] or '').encode('ascii')
+            if (forward_paymenter and event['event_type'] == 'net.authorize.payment.authcapture.created'
+                    and reference.startswith(b'PMT-') and paymenter_reference(reference[4:])):
+                disposition = 'retained_paymenter'
+                response = PAYMENTER
+            else:
+                disposition = 'retained_native'
+                response = NATIVE
     except (CustodyError, DispatchError, EnvironmentError):
         pass
     outgoing.write(response)
@@ -50,6 +53,7 @@ def main(argv):
     parser.add_argument('--max-records', type=int, required=True)
     parser.add_argument('--max-bytes', type=int, required=True)
     parser.add_argument('--reserve-bytes', type=int, required=True)
+    parser.add_argument('--forward-paymenter', action='store_true')
     args = parser.parse_args(argv)
     require(token(args.path, r'/[A-Za-z0-9_./-]{1,1024}') and
             not any(piece in ('', '.', '..') for piece in args.path.split('/')[1:]) and
@@ -62,7 +66,7 @@ def main(argv):
     key = raw[:128]
     custody = Custody(args.root, args.max_records, args.max_bytes, args.reserve_bytes)
     decision = serve(getattr(sys.stdin, 'buffer', sys.stdin), getattr(sys.stdout, 'buffer', sys.stdout),
-                     args.path.encode('ascii'), args.webhook_id, key, custody)
+                     args.path.encode('ascii'), args.webhook_id, key, custody, args.forward_paymenter)
     if decision == 'custody_unavailable':
         sys.stderr.write('Authorize.net callback custody unavailable.\n')
 

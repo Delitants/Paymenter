@@ -95,6 +95,7 @@ class AuthorizeNet extends Gateway
                 throw new RuntimeException('Checkout initialization requires reconciliation');
             }
             $result = $this->api('getHostedPaymentPageRequest', [
+                'refId' => 'PMT-' . $attempt->reference,
                 'transactionRequest' => ['transactionType' => 'authCaptureTransaction', 'amount' => $attempt->amount, 'order' => ['invoiceNumber' => $attempt->reference]],
                 'hostedPaymentSettings' => ['setting' => [
                     ['settingName' => 'hostedPaymentReturnOptions', 'settingValue' => json_encode(['showReceipt' => true, 'url' => route('invoices.show', $invoice), 'cancelUrl' => route('invoices.show', $invoice)])],

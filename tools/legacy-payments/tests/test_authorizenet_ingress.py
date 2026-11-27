@@ -30,9 +30,9 @@ class AuthorizeNetIngressTests(unittest.TestCase):
         root.mkdir(mode=0o700)
         self.store = Custody(str(root), 2, 1048576, 4096)
 
-    def route(self, wire, custody=None):
+    def route(self, wire, custody=None, **routing):
         response = BytesIO()
-        decision = serve(BytesIO(wire), response, CALLBACK, WEBHOOK_ID, SIGNATURE_KEY, custody or self.store)
+        decision = serve(BytesIO(wire), response, CALLBACK, WEBHOOK_ID, SIGNATURE_KEY, custody or self.store, **routing)
         return decision, response.getvalue()
 
     def test_authenticated_arrival_is_durable_before_native_route(self):
@@ -84,6 +84,32 @@ class AuthorizeNetIngressTests(unittest.TestCase):
         decision, response = self.route(wire, Unavailable())
         self.assertEqual(decision, 'custody_unavailable')
         self.assertTrue(response.startswith(b'HTTP/1.1 503 '))
+
+    def test_namespaced_capture_is_retained_and_sent_only_to_paymenter(self):
+        body = json.dumps(event('PMT-100000000000123')).encode('utf-8')
+        wire, headers = request(body)
+        decision, response = self.route(wire, forward_paymenter=True)
+        self.assertEqual(decision, 'retained_paymenter')
+        self.assertIn(b'X-Accel-Redirect: @paymenter_authorizenet_target\r\n', response)
+        receipt, frame = self.store.read(1)
+        self.assertFalse(receipt['delivery_acknowledged'])
+        self.assertEqual(decode_frame(frame), (b'POST', CALLBACK, headers, body))
+
+    def test_forwarding_is_opt_in_and_keeps_other_events_on_the_source(self):
+        marked = 'PMT-100000000000123'
+        wire, _ = request(json.dumps(event(marked)).encode())
+        self.assertEqual(self.route(wire)[0], 'retained_native')
+        wire, _ = request(json.dumps(event(marked, 'net.authorize.payment.refund.created')).encode())
+        self.assertEqual(self.route(wire, forward_paymenter=True)[0], 'retained_native')
+        forged, _ = request(json.dumps(event(marked)).encode(), b'B2' * 64)
+        decision, response = self.route(forged, forward_paymenter=True)
+        self.assertEqual(decision, 'native')
+        self.assertNotIn(b'@paymenter_authorizenet_target', response)
+
+    def test_a_capture_without_the_paymenter_prefix_stays_on_the_source(self):
+        for ref in ('100000000000123', 'PMT-999999999999999'):
+            wire, _ = request(json.dumps(event(ref)).encode())
+            self.assertEqual(self.route(wire, forward_paymenter=True)[0], 'retained_native')
 
     def test_truncated_frame_and_wrong_route_fail_closed(self):
         wire, _ = request(json.dumps(event()).encode('utf-8'))

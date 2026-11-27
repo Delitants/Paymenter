@@ -1,25 +1,35 @@
 """Apply the BILLmanager cutoff to one nginx WebMoney callback connection."""
 
 import argparse
+from decimal import Decimal
 import os
 import re
 import sys
 
 from custody import Custody, CustodyError, PART_LIMITS, VERSION, decode_frame, require
 from dispatch import DispatchError, MysqlStore, owned_file, token
-from webmoney_receipt import IDENTIFIER, form_fields, matches
+from webmoney_receipt import IDENTIFIER, form_fields, matches, signature_matches
 
 
-NATIVE = (
-    b'HTTP/1.1 200 OK\r\n'
-    b'X-Accel-Redirect: @paymenter_legacy_webmoney_native\r\n'
-    b'Content-Length: 0\r\nConnection: close\r\n\r\n'
-)
+def redirect(location):
+    return (
+        b'HTTP/1.1 200 OK\r\n'
+        b'X-Accel-Redirect: ' + location + b'\r\n'
+        b'Content-Length: 0\r\nConnection: close\r\n\r\n'
+    )
+
+
+NATIVE = redirect(b'@paymenter_legacy_webmoney_native')
+PAYMENTER = redirect(b'@paymenter_webmoney_target')
 UNAVAILABLE = (
     b'HTTP/1.1 503 Service Unavailable\r\n'
     b'Content-Length: 0\r\nConnection: close\r\n\r\n'
 )
 MAX_PAYMENT_ID = 2147483647
+
+
+def paymenter_reference(value):
+    return matches(br'[1-9][0-9]{14}\Z', value) and value != b'999999999999999'
 
 
 def read_request(stream, path):
@@ -88,31 +98,55 @@ WHERE state.id = 1 LIMIT 1;
     return result[:-1].decode('ascii')
 
 
-def serve(incoming, outgoing, path, lookup, custody):
+def serve(incoming, outgoing, path, lookup, custody, paymenter=None):
     response = UNAVAILABLE
     disposition = 'request_refused'
     try:
-        frame, (method, _, headers, body) = read_request(incoming, path)
-        payment = 0
-        if method == b'POST' and body:
-            value = form_fields(headers, body).get(b'LMI_PAYMENT_NO')
-            if matches(IDENTIFIER, value) and int(value) <= MAX_PAYMENT_ID:
-                payment = int(value)
-        disposition = 'lookup_unavailable'
-        route = lookup(payment)
-        disposition = 'unclassified'
-        if route == 'native':
-            response = NATIVE
-            disposition = 'native'
-        elif route == 'retired' and payment:
-            disposition = 'custody_unavailable'
-            custody.retain('webmoney', frame)
-            disposition = 'retained'
+        frame, (method, target, headers, body) = read_request(incoming, path)
+        fields = form_fields(headers, body) if method == b'POST' and body else {}
+        value = fields.get(b'LMI_PAYMENT_NO')
+        if paymenter is not None and paymenter_reference(value):
+            purse, secret = paymenter
+            amount = fields.get(b'LMI_PAYMENT_AMOUNT')
+            prerequest = fields.get(b'LMI_PREREQUEST')
+            require(target == path and fields.get(b'LMI_MODE') == b'0' and b'LMI_HOLD' not in fields
+                    and fields.get(b'LMI_PAYEE_PURSE') == purse and prerequest in (None, b'1')
+                    and matches(br'[0-9]{1,16}(?:\.[0-9]{1,2})?\Z', amount)
+                    and Decimal(amount.decode('ascii')) > 0, 'invalid Paymenter WebMoney request')
+            if prerequest == b'1':
+                disposition = 'paymenter_prerequest'
+            else:
+                require(signature_matches(fields, secret), 'invalid Paymenter WebMoney signature')
+                disposition = 'custody_unavailable'
+                custody.retain('webmoney', frame)
+                disposition = 'retained_paymenter'
+            response = PAYMENTER
+        else:
+            payment = int(value) if matches(IDENTIFIER, value) and int(value) <= MAX_PAYMENT_ID else 0
+            disposition = 'lookup_unavailable'
+            route = lookup(payment)
+            disposition = 'unclassified'
+            if route == 'native':
+                response = NATIVE
+                disposition = 'native'
+            elif route == 'retired' and payment:
+                disposition = 'custody_unavailable'
+                custody.retain('webmoney', frame)
+                disposition = 'retained'
     except (CustodyError, DispatchError, EnvironmentError):
         pass
     outgoing.write(response)
     outgoing.flush()
     return disposition
+
+
+def private_setting(path, limit):
+    with os.fdopen(os.open(owned_file(path, True), os.O_RDONLY | os.O_NOFOLLOW), 'rb') as stream:
+        raw = stream.read(limit + 2)
+    if raw.endswith(b'\n'):
+        raw = raw[:-1]
+    require(0 < len(raw) <= limit and not re.search(br'[\x00\r\n]', raw), 'invalid private callback setting')
+    return raw
 
 
 def main(argv):
@@ -124,17 +158,25 @@ def main(argv):
     parser.add_argument('--max-records', type=int, required=True)
     parser.add_argument('--max-bytes', type=int, required=True)
     parser.add_argument('--reserve-bytes', type=int, required=True)
+    parser.add_argument('--paymenter-purse-file')
+    parser.add_argument('--paymenter-secret-file')
     args = parser.parse_args(argv)
     require(token(args.path, r'/[A-Za-z0-9_./-]{1,1024}') and
             not any(piece in ('', '.', '..') for piece in args.path.split('/')[1:]) and
             token(args.database, r'[A-Za-z_][A-Za-z0-9_]{0,63}'), 'invalid ingress configuration')
     os.umask(0o077)
+    require(bool(args.paymenter_purse_file) == bool(args.paymenter_secret_file), 'both Paymenter merchant settings are required')
+    paymenter = None
+    if args.paymenter_purse_file:
+        purse = private_setting(args.paymenter_purse_file, 13)
+        require(matches(br'[ZE][0-9]{12}\Z', purse), 'invalid Paymenter WebMoney purse')
+        paymenter = purse, private_setting(args.paymenter_secret_file, 4096)
     options = owned_file(args.mysql_options_file, True)
     store = MysqlStore(['/usr/bin/mysql', '--defaults-file=' + options, '--protocol=socket', '--batch',
                         '--raw', '--skip-column-names', '--database=' + args.database])
     custody = Custody(args.root, args.max_records, args.max_bytes, args.reserve_bytes)
     result = serve(getattr(sys.stdin, 'buffer', sys.stdin), getattr(sys.stdout, 'buffer', sys.stdout),
-                   args.path.encode('ascii'), lambda payment: source_route(store, payment), custody)
+                   args.path.encode('ascii'), lambda payment: source_route(store, payment), custody, paymenter)
     if result in ('lookup_unavailable', 'custody_unavailable'):
         sys.stderr.write('Legacy callback ingress: %s.\n' % result)
 
