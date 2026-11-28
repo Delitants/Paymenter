@@ -20,12 +20,14 @@ final class CustomerImporter
 
         return DB::transaction(function () use ($snapshot, $context) {
             $users = $snapshot->rows('users');
-            usort($users, fn ($a, $b) => (int) $a['id'] <=> (int) $b['id']);
+            usort($users, fn ($a, $b) => [($a['enabled'] ?? '') !== 'on', (int) $a['id']]
+                <=> [($b['enabled'] ?? '') !== 'on', (int) $b['id']]);
             $byAccount = [];
             $capture = Carbon::parse($snapshot->capturedAt())->utc();
             foreach ($users as $row) {
-                if ((int) ($row['level'] ?? 0) !== 16 || $row['enabled'] !== 'on') {
-                    throw new RuntimeException('Only enabled customer identities can be imported');
+                $disabled = $snapshot->hasActivityScope() && ($row['enabled'] ?? '') === 'off';
+                if ((int) ($row['level'] ?? 0) !== 16 || (!$disabled && ($row['enabled'] ?? '') !== 'on')) {
+                    throw new RuntimeException('Invalid source customer identity or login status');
                 }
                 $email = mb_strtolower(trim($row['email']));
                 if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
@@ -54,10 +56,15 @@ final class CustomerImporter
                     DB::table('billmanager_legacy_credentials')->insert([
                         'user_id' => $id, 'credential' => Crypt::encryptString(''),
                         'password_fingerprint' => hash('sha256', $password),
-                        'login_blocked' => true, 'block_reason' => 'Awaiting protected credential transfer',
+                        'login_blocked' => true, 'block_reason' => $disabled ? 'Source login disabled' : 'Awaiting protected credential transfer',
                     ]);
                     DB::table('billmanager_holds')->insert([
                         'model_type' => $user->getMorphClass(), 'model_id' => $id, 'reason' => 'Awaiting billing handover',
+                    ]);
+                }
+                if ($disabled && $mapped !== null) {
+                    DB::table('billmanager_legacy_credentials')->where('user_id', $user->id)->update([
+                        'login_blocked' => true, 'block_reason' => 'Source login disabled',
                     ]);
                 }
                 $byAccount[$row['account']][] = ['user_id' => $user->id, 'source_user_id' => (int) $row['id']];

@@ -22,7 +22,7 @@ use Illuminate\Support\Facades\DB;
 
 class ImportFromBillmanager extends Command
 {
-    protected $signature = 'billmanager:import {snapshot} {--source=} {--login-cutoff=} {--dry-run} {--apply} {--stage=all} {--report=} {--attachment-manifest=} {--attachment-directory=} {--credential-bundle=} {--disable-unsupported-otp} {--proxmox-servers=} {--provider-bundle=} {--provider-servers=} {--gateway-bundle=}';
+    protected $signature = 'billmanager:import {snapshot} {--source=} {--login-cutoff=} {--activity-cutoff=} {--dry-run} {--apply} {--stage=all} {--report=} {--attachment-manifest=} {--attachment-directory=} {--credential-bundle=} {--disable-unsupported-otp} {--proxmox-servers=} {--provider-bundle=} {--provider-servers=} {--gateway-bundle=}';
 
     protected $description = 'Validate a scoped BILLmanager snapshot before importing into an explicitly allowed database';
 
@@ -33,8 +33,10 @@ class ImportFromBillmanager extends Command
 
             return self::FAILURE;
         }
-        if (!$this->option('source') || !$this->option('login-cutoff')) {
-            $this->error('An expected source identity and login cutoff are required');
+        $loginCutoff = $this->option('login-cutoff');
+        $activityCutoff = $this->option('activity-cutoff');
+        if (!$this->option('source') || (bool) $loginCutoff === (bool) $activityCutoff) {
+            $this->error('An expected source identity and exactly one cutoff are required');
 
             return self::FAILURE;
         }
@@ -44,7 +46,7 @@ class ImportFromBillmanager extends Command
             return self::FAILURE;
         }
         try {
-            $snapshot = Snapshot::load($this->argument('snapshot'), $this->option('source'), $this->option('login-cutoff'));
+            $snapshot = Snapshot::load($this->argument('snapshot'), $this->option('source'), $activityCutoff ?: $loginCutoff, (bool) $activityCutoff);
             if ($this->option('apply')) {
                 if (!in_array($this->option('stage'), ['customers', 'tickets', 'attachments', 'credentials', 'financial', 'services', 'proxmox', 'provider-configuration', 'provider-accounts', 'registrar-accounts', 'gateway-configuration', 'gateway-fees'], true)) {
                     $this->error('Full import is not yet available; use an explicitly supported stage');

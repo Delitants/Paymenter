@@ -125,13 +125,14 @@ final class ServiceImporter
                 $counts['fractional_cent'] += in_array('fractional_cent', $price['review_reasons'], true) ? 1 : 0;
                 $counts['expense_matched'] += $price['expense_comparison'] === 'matched' ? 1 : 0;
             }
-            foreach (['addons', 'itemparams', 'pricelists', 'prices', 'pricelistprices', 'fixedprices', 'fixedpricesprice', 'itemtypes', 'discounts', 'discountprices'] as $table) {
+            foreach (['addons', 'itemparams', 'pricelists', 'prices', 'pricelistprices', 'fixedprices', 'fixedpricesprice', 'itemtypes',
+                'discounts', 'discountprices', 'historical_items', 'processing_module_plans'] as $table) {
                 $occurrences = [];
                 foreach ($snapshot->rows($table) as $row) {
                     $account = match ($table) {
                         'addons' => $accounts[$row['parent']] ?? throw new RuntimeException('Addon parent was not imported'),
                         'itemparams' => $accounts[$row['item']] ?? throw new RuntimeException('Parameter parent was not imported'),
-                        'discounts' => isset($row['account']) ? (int) $row['account'] : null,
+                        'discounts', 'historical_items' => isset($row['account']) ? (int) $row['account'] : null,
                         default => null,
                     };
                     $hash = hash('sha256', json_encode($row, JSON_THROW_ON_ERROR));

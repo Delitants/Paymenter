@@ -84,4 +84,67 @@ class SnapshotTest extends TestCase
         $this->expectExceptionMessage('source');
         Snapshot::load($this->fixture(['source_host' => '192.0.2.20']), '192.0.2.10', '2024-09-28 00:00:00');
     }
+
+    private function activitySnapshot(array $tables): string
+    {
+        return json_encode([
+            'schema_version' => 2,
+            'source_host' => '192.0.2.10',
+            'captured_at_utc' => '2026-09-28T10:00:00Z',
+            'activity_cutoff' => '2022-01-01 00:00:00',
+            'consistent_snapshot' => true,
+            'tables' => array_replace([
+                'accounts' => [['id' => '21', 'registration_date' => '2020-01-01']],
+                'users' => [['id' => '11', 'account' => '21', 'level' => '16', 'enabled' => 'off', 'last_login' => null]],
+            ], $tables),
+        ], JSON_THROW_ON_ERROR);
+    }
+
+    public function test_activity_scope_keeps_a_current_service_and_its_older_history(): void
+    {
+        $payload = $this->activitySnapshot([
+            'items' => [['id' => '31', 'account' => '21', 'status' => '2', 'opendate' => '2020-01-01']],
+            'subaccounts' => [['id' => '41', 'account' => '21']],
+            'payments' => [['id' => '51', 'subaccount' => '41', 'paydate' => '2020-01-01']],
+            'tickets' => [['id' => '61', 'account_client' => '21', 'date_start' => '2020-01-01']],
+        ]);
+
+        $snapshot = Snapshot::fromBytes($payload, hash('sha256', $payload), '192.0.2.10', '2022-01-01 00:00:00', activityScope: true);
+        $this->assertTrue($snapshot->hasActivityScope());
+        $this->assertSame('off', $snapshot->rows('users')[0]['enabled']);
+        $this->assertSame('51', $snapshot->rows('payments')[0]['id']);
+        $this->assertSame('61', $snapshot->rows('tickets')[0]['id']);
+    }
+
+    public function test_payment_on_the_cutoff_qualifies_without_a_recent_login(): void
+    {
+        $payload = $this->activitySnapshot([
+            'subaccounts' => [['id' => '41', 'account' => '21']],
+            'payments' => [['id' => '51', 'subaccount' => '41', 'paydate' => '2022-01-01']],
+        ]);
+
+        $snapshot = Snapshot::fromBytes($payload, hash('sha256', $payload), '192.0.2.10', '2022-01-01 00:00:00', activityScope: true);
+        $this->assertCount(1, $snapshot->rows('accounts'));
+    }
+
+    public function test_old_closed_service_cannot_qualify_an_inactive_account(): void
+    {
+        $payload = $this->activitySnapshot([
+            'historical_items' => [['id' => '31', 'account' => '21', 'status' => '4', 'expiredate' => '2021-12-31']],
+            'tickets' => [['id' => '61', 'account_client' => '21', 'date_start' => '2021-01-01']],
+        ]);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('activity cutoff');
+        Snapshot::fromBytes($payload, hash('sha256', $payload), '192.0.2.10', '2022-01-01 00:00:00', activityScope: true);
+    }
+
+    public function test_activity_snapshot_requires_explicit_selection(): void
+    {
+        $payload = $this->activitySnapshot(['accounts' => [['id' => '21', 'registration_date' => '2023-01-01']]]);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('schema');
+        Snapshot::fromBytes($payload, hash('sha256', $payload), '192.0.2.10', '2022-01-01 00:00:00');
+    }
 }
