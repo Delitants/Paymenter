@@ -5,8 +5,10 @@ namespace Paymenter\Extensions\Servers\SSLStore;
 use App\Attributes\ExtensionMeta;
 use App\Classes\Extension\ReadOnlyServer;
 use App\Exceptions\DisplayException;
+use App\Helpers\ExtensionHelper;
 use App\Listeners\RequestListener;
 use App\Models\CartItem;
+use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\Plan;
 use App\Models\Product;
@@ -20,7 +22,7 @@ use RuntimeException;
 use SimpleXMLElement;
 use Throwable;
 
-#[ExtensionMeta(name: 'SSLStore', description: 'SSLStore certificate enrollment from paid invoices', version: '0.2.0', author: 'Paymenter Community')]
+#[ExtensionMeta(name: 'SSLStore', description: 'SSLStore certificate enrollment and linked renewals from paid invoices', version: '0.3.0', author: 'Paymenter Community')]
 class SSLStore extends ReadOnlyServer
 {
     public function getConfig($values = []): array
@@ -31,6 +33,7 @@ class SSLStore extends ReadOnlyServer
             ['name' => 'auth_token', 'label' => 'Authentication token', 'type' => 'password', 'encrypted' => true, 'required' => true],
             ['name' => 'enrollment_host', 'label' => 'Verified customer enrollment hostname', 'type' => 'text'],
             ['name' => 'orders_enabled', 'label' => 'Enable new certificate orders', 'type' => 'checkbox', 'default' => false],
+            ['name' => 'renewals_enabled', 'label' => 'Enable customer-requested certificate renewals', 'type' => 'checkbox', 'default' => false],
         ];
     }
 
@@ -131,12 +134,27 @@ class SSLStore extends ReadOnlyServer
 
     public function handlePaidInvoice(Service $service, InvoiceItem $item): void
     {
+        $quote = $item->invoice->properties()->where('key', ExtensionHelper::SERVICE_RENEWAL_QUOTE)->value('value');
+        if ($quote !== null) {
+            (new SSLStoreRenewals)->fulfill($service, $item, $quote);
+
+            return;
+        }
         (new SSLStoreOrders)->fulfill($service, $item);
+    }
+
+    public function validateRenewalInvoice(Service $service, Invoice $invoice, string $terms): void
+    {
+        try {
+            (new SSLStoreRenewals)->validateForPayment($service, $invoice, $terms);
+        } catch (RuntimeException) {
+            throw new DisplayException(__('The certificate renewal terms changed. Review the service before paying.'));
+        }
     }
 
     public function shouldScheduleRenewalInvoice(Service $service): bool
     {
-        // A linked renewal requires a separate provider enrollment contract.
+        // The customer supplies a CSR and accepts the subscriber agreement before billing.
         return false;
     }
 
@@ -164,8 +182,11 @@ class SSLStore extends ReadOnlyServer
             if ($order['status'] === 'INITIAL' && $service->status === Service::STATUS_ACTIVE) {
                 $actions[] = ['type' => 'button', 'label' => __('Complete certificate enrollment'), 'function' => 'openEnrollment'];
             }
-            if ($order['status'] === 'ACTIVE') {
+            if ($order['status'] === 'ACTIVE' || ($order['status'] === 'PENDING' && (new SSLStoreOrders)->hasPreviousCertificate($service))) {
                 $actions[] = ['type' => 'button', 'label' => __('Download certificate'), 'function' => 'downloadCertificate'];
+            }
+            if (in_array($order['status'], ['ACTIVE', 'EXPIRED'], true)) {
+                $actions = [...$actions, ...$this->renewalActions($service)];
             }
             $actions[] = ['type' => 'button', 'label' => __('Check certificate status'), 'function' => 'refreshCertificateStatus'];
         }
@@ -178,6 +199,30 @@ class SSLStore extends ReadOnlyServer
         Gate::authorize('update', $service);
 
         return route('services.sslstore.enroll', $service);
+    }
+
+    public function getSuspendedActions(Service $service): array
+    {
+        Gate::authorize('view', $service);
+
+        return $this->renewalActions($service);
+    }
+
+    private function renewalActions(Service $service): array
+    {
+        if (!Gate::allows('update', $service) || !filter_var($this->config('renewals_enabled'), FILTER_VALIDATE_BOOL)
+            || !(new SSLStoreOrders)->confirmed($service, allowSuspended: true)) {
+            return [];
+        }
+
+        return [['type' => 'button', 'label' => __('Renew certificate'), 'function' => 'openRenewal']];
+    }
+
+    public function openRenewal(Service $service): string
+    {
+        Gate::authorize('update', $service);
+
+        return route('services.sslstore.renewal', $service);
     }
 
     public function refreshCertificateStatus(Service $service): bool

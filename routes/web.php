@@ -52,6 +52,9 @@ Route::group(['middleware' => ['web', 'auth', MustVerfiyEmail::class]], function
     Route::get('/services/{service}', Services\Show::class)->name('services.show')->middleware('can:view,service');
     Route::get('/services/{service}/certificate/enroll', [SSLStoreDelivery::class, 'enroll'])->name('services.sslstore.enroll');
     Route::get('/services/{service}/certificate/download', [SSLStoreDelivery::class, 'download'])->name('services.sslstore.download');
+    Route::get('/services/{service}/certificate/renew', [SSLStoreDelivery::class, 'renewal'])->name('services.sslstore.renewal');
+    Route::post('/services/{service}/certificate/renew/preview', [SSLStoreDelivery::class, 'previewRenewal'])->name('services.sslstore.renewal.preview');
+    Route::post('/services/{service}/certificate/renew', [SSLStoreDelivery::class, 'confirmRenewal'])->name('services.sslstore.renewal.confirm');
     Route::get('/services/{service}/upgrade', Services\Upgrade::class)->name('services.upgrade')->middleware('can:view,service');
     Route::get('/services/{service}/credentials', Services\Credentials::class)->name('services.credentials')->middleware('can:view,service');
 });

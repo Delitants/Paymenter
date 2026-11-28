@@ -12,6 +12,7 @@ use App\Models\Service;
 use App\Services\BillmanagerMigration\MigrationHold;
 use App\Services\Service\PaidServiceLifecycle;
 use Brick\Math\BigDecimal;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use RuntimeException;
@@ -20,7 +21,9 @@ final class SSLStoreOrders
 {
     public const QUOTE = PaidServiceLifecycle::QUOTE;
 
-    private const KIND = 'sslstore-invite';
+    public const INVITATION = 'sslstore-invite';
+
+    public const RENEWAL = 'sslstore-renewal';
 
     public function quote(Product $product, Plan $plan, string $currency, bool $checkStock = true): array
     {
@@ -56,7 +59,7 @@ final class SSLStoreOrders
                 throw new RuntimeException('A valid certificate requester email is required');
             }
             $operation = ExtensionOperation::create([
-                'identity' => $this->identity($service), 'kind' => self::KIND, 'status' => 'submitted',
+                'identity' => $this->identity($service), 'kind' => self::INVITATION, 'status' => 'submitted',
                 'extension_id' => $binding['terms']['server_id'], 'user_id' => $service->user_id,
                 'service_id' => $service->id, 'invoice_item_id' => $item->id,
                 'payload' => [
@@ -102,31 +105,55 @@ final class SSLStoreOrders
         }, attempts: 3);
     }
 
-    public function confirmed(Service $service): ?ExtensionOperation
+    public function confirmed(Service $service, bool $allowSuspended = false): ?ExtensionOperation
     {
-        if ($service->status !== Service::STATUS_ACTIVE || MigrationHold::isHeld($service)) {
-            return null;
+        return $this->entitlements($service, $allowSuspended)->first();
+    }
+
+    public function hasPreviousCertificate(Service $service): bool
+    {
+        return $this->entitlements($service)->skip(1)->contains(
+            fn (ExtensionOperation $operation) => !in_array($operation->payload['receipt']['status'], ['EXPIRED', 'CANCELLED'], true),
+        );
+    }
+
+    private function entitlements(Service $service, bool $allowSuspended = false, ?int $expectedId = null, ?int $lockedInvoiceId = null): Collection
+    {
+        if (($service->status !== Service::STATUS_ACTIVE && !($allowSuspended && $service->status === Service::STATUS_SUSPENDED))
+            || MigrationHold::isHeld($service, currentRead: $lockedInvoiceId !== null)) {
+            return new Collection;
         }
 
-        $operation = ExtensionOperation::where([
-            'identity' => $this->identity($service), 'kind' => self::KIND, 'status' => 'complete',
+        return ExtensionOperation::where([
+            'status' => 'complete',
             'service_id' => $service->id, 'user_id' => $service->user_id, 'extension_id' => $service->product->server_id,
-        ])->first();
-        if (!$operation) {
-            return null;
-        }
-        $item = InvoiceItem::with('invoice')->find($operation->invoice_item_id);
+        ])->whereIn('kind', [self::INVITATION, self::RENEWAL])
+            ->when($expectedId !== null, fn ($query) => $query->whereKey($expectedId))
+            ->when($lockedInvoiceId !== null, fn ($query) => $query->lockForUpdate())
+            ->latest('id')->get()
+            ->filter(fn (ExtensionOperation $operation) => $this->entitled($service, $operation, $lockedInvoiceId));
+    }
+
+    private function entitled(Service $service, ExtensionOperation $operation, ?int $lockedInvoiceId): bool
+    {
+        $currentRead = $lockedInvoiceId !== null;
+        $item = InvoiceItem::whereKey($operation->invoice_item_id)->when($currentRead, fn ($query) => $query->lockForUpdate())->first();
         $binding = $operation->payload['binding'];
-        if (!$item || $item->reference_type !== Service::class || (int) $item->reference_id !== (int) $service->id
-            || $item->invoice?->status !== Invoice::STATUS_PAID || (int) $item->invoice->user_id !== (int) $service->user_id
-            || MigrationHold::isHeld($item) || $item->price !== $binding['price'] || $item->quantity !== 1
-            || (int) $item->invoice_id !== $binding['invoice_id'] || $item->invoice->currency_code !== $service->currency_code
+        if (!$item || (int) $item->invoice_id !== $binding['invoice_id']
+            || ($currentRead && (int) $item->invoice_id !== $lockedInvoiceId)) {
+            return false;
+        }
+        $invoice = $item->invoice()->when($currentRead, fn ($query) => $query->lockForUpdate())->first();
+        if ($item->reference_type !== Service::class || (int) $item->reference_id !== (int) $service->id
+            || $invoice?->status !== Invoice::STATUS_PAID || (int) $invoice->user_id !== (int) $service->user_id
+            || MigrationHold::isHeld($item, currentRead: $currentRead) || $item->price !== $binding['price'] || $item->quantity !== 1
+            || $invoice->currency_code !== $service->currency_code
             || $service->currency_code !== $binding['terms']['currency'] || (int) $service->product_id !== $binding['terms']['product_id']
             || (int) $service->plan_id !== $binding['terms']['plan_id']) {
-            return null;
+            return false;
         }
 
-        return $operation;
+        return true;
     }
 
     public function open(Service $service): string
@@ -136,7 +163,7 @@ final class SSLStoreOrders
         if ($service->status !== Service::STATUS_ACTIVE || $payload['receipt']['status'] !== 'INITIAL') {
             throw new RuntimeException('Certificate enrollment is unavailable');
         }
-        $receipt = $api->orderInfo($payload['custom_id'], $payload['binding']['terms'], $payload['receipt']['order_id']);
+        $receipt = $this->supplierReceipt($api, $operation);
         if ($receipt['status'] !== 'INITIAL') {
             throw new RuntimeException('SSLStore has already processed the enrollment link');
         }
@@ -149,7 +176,7 @@ final class SSLStoreOrders
     {
         [$operation, $api] = $this->confirmedOrder($service);
         $payload = $operation->payload;
-        $receipt = $api->orderInfo($payload['custom_id'], $payload['binding']['terms'], $payload['receipt']['order_id']);
+        $receipt = $this->supplierReceipt($api, $operation);
         DB::transaction(function () use ($operation, $service, $payload, $receipt) {
             $currentService = Service::whereKey($service->id)->lockForUpdate()->firstOrFail();
             $current = ExtensionOperation::whereKey($operation->id)->lockForUpdate()->firstOrFail();
@@ -168,25 +195,32 @@ final class SSLStoreOrders
 
     public function download(Service $service): string
     {
-        [$operation, $api] = $this->confirmedOrder($service);
-        $payload = $operation->payload;
-        if (in_array($payload['receipt']['status'], ['CANCELLED', 'EXPIRED'], true)) {
-            throw new RuntimeException('The certificate order has ended');
-        }
-        $receipt = $api->orderInfo($payload['custom_id'], $payload['binding']['terms'], $payload['receipt']['order_id']);
-        if ($receipt['status'] !== 'ACTIVE') {
-            throw new RuntimeException('The certificate is not ready to download');
+        foreach ($this->entitlements($service)->take(2) as $operation) {
+            if (in_array($operation->payload['receipt']['status'], ['CANCELLED', 'EXPIRED'], true)) {
+                continue;
+            }
+            [, $api] = $this->confirmedOrder($service, expected: $operation);
+            try {
+                $receipt = $this->supplierReceipt($api, $operation);
+                if ($receipt['status'] !== 'ACTIVE') {
+                    continue;
+                }
+                $archive = $api->download($receipt);
+            } catch (RuntimeException) {
+                // A failed renewal lookup must leave the previous certificate available.
+                continue;
+            }
+            $this->assertUnchangedEntitlement($service, $operation);
+
+            return $archive;
         }
 
-        $archive = $api->download($receipt);
-        $this->assertUnchangedEntitlement($service, $operation);
-
-        return $archive;
+        throw new RuntimeException('An issued certificate is not ready to download');
     }
 
-    private function confirmedOrder(Service $service): array
+    public function confirmedOrder(Service $service, bool $allowSuspended = false, ?ExtensionOperation $expected = null, ?int $lockedInvoiceId = null): array
     {
-        $operation = $this->confirmed($service);
+        $operation = $this->entitlements($service, $allowSuspended, $expected?->id, $lockedInvoiceId)->first();
         $server = $service->product->server;
         if (!$operation || !$server?->enabled || $server->extension !== 'SSLStore') {
             throw new RuntimeException('Certificate order is unavailable');
@@ -202,13 +236,21 @@ final class SSLStoreOrders
     private function assertUnchangedEntitlement(Service $service, ExtensionOperation $operation): void
     {
         $service = $service->fresh() ?? throw new RuntimeException('Certificate service was removed');
-        [$current] = $this->confirmedOrder($service);
+        [$current] = $this->confirmedOrder($service, expected: $operation);
         if ($current->id !== $operation->id || $current->payload !== $operation->payload) {
             throw new RuntimeException('Certificate order changed during provider lookup');
         }
     }
 
-    private function terms(Product $product, Plan $plan, string $currency): array
+    private function supplierReceipt(SSLStoreApi $api, ExtensionOperation $operation): array
+    {
+        $payload = $operation->payload;
+
+        return $api->orderInfo($payload['custom_id'], $payload['binding']['terms'], $payload['receipt']['order_id'],
+            invitation: $operation->kind === self::INVITATION, parent: $payload['parent'] ?? null);
+    }
+
+    public function terms(Product $product, Plan $plan, string $currency): array
     {
         $server = $product->server;
         $currentRead = DB::transactionLevel() > 0;
@@ -263,12 +305,12 @@ final class SSLStoreOrders
 
     private function identity(Service $service): string
     {
-        return hash('sha256', self::KIND . ':' . $service->id);
+        return hash('sha256', self::INVITATION . ':' . $service->id);
     }
 
     private function matchOperation(ExtensionOperation $operation, Service $service, InvoiceItem $item, array $binding): void
     {
-        if ($operation->kind !== self::KIND || !in_array($operation->status, ['submitted', 'complete'], true)
+        if ($operation->kind !== self::INVITATION || !in_array($operation->status, ['submitted', 'complete'], true)
             || (int) $operation->extension_id !== $binding['terms']['server_id'] || (int) $operation->user_id !== (int) $service->user_id
             || (int) $operation->service_id !== (int) $service->id || (int) $operation->invoice_item_id !== (int) $item->id
             || ($operation->payload['binding'] ?? null) !== $binding) {

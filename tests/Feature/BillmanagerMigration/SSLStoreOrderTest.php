@@ -27,6 +27,10 @@ use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Once;
 use Livewire\Livewire;
 use Paymenter\Extensions\Servers\SSLStore\SSLStoreOrders;
+use phpseclib3\Crypt\RSA;
+use phpseclib3\File\ASN1;
+use phpseclib3\File\X509;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Tests\Fixtures\FeeGateway;
 use Tests\TestCase;
@@ -438,5 +442,197 @@ class SSLStoreOrderTest extends TestCase
             'AuthResponse' => ['isError' => false], 'CurrencyCode' => 'USD', 'ProductCode' => 'synthetic_tls',
             'PricingInfo' => [['NumberOfMonths' => 12]],
         ]];
+    }
+
+    public static function supplierRenewalResponses(): array
+    {
+        return [
+            'confirmed' => ['confirmed', null],
+            'renewal status unavailable' => ['confirmed', 'status'],
+            'lost response and renewal archive unavailable' => ['lost', 'archive'],
+            'unlinked receipt' => ['unlinked', null],
+        ];
+    }
+
+    #[DataProvider('supplierRenewalResponses')]
+    public function test_paid_renewal_links_the_latest_certificate_order_and_keeps_the_old_receipt(string $outcome, ?string $downloadFailure): void
+    {
+        [$service, $purchase, $owner] = $this->fixture();
+        $service->product->server->settings()->create(['key' => 'renewals_enabled', 'value' => '1']);
+        $additionalName = 'www.certificate.example.test';
+        $csr = $this->certificateRequest('certificate.example.test', $additionalName);
+        $parentCustomId = null;
+        $renewalCustomId = null;
+        $orderWrites = 0;
+        $agreement = 'Synthetic subscriber agreement';
+        $downloading = false;
+        Http::fake(function (Request $request) use (&$parentCustomId, &$renewalCustomId, &$orderWrites, &$agreement, &$downloading, $additionalName, $csr, $outcome, $downloadFailure) {
+            if ($request->url() === self::API . '/rest/order/inviteorder') {
+                $parentCustomId = $request['CustomOrderID'];
+
+                return Http::response($this->reply($parentCustomId));
+            }
+            if ($request->url() === self::API . '/rest/order/info') {
+                if (isset($request->data()['CustomOrderID']) || $request['TheSSLStoreOrderID'] === '9017124') {
+                    if (isset($request->data()['CustomOrderID'])) {
+                        $this->assertSame($renewalCustomId, $request['CustomOrderID']);
+                    }
+
+                    if ($downloading && $downloadFailure === 'status') {
+                        return Http::failedConnection();
+                    }
+                    $reply = $this->renewedReply($renewalCustomId);
+                    if ($downloading && $downloadFailure === 'archive') {
+                        $reply['OrderStatus']['MajorStatus'] = 'ACTIVE';
+                    }
+
+                    return Http::response($reply);
+                }
+                $this->assertSame('9017123', $request['TheSSLStoreOrderID']);
+                $contact = [
+                    'FirstName' => 'Test', 'LastName' => 'Certificate', 'Email' => 'owner@example.test',
+                    'Phone' => '+1.2025550141', 'AddressLine1' => '100 Test Road', 'City' => 'Example',
+                    'Region' => 'NY', 'PostalCode' => '10001', 'Country' => 'US',
+                ];
+                $reply = $this->reply($parentCustomId, enrolled: true);
+                $reply['OrderStatus']['MajorStatus'] = 'ACTIVE';
+
+                return Http::response($reply + [
+                    'CommonName' => 'certificate.example.test', 'DNSNames' => [$additionalName], 'WebServerType' => 'OTHER',
+                    'ApproverEmail' => 'admin@certificate.example.test', 'AdminContact' => $contact, 'TechnicalContact' => $contact,
+                ]);
+            }
+            if ($request->url() === self::API . '/rest/order/approverlist') {
+                return Http::response(['AuthResponse' => ['isError' => false], 'ApproverEmailList' => ['admin@certificate.example.test']]);
+            }
+            if ($request->url() === self::API . '/rest/product/query') {
+                return Http::response($this->availableOffer());
+            }
+            if ($request->url() === self::API . '/rest/order/agreement') {
+                return Http::response(['AuthResponse' => ['isError' => false], 'Agreement' => $agreement]);
+            }
+            if ($request->url() === self::API . '/rest/order/downloadaszip') {
+                if ($downloading && $downloadFailure === 'archive' && $request['TheSSLStoreOrderID'] === '9017124') {
+                    return Http::response(['AuthResponse' => ['isError' => false], 'Zip' => 'missing archive']);
+                }
+                $this->assertSame('9017123', $request['TheSSLStoreOrderID']);
+
+                return Http::response([
+                    'AuthResponse' => ['isError' => false], 'Zip' => base64_encode("PK\x03\x04previous certificate archive"),
+                    'PartnerOrderID' => 'synthetic-partner-order', 'ValidationStatus' => 'Issued',
+                ]);
+            }
+            $this->assertSame(self::API . '/rest/order/neworder', $request->url());
+            $this->assertSame('9017123', $request['RelatedTheSSLStoreOrderID']);
+            $this->assertTrue($request['isRenewalOrder']);
+            $this->assertSame(12, $request['ValidityPeriod']);
+            $this->assertSame([$additionalName], $request['DNSNames']);
+            $this->assertSame(trim($csr), rawurldecode($request['CSR']));
+            $renewalCustomId = $request['CustomOrderID'];
+            $orderWrites++;
+            if ($outcome === 'lost') {
+                return Http::failedConnection();
+            }
+            $reply = $this->renewedReply($renewalCustomId);
+            if ($outcome === 'unlinked') {
+                unset($reply['RelatedTheSSLStoreOrderID']);
+            }
+
+            return Http::response($reply);
+        });
+        (new PaidInvoiceJob($purchase->id))->handle();
+        $service->refresh();
+        $oldExpiry = $service->expires_at->copy();
+        $this->actingAs($owner)->withSession($this->loginUser($owner));
+        $this->get(route('services.sslstore.renewal', $service))->assertOk()->assertSee('Certificate signing request');
+        if ($outcome === 'confirmed' && $downloadFailure === null) {
+            $previewUrl = route('services.sslstore.renewal.preview', $service);
+            $this->post($previewUrl, ['csr' => $this->certificateRequest('different.example.test')])->assertStatus(422);
+            $this->post($previewUrl, ['csr' => $this->certificateRequest('certificate.example.test')])->assertStatus(422);
+            $trailing = chunk_split(base64_encode(ASN1::extractBER($csr) . "\x05\x00"), 64, "\n");
+            $this->post($previewUrl, ['csr' => "-----BEGIN CERTIFICATE REQUEST-----\n{$trailing}-----END CERTIFICATE REQUEST-----"])
+                ->assertStatus(422);
+            $this->assertDatabaseCount('invoices', 1);
+        }
+        $preview = $this->post(route('services.sslstore.renewal.preview', $service), ['csr' => $csr])
+            ->assertOk()->assertSee($agreement)->assertSee($additionalName)->viewData('preview');
+        $confirm = route('services.sslstore.renewal.confirm', $service);
+        $this->post($confirm, ['quote' => $preview['token']])->assertStatus(422);
+        $response = $this->post($confirm, ['quote' => $preview['token'], 'accepted' => '1']);
+        $invoice = Invoice::where('status', Invoice::STATUS_PENDING)->sole();
+        $response->assertRedirect(route('invoices.show', $invoice));
+        $this->assertSame(Invoice::STATUS_PENDING, $invoice->status);
+        $this->post($confirm, ['quote' => $preview['token'], 'accepted' => '1'])->assertRedirect(route('invoices.show', $invoice));
+        $this->assertDatabaseCount('invoices', 2);
+        if ($outcome === 'confirmed' && $downloadFailure === null) {
+            $agreement = 'Changed synthetic subscriber agreement';
+            try {
+                ExtensionHelper::validateRenewalInvoice($invoice);
+                $this->fail('A stale agreement was accepted at payment.');
+            } catch (DisplayException $error) {
+                $this->assertStringContainsString('renewal terms changed', $error->getMessage());
+                $this->assertSame(0, $invoice->transactions()->count());
+            }
+            $agreement = 'Synthetic subscriber agreement';
+        }
+        Http::assertNotSent(fn (Request $request) => str_ends_with($request->url(), '/rest/order/neworder'));
+        $invoice->properties()->each(function ($property) use ($csr): void {
+            $this->assertStringNotContainsString(trim($csr), $property->value);
+            $this->assertStringNotContainsString('100 Test Road', $property->value);
+        });
+        try {
+            ExtensionHelper::addPayment($invoice, null, (new InvoicePricing)->summary($invoice)->payable, transactionId: 'synthetic-renewal-payment');
+            $this->assertSame('confirmed', $outcome);
+        } catch (RuntimeException $error) {
+            $this->assertSame(match ($outcome) {
+                'lost' => 'SSLStore request failed and its outcome is unknown',
+                'unlinked' => 'SSLStore did not confirm the expected enrollment order',
+                default => null,
+            }, $error->getMessage());
+            $this->assertSame(Invoice::STATUS_PAID, $invoice->fresh()->status);
+            $this->assertEquals($oldExpiry, $service->fresh()->expires_at);
+            $this->assertSame('submitted', ExtensionOperation::where('kind', 'sslstore-renewal')->sole()->status);
+            $service->product->server->settings()->where('key', 'renewals_enabled')->update(['value' => '0']);
+            $this->get(route('services.sslstore.renewal', $service))->assertConflict();
+        }
+        $renewedItem = $invoice->items()->sole();
+        (new PaidInvoiceJob($renewedItem->id))->handle();
+        $this->assertEquals($oldExpiry->addMonths(12), $service->fresh()->expires_at);
+        $this->assertSame('9017124', (new SSLStoreOrders)->confirmed($service->fresh())->payload['receipt']['order_id']);
+        $this->assertSame('9017123', ExtensionOperation::where('kind', 'sslstore-invite')->sole()->payload['receipt']['order_id']);
+        $downloading = true;
+        $this->assertSame("PK\x03\x04previous certificate archive",
+            $this->get(route('services.sslstore.download', $service))->assertOk()->streamedContent());
+        $this->assertSame(1, $orderWrites);
+    }
+
+    private function renewedReply(string $customId): array
+    {
+        $reply = $this->reply($customId, enrolled: true);
+        $reply['TheSSLStoreOrderID'] = '9017124';
+        $reply['RelatedTheSSLStoreOrderID'] = '9017123';
+        $reply['OrderStatus']['isTinyOrder'] = false;
+
+        return $reply;
+    }
+
+    private function certificateRequest(string $name, ?string $additionalName = null): string
+    {
+        $request = new X509;
+        RSA::forceEngine('PHP');
+        try {
+            $request->setPrivateKey(RSA::createKey(2048));
+        } finally {
+            RSA::forceEngine();
+        }
+        $request->setDNProp('id-at-commonName', $name);
+        if ($additionalName !== null) {
+            $request->loadCSR($request->signCSR());
+            $request->setAttribute('pkcs-9-at-extensionRequest', [[[
+                'extnId' => 'id-ce-subjectAltName', 'critical' => false, 'extnValue' => [['dNSName' => $additionalName]],
+            ]]]);
+        }
+
+        return $request->saveCSR($request->signCSR());
     }
 }

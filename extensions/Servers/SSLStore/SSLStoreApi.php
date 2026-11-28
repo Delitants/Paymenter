@@ -39,6 +39,11 @@ final class SSLStoreApi
         return filter_var($this->settings['orders_enabled'] ?? false, FILTER_VALIDATE_BOOL);
     }
 
+    public function renewalsEnabled(): bool
+    {
+        return filter_var($this->settings['renewals_enabled'] ?? false, FILTER_VALIDATE_BOOL);
+    }
+
     public function verifyOffer(string $code, int $months, string $currency): void
     {
         $products = $this->post('/rest/product/query', [
@@ -67,11 +72,77 @@ final class SSLStoreApi
         return $this->receipt($reply, $customId, $terms);
     }
 
-    public function orderInfo(string $customId, array $terms, ?string $orderId = null): array
+    public function orderInfo(string $customId, array $terms, ?string $orderId = null, bool $invitation = true, ?string $parent = null): array
+    {
+        return $this->receipt($this->fetchOrder($customId, $orderId), $customId, $terms, $orderId, $invitation, $parent);
+    }
+
+    public function renewalSource(string $customId, array $terms, string $orderId, bool $invitation, ?string $ancestor = null): array
+    {
+        $reply = $this->fetchOrder($customId, $orderId);
+        $receipt = $this->receipt($reply, $customId, $terms, $orderId, $invitation, $ancestor);
+        if (!in_array($receipt['status'], ['ACTIVE', 'EXPIRED'], true)
+            || ($invitation && ($reply['OrderStatus']['isTinyOrderClaimed'] ?? null) !== true)
+            || ($receipt['status'] === 'EXPIRED' && !$this->hasIssuedCertificateDates($reply))) {
+            throw new RuntimeException('SSLStore did not confirm an issued order eligible for renewal');
+        }
+
+        return $reply;
+    }
+
+    private function hasIssuedCertificateDates(array $reply): bool
+    {
+        $issued = $reply['CertificateStartDateInUTC'] ?? null;
+        $expires = $reply['CertificateEndDateInUTC'] ?? null;
+        if (!is_string($issued) || !is_string($expires)) {
+            return false;
+        }
+        $start = strtotime($issued);
+        $end = strtotime($expires);
+
+        return $start !== false && $start > 0 && $end !== false && $end > $start;
+    }
+
+    public function verifyApprover(string $product, string $domain, string $email): void
+    {
+        $reply = $this->post('/rest/order/approverlist', ['DomainName' => $domain, 'ProductCode' => $product]);
+        if ($this->accepted($reply) && is_array($reply['ApproverEmailList'] ?? null)) {
+            foreach ($reply['ApproverEmailList'] as $address) {
+                if (is_string($address) && strcasecmp($address, $email) === 0) {
+                    return;
+                }
+            }
+        }
+        throw new RuntimeException('SSLStore did not confirm the selected certificate approval email');
+    }
+
+    public function agreement(string $code): string
+    {
+        $reply = $this->post('/rest/order/agreement', ['ProductCode' => $code]);
+        $agreement = $reply['Agreement'] ?? null;
+        if (!$this->accepted($reply) || !is_string($agreement) || trim($agreement) === '' || strlen($agreement) > 65536) {
+            throw new RuntimeException('SSLStore did not return the current subscriber agreement');
+        }
+
+        return $agreement;
+    }
+
+    public function renew(string $customId, array $terms, string $parent, array $request): array
+    {
+        $reply = $this->post('/rest/order/neworder', [
+            'CustomOrderID' => $customId, 'ProductCode' => $terms['product_code'], 'ValidityPeriod' => $terms['months'],
+            'RelatedTheSSLStoreOrderID' => $parent, 'isRenewalOrder' => true, 'isCUOrder' => false,
+            'ServerCount' => 1, 'ReserveSANCount' => 0, 'AddInstallationSupport' => false,
+        ] + $request);
+
+        return $this->receipt($reply, $customId, $terms, invitation: false, parent: $parent);
+    }
+
+    private function fetchOrder(string $customId, ?string $orderId): array
     {
         $request = $orderId === null ? ['CustomOrderID' => $customId] : ['TheSSLStoreOrderID' => $orderId];
 
-        return $this->receipt($this->post('/rest/order/info', $request), $customId, $terms, $orderId);
+        return $this->post('/rest/order/info', $request);
     }
 
     public function download(array $receipt): string
@@ -136,7 +207,7 @@ final class SSLStoreApi
         return $flags !== [] && !array_filter($flags, fn ($flag) => $flag !== false);
     }
 
-    private function receipt(array $reply, string $customId, array $terms, ?string $orderId = null): array
+    private function receipt(array $reply, string $customId, array $terms, ?string $orderId = null, bool $invitation = true, ?string $parent = null): array
     {
         $id = $reply['TheSSLStoreOrderID'] ?? null;
         $status = $reply['OrderStatus'] ?? null;
@@ -148,8 +219,12 @@ final class SSLStoreApi
             || filter_var($reply['ServerCount'] ?? null, FILTER_VALIDATE_INT) !== 1
             || (isset($reply['ProductCode']) && $reply['ProductCode'] !== $terms['product_code'])
             || ($orderId !== null && (string) $id !== $orderId) || !is_array($status)
-            || ($status['isTinyOrder'] ?? null) !== true || !is_bool($claimed)
-            || ($major === 'INITIAL' && $claimed) || (in_array($major, ['PENDING', 'ACTIVE'], true) && !$claimed)
+            || ($parent !== null && ((string) $id === $parent
+                || (($orderId === null || isset($reply['RelatedTheSSLStoreOrderID']))
+                    && (string) ($reply['RelatedTheSSLStoreOrderID'] ?? '') !== $parent)))
+            || ($status['isTinyOrder'] ?? null) !== $invitation
+            || ($invitation && (!is_bool($claimed) || ($major === 'INITIAL' && $claimed) || (in_array($major, ['PENDING', 'ACTIVE'], true) && !$claimed)))
+            || (!$invitation && $major === 'INITIAL')
             || !in_array($major, ['INITIAL', 'PENDING', 'ACTIVE', 'CANCELLED', 'EXPIRED'], true)) {
             throw new RuntimeException('SSLStore did not confirm the expected enrollment order');
         }
