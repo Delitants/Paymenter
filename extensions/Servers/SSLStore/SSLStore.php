@@ -57,6 +57,13 @@ class SSLStore extends ReadOnlyServer
         }
     }
 
+    public function getProductConfig($values = []): array
+    {
+        return [
+            ['name' => 'product_code', 'label' => 'SSL Store product code', 'type' => 'text', 'required' => true],
+        ];
+    }
+
     public function getServerInfo(Service $service): never
     {
         throw new RuntimeException('Certificate order integration is not yet available');
