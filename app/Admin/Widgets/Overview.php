@@ -17,6 +17,8 @@ class Overview extends BaseWidget
     // Poll every 5 minutes (5m doesn't work somehow)
     protected ?string $pollingInterval = '600s';
 
+    protected ?string $heading = 'Paymenter activity (last 30 days)';
+
     protected function getStats(): array
     {
         return [
