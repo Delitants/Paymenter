@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use PDO;
 use RuntimeException;
+use Throwable;
 
 final class PreviewSnapshot
 {
@@ -41,23 +42,46 @@ final class PreviewSnapshot
 
     public static function available(): bool
     {
-        return is_file(self::file()) && is_readable(self::file());
+        try {
+            self::connectionSettings();
+
+            return true;
+        } catch (Throwable) {
+            return false;
+        }
     }
 
-    public static function open(): self
+    private static function connectionSettings(): array
     {
         $file = self::file();
-        if (!self::available() || filesize($file) > 4096) {
+        if (!is_file($file) || !is_readable($file) || filesize($file) > 4096) {
             throw new RuntimeException('The BILLmanager preview connection is unavailable.');
         }
 
-        $settings = json_decode(file_get_contents($file), true, flags: JSON_THROW_ON_ERROR);
+        $contents = file_get_contents($file, length: 4097);
+        if ($contents === false || strlen($contents) > 4096) {
+            throw new RuntimeException('The BILLmanager preview connection is unavailable.');
+        }
+
+        $settings = json_decode($contents, true, flags: JSON_THROW_ON_ERROR);
         if (!is_array($settings) || !is_string($settings['password'] ?? null)
             || !is_string($settings['database'] ?? null) || !preg_match('/\A[a-zA-Z0-9_]+\z/', $settings['database'])
             || !is_string($settings['username'] ?? null) || !preg_match('/\A[a-zA-Z0-9_]+\z/', $settings['username'])
             || !is_string($settings['unix_socket'] ?? null) || !str_starts_with($settings['unix_socket'], '/')) {
             throw new RuntimeException('The BILLmanager preview connection is invalid.');
         }
+
+        $database = config('database.connections.'.config('database.default').'.database');
+        if ($settings['database'] === $database) {
+            throw new RuntimeException('The BILLmanager copy is already serving the application.');
+        }
+
+        return $settings;
+    }
+
+    public static function open(): self
+    {
+        $settings = self::connectionSettings();
 
         return new self(DB::build([
             'driver' => 'mysql',
@@ -82,7 +106,7 @@ final class PreviewSnapshot
         return $counts;
     }
 
-    public function records(string $dataset, string $search): Paginator
+    public function records(string $dataset, string $search, string $pageName = 'page', ?int $page = null): Paginator
     {
         $query = $this->query($dataset);
         $fields = match ($dataset) {
@@ -99,7 +123,7 @@ final class PreviewSnapshot
             });
         }
 
-        return $query->orderByDesc(self::KEYS[$dataset])->simplePaginate(40)->withQueryString();
+        return $query->orderByDesc(self::KEYS[$dataset])->simplePaginate(40, pageName: $pageName, page: $page)->withQueryString();
     }
 
     private function query(string $dataset): Builder
