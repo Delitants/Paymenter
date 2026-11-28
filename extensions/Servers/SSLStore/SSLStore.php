@@ -4,15 +4,23 @@ namespace Paymenter\Extensions\Servers\SSLStore;
 
 use App\Attributes\ExtensionMeta;
 use App\Classes\Extension\ReadOnlyServer;
+use App\Exceptions\DisplayException;
+use App\Listeners\RequestListener;
+use App\Models\CartItem;
+use App\Models\InvoiceItem;
+use App\Models\Plan;
+use App\Models\Product;
 use App\Models\Service;
 use App\Services\Providers\XmlResponse;
+use Brick\Math\BigDecimal;
+use Illuminate\Support\Facades\Context;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
 use SimpleXMLElement;
 use Throwable;
 
-#[ExtensionMeta(name: 'SSLStore', description: 'SSLStore credential verification; certificate order integration pending', version: '0.1.0', author: 'Paymenter Community')]
+#[ExtensionMeta(name: 'SSLStore', description: 'SSLStore certificate enrollment from paid invoices', version: '0.2.0', author: 'Paymenter Community')]
 class SSLStore extends ReadOnlyServer
 {
     public function getConfig($values = []): array
@@ -21,6 +29,8 @@ class SSLStore extends ReadOnlyServer
             ['name' => 'url', 'label' => 'API HTTPS origin', 'type' => 'text', 'required' => true],
             ['name' => 'partner_code', 'label' => 'Partner code', 'type' => 'text', 'required' => true],
             ['name' => 'auth_token', 'label' => 'Authentication token', 'type' => 'password', 'encrypted' => true, 'required' => true],
+            ['name' => 'enrollment_host', 'label' => 'Verified customer enrollment hostname', 'type' => 'text'],
+            ['name' => 'orders_enabled', 'label' => 'Enable new certificate orders', 'type' => 'checkbox', 'default' => false],
         ];
     }
 
@@ -38,8 +48,11 @@ class SSLStore extends ReadOnlyServer
             $body->addChild('PartnerCode', htmlspecialchars($this->config('partner_code'), ENT_XML1));
             $body->addChild('AuthToken', htmlspecialchars($this->config('auth_token'), ENT_XML1));
             try {
-                $response = Http::withHeaders(['Accept' => 'application/xml'])->connectTimeout(10)->timeout(30)->withOptions(['verify' => true, 'allow_redirects' => false])
-                    ->withBody($body->asXML(), 'application/xml')->post($url . '/rest/health/validate');
+                $response = Context::scope(
+                    fn () => Http::withHeaders(['Accept' => 'application/xml'])->connectTimeout(10)->timeout(30)->withOptions(['verify' => true, 'allow_redirects' => false])
+                        ->withBody($body->asXML(), 'application/xml')->post($url . '/rest/health/validate'),
+                    hidden: [RequestListener::PRIVATE_HTTP => true],
+                );
             } catch (Throwable) {
                 throw new RuntimeException('SSLStore authentication request failed');
             }
@@ -64,15 +77,122 @@ class SSLStore extends ReadOnlyServer
         ];
     }
 
-    public function getServerInfo(Service $service): never
+    public function validateCheckout(Product $product, Plan $plan, array $values): array
     {
-        throw new RuntimeException('Certificate order integration is not yet available');
+        try {
+            (new SSLStoreOrders)->quote($product, $plan, session('currency', config('settings.default_currency', 'USD')));
+        } catch (RuntimeException) {
+            throw new DisplayException(__('This certificate is unavailable for purchase.'));
+        }
+
+        return [];
+    }
+
+    public function validateCartItem(CartItem $item): array
+    {
+        try {
+            [$api, $terms] = (new SSLStoreOrders)->quote($item->product, $item->plan, $item->cart->currency_code);
+            if ((int) $item->quantity !== 1 || !BigDecimal::of($item->price->total)->isPositive()) {
+                throw new RuntimeException('SSLStore requires one paid certificate per order item');
+            }
+            $api->verifyOffer($terms['product_code'], $terms['months'], $terms['currency']);
+        } catch (RuntimeException) {
+            throw new DisplayException(__('This certificate term is temporarily unavailable. Please review your cart.'));
+        }
+
+        return $this->checkoutQuote($item, $terms, (string) $item->price->total);
+    }
+
+    public function validateLockedCartItem(CartItem $item, ?array $verified, string $amount): array
+    {
+        try {
+            $server = $item->product->server()->lockForUpdate()->first();
+            $server?->setRelation('settings', $server->settings()->lockForUpdate()->get());
+            $item->product->setRelation('server', $server);
+            [, $terms] = (new SSLStoreOrders)->quote($item->product, $item->plan, $item->cart->currency_code, checkStock: false);
+            if ((int) $item->quantity !== 1 || !BigDecimal::of($amount)->isPositive()
+                || $this->checkoutQuote($item, $terms, $amount) !== $verified) {
+                throw new RuntimeException('SSLStore checkout changed after provider verification');
+            }
+        } catch (RuntimeException) {
+            throw new DisplayException(__('The certificate terms changed. Please review your cart before paying.'));
+        }
+
+        return $verified;
+    }
+
+    private function checkoutQuote(CartItem $item, array $terms, string $amount): array
+    {
+        $terms['line_price'] = (string) BigDecimal::of($amount)->toScale(2);
+        $terms['cart_item_id'] = $item->id;
+
+        return [SSLStoreOrders::QUOTE => json_encode($terms, JSON_THROW_ON_ERROR)];
+    }
+
+    public function handlePaidInvoice(Service $service, InvoiceItem $item): void
+    {
+        (new SSLStoreOrders)->fulfill($service, $item);
+    }
+
+    public function shouldScheduleRenewalInvoice(Service $service): bool
+    {
+        // A linked renewal requires a separate provider enrollment contract.
+        return false;
+    }
+
+    public function getServerInfo(Service $service): array
+    {
+        Gate::authorize('view', $service);
+        $receipt = (new SSLStoreOrders)->confirmed($service)?->payload['receipt'] ?? [];
+
+        return ['order_id' => $receipt['order_id'] ?? null, 'status' => $receipt['status'] ?? null];
     }
 
     public function getActions(Service $service): array
     {
-        Gate::authorize('view', $service);
+        $order = $this->getServerInfo($service);
+        $status = match ($order['status']) {
+            'INITIAL' => __('Ready for certificate enrollment'),
+            'PENDING' => __('Certificate validation in progress'),
+            'ACTIVE' => __('Certificate order completed'),
+            'CANCELLED' => __('Certificate order cancelled'),
+            'EXPIRED' => __('Certificate order expired'),
+            default => __('Certificate enrollment is unavailable'),
+        };
+        $actions = [['type' => 'text', 'label' => __('Certificate status'), 'text' => $status]];
+        if ($order['order_id'] && Gate::allows('update', $service)) {
+            if ($order['status'] === 'INITIAL' && $service->status === Service::STATUS_ACTIVE) {
+                $actions[] = ['type' => 'button', 'label' => __('Complete certificate enrollment'), 'function' => 'openEnrollment'];
+            }
+            if ($order['status'] === 'ACTIVE') {
+                $actions[] = ['type' => 'button', 'label' => __('Download certificate'), 'function' => 'downloadCertificate'];
+            }
+            $actions[] = ['type' => 'button', 'label' => __('Check certificate status'), 'function' => 'refreshCertificateStatus'];
+        }
 
-        return [['type' => 'text', 'label' => 'Certificate management', 'text' => 'Contact support; certificate order integration is pending']];
+        return $actions;
+    }
+
+    public function openEnrollment(Service $service): string
+    {
+        Gate::authorize('update', $service);
+
+        return route('services.sslstore.enroll', $service);
+    }
+
+    public function refreshCertificateStatus(Service $service): bool
+    {
+        $service = $service->fresh();
+        Gate::authorize('update', $service);
+        (new SSLStoreOrders)->refresh($service);
+
+        return true;
+    }
+
+    public function downloadCertificate(Service $service): string
+    {
+        Gate::authorize('update', $service);
+
+        return route('services.sslstore.download', $service);
     }
 }

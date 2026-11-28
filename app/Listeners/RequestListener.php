@@ -8,12 +8,15 @@ use Illuminate\Http\Client\Events\ResponseReceived;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Context;
 use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\File\File;
 
 // Part of this code is from the Laravel Telescope package
 class RequestListener
 {
+    public const PRIVATE_HTTP = 'paymenter.private_http_request';
+
     private const hiddenParamaters = ['authorization', 'password', 'password_confirmation'];
 
     /**
@@ -24,7 +27,7 @@ class RequestListener
      */
     public function handle(ConnectionFailed|ResponseReceived $event)
     {
-        if (!config('settings.debug', false)) {
+        if (!config('settings.debug', false) || Context::getHidden(self::PRIVATE_HTTP, false)) {
             return;
         }
         if ($event instanceof ConnectionFailed) {

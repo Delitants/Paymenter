@@ -22,6 +22,7 @@ use App\Services\Gateways\GatewayFeePolicy;
 use App\Services\Gateways\InvoicePaymentDependencies;
 use App\Services\Gateways\Operations\OperationPolicy;
 use App\Services\Gateways\PaymentWriteGuard;
+use App\Services\Service\PaidServiceLifecycle;
 use Exception;
 use Filament\Forms\Components\Placeholder;
 use Illuminate\Database\Eloquent\Collection;
@@ -751,6 +752,10 @@ class ExtensionHelper
     public static function shouldScheduleRenewalInvoice(Service $service): bool
     {
         $server = $service->product?->server;
+        $providerQuote = PaidServiceLifecycle::quoteFor($service);
+        if ($providerQuote !== null && !PaidServiceLifecycle::matchesQuotedServer($server, $providerQuote)) {
+            return false;
+        }
         if (!$server) {
             return true;
         }

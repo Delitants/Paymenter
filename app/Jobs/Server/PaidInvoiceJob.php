@@ -40,6 +40,10 @@ class PaidInvoiceJob implements ShouldQueue
         MigrationHold::assertAllowed($item, 'paid service lifecycle');
         MigrationHold::assertAllowed($service, 'paid service lifecycle');
         $server = $service->product?->server;
+        $providerQuote = PaidServiceLifecycle::quoteFor($service);
+        if ($providerQuote !== null && !PaidServiceLifecycle::matchesQuotedServer($server, $providerQuote)) {
+            throw new RuntimeException('The paid service checkout provider has changed');
+        }
         if (!$server || !$server->enabled || !ExtensionHelper::hasFunction($server, 'handlePaidInvoice')) {
             throw new RuntimeException('Paid service server is disabled or unavailable');
         }

@@ -24,12 +24,14 @@ class RenewServiceService
         MigrationHold::assertAllowed($service, 'renew service');
         $server = $service->product->server;
         $nativeLifecycle = $server && ExtensionHelper::hasFunction($server, 'handlePaidInvoice');
+        $providerQuote = PaidServiceLifecycle::quoteFor($service);
         $quotedRenewal = $item?->invoice?->properties()->where('key', ExtensionHelper::SERVICE_RENEWAL_QUOTE)->exists();
-        if ($nativeLifecycle || $quotedRenewal) {
+        if ($nativeLifecycle || $quotedRenewal || $providerQuote !== null) {
             if (!$item || $item->reference_type !== Service::class || (int) $item->reference_id !== (int) $service->id) {
                 throw new \RuntimeException('This service requires a paid invoice item');
             }
-            if (!$nativeLifecycle || PaidServiceLifecycle::claim($service, $item)) {
+            $providerChanged = $providerQuote !== null && !PaidServiceLifecycle::matchesQuotedServer($server, $providerQuote);
+            if ($providerChanged || !$nativeLifecycle || PaidServiceLifecycle::claim($service, $item)) {
                 PaidInvoiceJob::dispatch($item->id)->afterCommit();
             }
 

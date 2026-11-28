@@ -5,6 +5,7 @@ namespace App\Services\Service;
 use App\Models\ExtensionOperation;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
+use App\Models\Server;
 use App\Models\Service;
 use App\Services\BillmanagerMigration\MigrationHold;
 use Illuminate\Support\Facades\DB;
@@ -13,7 +14,21 @@ use RuntimeException;
 /** Reserve paid service work before dispatch, including the interval before a provider claim exists. */
 final class PaidServiceLifecycle
 {
+    public const QUOTE = 'native_paid_service_quote';
+
     private const KIND = 'paid-service';
+
+    public static function quoteFor(Service $service): ?string
+    {
+        return $service->properties()->where('key', self::QUOTE)->value('value');
+    }
+
+    public static function matchesQuotedServer(?Server $server, string $quote): bool
+    {
+        $terms = json_decode($quote, true);
+
+        return $server && (int) $server->id === ($terms['server_id'] ?? null) && $server->extension === ($terms['extension'] ?? null);
+    }
 
     public static function pending(Service $service): bool
     {
@@ -69,12 +84,12 @@ final class PaidServiceLifecycle
 
     private static function current(Service $service, InvoiceItem $item): array
     {
+        $invoice = Invoice::whereKey($item->invoice_id)->lockForUpdate()->firstOrFail();
         $service = Service::whereKey($service->id)->lockForUpdate()->firstOrFail();
         $item = InvoiceItem::whereKey($item->id)->lockForUpdate()->firstOrFail();
-        $invoice = Invoice::whereKey($item->invoice_id)->lockForUpdate()->firstOrFail();
         MigrationHold::assertAllowed($service, 'paid service lifecycle');
         MigrationHold::assertAllowed($item, 'paid service lifecycle');
-        if ($invoice->status !== Invoice::STATUS_PAID || $item->reference_type !== Service::class ||
+        if ((int) $item->invoice_id !== (int) $invoice->id || $invoice->status !== Invoice::STATUS_PAID || $item->reference_type !== Service::class ||
             (int) $item->reference_id !== (int) $service->id || (int) $invoice->user_id !== (int) $service->user_id ||
             $invoice->currency_code !== $service->currency_code || !$service->product->server_id) {
             throw new RuntimeException('Paid service identity changed');

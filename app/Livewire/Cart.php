@@ -183,10 +183,14 @@ class Cart extends Component
         }
 
         // Validate opt-in provider checkout before creating an invoice or holding DB locks.
+        $providerQuotes = [];
         foreach (ClassesCart::get()->items()->with('product.server.settings', 'plan.prices')->get() as $item) {
             if ($item->product->server && ExtensionHelper::hasFunction($item->product->server, 'validateCartItem')) {
                 $item->checkout_config = ExtensionHelper::call($item->product->server, 'validateCartItem', [$item]);
                 $item->save();
+                if (ExtensionHelper::hasFunction($item->product->server, 'validateLockedCartItem')) {
+                    $providerQuotes[$item->id] = $item->checkout_config;
+                }
             }
         }
         ClassesCart::get()->unsetRelation('items');
@@ -202,6 +206,11 @@ class Cart extends Component
             $cart = ClassesCart::get();
 
             $user = User::where('id', Auth::id())->lockForUpdate()->first();
+            $cart = $cart->newQuery()->whereKey($cart->id)->lockForUpdate()->firstOrFail();
+            $cart->setRelation('items', $cart->items()->lockForUpdate()->get());
+            if (array_diff_key($providerQuotes, $cart->items->keyBy('id')->all())) {
+                throw new DisplayException(__('Your cart has changed. Please review it before placing the order.'));
+            }
             // Lock the orderproducts
             foreach ($cart->items as $item) {
                 // Make sure we have the latest product data and lock it
@@ -243,7 +252,22 @@ class Cart extends Component
 
             // Create the services
             foreach ($cart->items as $item) {
+                $server = $item->product->server;
+                $lockedCheckout = $server && ExtensionHelper::hasFunction($server, 'validateLockedCartItem');
+                if (isset($providerQuotes[$item->id]) && !$lockedCheckout) {
+                    throw new DisplayException(__('The provider for this item has changed. Please review your cart.'));
+                }
+                if ($lockedCheckout) {
+                    $plan = $item->plan()->lockForUpdate()->firstOrFail();
+                    $plan->setRelation('prices', $plan->prices()->lockForUpdate()->get());
+                    $item->setRelation('plan', $plan)->setRelation('cart', $cart);
+                }
                 $quoted = $item->priceForInvoice($invoice);
+                if ($lockedCheckout) {
+                    $item->checkout_config = ExtensionHelper::call($server, 'validateLockedCartItem', [
+                        $item, $providerQuotes[$item->id] ?? null, (string) $quoted->total,
+                    ]);
+                }
                 $price = $cart->coupon && ($cart->coupon->recurring === null || (int) $cart->coupon->recurring === 1)
                     ? $quoted->original_price_decimal : $quoted->price_decimal;
                 // Create the service

@@ -17,6 +17,7 @@ use App\Livewire\Services;
 use App\Livewire\Tickets;
 use Illuminate\Foundation\Auth\EmailVerificationRequest;
 use Illuminate\Support\Facades\Route;
+use Paymenter\Extensions\Servers\SSLStore\SSLStoreDelivery;
 
 Route::get('/', ClientPortalHomeController::class)->name('home');
 
@@ -49,6 +50,8 @@ Route::group(['middleware' => ['web', 'auth', MustVerfiyEmail::class]], function
 
     Route::get('/services', Services\Index::class)->name('services');
     Route::get('/services/{service}', Services\Show::class)->name('services.show')->middleware('can:view,service');
+    Route::get('/services/{service}/certificate/enroll', [SSLStoreDelivery::class, 'enroll'])->name('services.sslstore.enroll');
+    Route::get('/services/{service}/certificate/download', [SSLStoreDelivery::class, 'download'])->name('services.sslstore.download');
     Route::get('/services/{service}/upgrade', Services\Upgrade::class)->name('services.upgrade')->middleware('can:view,service');
     Route::get('/services/{service}/credentials', Services\Credentials::class)->name('services.credentials')->middleware('can:view,service');
 });
