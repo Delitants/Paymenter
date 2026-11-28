@@ -16,6 +16,7 @@ use App\Services\BillmanagerMigration\MigrationHold;
 use App\Services\BillmanagerMigration\Snapshot;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
 use Livewire\Livewire;
 use Qirolab\Theme\Theme;
@@ -118,7 +119,13 @@ class FinancialTest extends TestCase
         DB::flushQueryLog();
         DB::enableQueryLog();
         try {
-            $report = (new FinancialReconciler)->compare($snapshot, $context);
+            $retrieved = 'eloquent.retrieved: ' . BillmanagerRecord::class;
+            $report = Event::fakeFor(function () use ($snapshot, $context, $retrieved) {
+                $report = (new FinancialReconciler)->compare($snapshot, $context);
+                Event::assertNotDispatched($retrieved);
+
+                return $report;
+            }, [$retrieved]);
             $queries = count(DB::getQueryLog());
         } finally {
             DB::disableQueryLog();
@@ -128,6 +135,31 @@ class FinancialTest extends TestCase
         $this->assertSame(400, $report->counts['payments']);
         $this->assertSame('493.8000', $report->totals['payments']['USD']['paid']);
         $this->assertLessThan(40, $queries);
+    }
+
+    public function test_reconciliation_rejects_an_encrypted_archive_with_changed_contents(): void
+    {
+        [$snapshot, $context] = $this->fixture();
+        (new FinancialImporter)->import($snapshot, $context);
+        $record = BillmanagerRecord::where('source_table', 'payment_history')->sole();
+        $record->payload = [...$record->payload, 'status_new' => '7'];
+        $record->save();
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Financial archive mismatch');
+        (new FinancialReconciler)->compare($snapshot, $context);
+    }
+
+    public function test_reconciliation_rejects_an_archive_assigned_to_the_wrong_source_account(): void
+    {
+        [$snapshot, $context] = $this->fixture();
+        (new FinancialImporter)->import($snapshot, $context);
+        DB::table('billmanager_records')->where('import_id', $context->importId)
+            ->where('source_table', 'payment_history')->update(['source_account_id' => 99]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Financial archive mismatch');
+        (new FinancialReconciler)->compare($snapshot, $context);
     }
 
     public function test_customer_history_renders_exact_amounts_and_denies_unrelated_readers(): void

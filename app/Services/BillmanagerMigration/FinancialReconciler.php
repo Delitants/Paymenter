@@ -50,8 +50,11 @@ final class FinancialReconciler
         }
         $archived = 0;
         $archives = BillmanagerRecord::where('import_id', $context->importId);
-        foreach ($this->pairedRecords($archives, static fn () => FinancialRows::archives($snapshot)) as [[, , $account, $row], $record]) {
-            if ($record->payload !== $row || $record->source_account_id != $account) {
+        $decoder = $archives->getModel();
+        $columns = ['source_id', 'source_account_id', 'payload'];
+        foreach ($this->pairedRecords($archives, static fn () => FinancialRows::archives($snapshot), $columns) as [[, , $account, $row], $record]) {
+            $payload = $record->payload === null ? null : $decoder->fromJson($decoder->fromEncryptedString($record->payload));
+            if ($payload !== $row || $record->source_account_id != $account) {
                 throw new RuntimeException('Financial archive mismatch');
             }
             $archived++;
@@ -60,8 +63,8 @@ final class FinancialReconciler
         return new ImportReport('verified', $counts + ['archive_rows' => $archived], totals: $totals);
     }
 
-    /** Source entries start with their table and ID. Keep source order and native casts. */
-    private function pairedRecords(Builder $query, Closure $source): iterable
+    /** Keep source order and the normal casts for callers that need models. */
+    private function pairedRecords(Builder $query, Closure $source, ?array $rawColumns = null): iterable
     {
         foreach (LazyCollection::make($source)->chunk(self::READ_BATCH_SIZE) as $page) {
             $entries = $page->all();
@@ -71,14 +74,19 @@ final class FinancialReconciler
             }
             $native = [];
             foreach ($requested as $table => $ids) {
-                $native[$table] = (clone $query)->where('source_table', $table)->whereIn('source_id', $ids)->get()->groupBy('source_id');
+                $batch = (clone $query)->where('source_table', $table)->whereIn('source_id', $ids);
+                $rows = $rawColumns === null ? $batch->get() : $batch->toBase()->get($rawColumns);
+                $native[$table] = $rows->groupBy('source_id');
             }
             foreach ($entries as $entry) {
                 [$table, $id] = $entry;
                 $matches = $native[$table]->get($id);
-                $record = $matches?->count() === 1
-                    ? $matches->first()
-                    : (clone $query)->where(['source_table' => $table, 'source_id' => $id])->sole();
+                if ($matches?->count() === 1) {
+                    $record = $matches->first();
+                } else {
+                    $model = (clone $query)->where(['source_table' => $table, 'source_id' => $id])->sole();
+                    $record = $rawColumns === null ? $model : (object) $model->getRawOriginal();
+                }
                 yield [$entry, $record];
             }
         }
