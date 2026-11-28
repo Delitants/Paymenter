@@ -16,12 +16,17 @@ final class BalancePreview
         if ($creditLimitPolicy !== null && $creditLimitPolicy !== 'preserve') {
             throw new RuntimeException('Unsupported credit limit policy');
         }
-        if ($snapshot->sourceHost() !== $context->sourceHost || !DB::table('billmanager_imports')->where([
+        $import = DB::table('billmanager_imports')->where([
             'id' => $context->importId, 'source_host' => $snapshot->sourceHost(), 'snapshot_sha256' => $snapshot->checksum(),
-        ])->exists()) {
+        ]);
+        if ($snapshot->sourceHost() !== $context->sourceHost || !$import->exists()) {
             throw new RuntimeException('Balance preview snapshot lineage requires reconciliation');
         }
         (new FinancialReconciler)->compare($snapshot, $context);
+        $usersByAccount = [];
+        foreach ($snapshot->rows('users') as $user) {
+            $usersByAccount[(string) $user['account']][] = $user;
+        }
         $owners = [];
         $members = [];
         $eligible = [];
@@ -36,10 +41,7 @@ final class BalancePreview
             }
             $this->verifyCustomerArchive($mapping, $source, 'accounts', $context);
             $expected = [];
-            foreach ($snapshot->rows('users') as $user) {
-                if ((string) $user['account'] !== (string) $source['id']) {
-                    continue;
-                }
+            foreach ($usersByAccount[(string) $source['id']] ?? [] as $user) {
                 $userMapping = DB::table('billmanager_mappings')->where([
                     'source_host' => $context->sourceHost, 'source_table' => 'users', 'source_id' => (string) $user['id'],
                     'target_table' => 'users',
@@ -70,8 +72,17 @@ final class BalancePreview
             $owners[$source['id']] = (int) $account->owner_user_id;
             $members[$source['id']] = array_values($expected);
         }
+        if (!$import->exists()) {
+            throw new RuntimeException('Balance preview snapshot lineage requires reconciliation');
+        }
 
         $currencies = array_column($snapshot->rows('currencies'), 'iso', 'id');
+        $promisedBySubaccount = [];
+        foreach ($snapshot->rows('payments') as $payment) {
+            if ((int) $payment['status'] === 3) {
+                $promisedBySubaccount[(string) $payment['subaccount']][] = $payment;
+            }
+        }
         $entries = [];
         $identities = [];
         $counts = ['entries' => 0, 'eligible' => 0, 'positive' => 0, 'zero' => 0, 'debt' => 0, 'excluded' => 0, 'review_required' => 0];
@@ -116,10 +127,9 @@ final class BalancePreview
                 $reasons[] = 'shared_account';
             }
             $provisional = [];
-            foreach ($snapshot->rows('payments') as $payment) {
-                if ((string) $payment['subaccount'] === (string) $row['id'] && (int) $payment['status'] === 3
-                    && (!isset($payment['usedamount']) || BigDecimal::of(FinancialRows::decimal($payment['subaccountamount']))
-                        ->minus(FinancialRows::decimal($payment['usedamount']))->isPositive())) {
+            foreach ($promisedBySubaccount[(string) $row['id']] ?? [] as $payment) {
+                if (!isset($payment['usedamount']) || BigDecimal::of(FinancialRows::decimal($payment['subaccountamount']))
+                    ->minus(FinancialRows::decimal($payment['usedamount']))->isPositive()) {
                     $provisional[] = (string) $payment['id'];
                 }
             }
@@ -175,10 +185,23 @@ final class BalancePreview
 
     private function verifyCustomerArchive(object $mapping, array $source, string $table, ImportContext $context): void
     {
-        if (!DB::table('billmanager_imports')->where(['id' => $mapping->import_id, 'source_host' => $mapping->source_host])->exists()) {
+        $archives = BillmanagerRecord::query()
+            ->join('billmanager_imports', 'billmanager_imports.id', '=', 'billmanager_records.import_id')
+            ->where(['billmanager_records.source_table' => $table, 'billmanager_records.source_id' => (string) $source['id']])
+            ->where(function ($query) use ($mapping, $context) {
+                $query->where(['billmanager_records.import_id' => $mapping->import_id, 'billmanager_imports.source_host' => $mapping->source_host]);
+                if ((int) $mapping->import_id !== $context->importId) {
+                    $query->orWhere(fn ($current) => $current->where([
+                        'billmanager_records.import_id' => $context->importId, 'billmanager_imports.source_host' => $context->sourceHost,
+                    ]));
+                }
+            })
+            ->get(['billmanager_records.*'])->groupBy('import_id');
+        $historical = $archives->get($mapping->import_id);
+        if ($historical?->count() !== 1) {
             throw new RuntimeException('Customer mapping source lineage requires reconciliation');
         }
-        $record = BillmanagerRecord::where(['import_id' => $mapping->import_id, 'source_table' => $table, 'source_id' => (string) $source['id']])->sole();
+        $record = $historical->first();
         $payload = $record->payload;
         $account = $table === 'accounts' ? $source['id'] : $source['account'];
         if ((string) $record->source_account_id !== (string) $account
@@ -189,9 +212,10 @@ final class BalancePreview
         }
         // Mapping lineage is historical. Current details must come from the exact
         // immutable refresh being previewed, after native identity reconciliation.
-        $current = BillmanagerRecord::where(['import_id' => $context->importId, 'source_table' => $table, 'source_id' => (string) $source['id']])->first();
-        if (!$current || (string) $current->source_account_id !== (string) $account || $current->payload !== $source
-            || !hash_equals($current->payload_sha256, hash('sha256', json_encode($current->payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)))) {
+        $current = $archives->get($context->importId)?->first();
+        $currentPayload = $current === $record ? $payload : $current?->payload;
+        if (!$current || (string) $current->source_account_id !== (string) $account || $currentPayload !== $source
+            || ($current !== $record && !hash_equals($current->payload_sha256, hash('sha256', json_encode($currentPayload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE))))) {
             throw new RuntimeException('Current customer archive requires reconciliation');
         }
     }

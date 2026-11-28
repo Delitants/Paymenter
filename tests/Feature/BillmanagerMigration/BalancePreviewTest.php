@@ -142,6 +142,44 @@ class BalancePreviewTest extends TestCase
         (new BalancePreview)->prepare($snapshot, $context, '2024-01-01 00:00:00', 'preserve');
     }
 
+    public static function customerArchiveVersions(): array
+    {
+        return ['original import' => [false], 'refreshed import' => [true]];
+    }
+
+    #[DataProvider('customerArchiveVersions')]
+    public function test_customer_archive_lineage_and_current_snapshot_are_checked_with_one_read(bool $refreshed): void
+    {
+        if ($refreshed) {
+            [$snapshot, $context] = $this->refreshedFixture();
+        } else {
+            [$path, $context] = $this->fixture();
+            $snapshot = Snapshot::load($path, '192.0.2.10', '2024-01-01 00:00:00');
+        }
+        $connection = DB::connection();
+        $connection->enableQueryLog();
+        try {
+            $plan = (new BalancePreview)->prepare($snapshot, $context, '2024-01-01 00:00:00', 'preserve');
+            $reads = array_filter($connection->getQueryLog(), fn ($query) => str_contains($query['query'], 'billmanager_records')
+                && in_array('users', $query['bindings'], true) && in_array('11', $query['bindings'], true));
+        } finally {
+            $connection->disableQueryLog();
+            $connection->flushQueryLog();
+        }
+        $this->assertCount(1, $reads);
+        $this->assertSame('12.3450', $plan['entries'][0]['exact_amount']);
+
+        $record = BillmanagerRecord::where('import_id', $context->importId)->where('source_table', 'users')->sole();
+        $payload = $record->payload;
+        $payload['last_login'] = '2025-03-01 00:00:00';
+        $json = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+        DB::table('billmanager_records')->where('id', $record->id)->update([
+            'payload' => Crypt::encryptString($json), 'payload_sha256' => hash('sha256', $json),
+        ]);
+        $this->expectExceptionMessage('Current customer archive requires reconciliation');
+        (new BalancePreview)->prepare($snapshot, $context, '2024-01-01 00:00:00', 'preserve');
+    }
+
     private function preview(string $path, array $options = [])
     {
         return $this->artisan('billmanager:balances:preview', $options + ['snapshot' => $path,

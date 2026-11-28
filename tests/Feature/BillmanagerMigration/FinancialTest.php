@@ -18,6 +18,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Livewire\Livewire;
+use Qirolab\Theme\Theme;
 use Tests\TestCase;
 
 class FinancialTest extends TestCase
@@ -131,6 +132,7 @@ class FinancialTest extends TestCase
 
     public function test_customer_history_renders_exact_amounts_and_denies_unrelated_readers(): void
     {
+        Theme::set('default', 'default');
         [$snapshot, $context] = $this->fixture();
         (new FinancialImporter)->import($snapshot, $context);
         $member = User::where('email', 'client12@example.test')->sole();
