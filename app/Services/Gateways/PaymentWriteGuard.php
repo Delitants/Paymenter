@@ -28,6 +28,8 @@ final class PaymentWriteGuard
 {
     private static ?GatewayPaymentAttempt $settling = null;
 
+    private static bool $markedSettlement = false;
+
     private static ?PaymentOperation $operation = null;
 
     private static ?OperationResult $captureResult = null;
@@ -289,7 +291,9 @@ final class PaymentWriteGuard
         $frozenOriginal = $record instanceof InvoiceTransaction && $record->exists ? InvoiceTransaction::whereKey($record->id)->lockForUpdate()->value('original_allocation') : null;
         if ($record instanceof InvoiceTransaction && ($frozenOriginal !== null || $record->settlement_origin !== null || $record->getRawOriginal('settlement_origin') !== null || $record->isDirty(['settlement_origin', 'settlement_state']) ||
             ($record->exists && PaymentOperation::where(fn ($q) => $q->where('original_transaction_id', $record->id)->orWhere('result_transaction_id', $record->id))->exists()))) {
-            if (!$deleting && ($this->isOperationWrite($record) || $this->isProcessorFeeWrite($record))) {
+            if (!$deleting && ($this->isOperationWrite($record) || $this->isProcessorFeeWrite($record)
+                || (self::$markedSettlement && !$record->exists && $record->settlement_origin === 'provider_marked'
+                    && $record->settlement_state === 'settled' && $record->fee === null && $this->isSettlementWrite($record)))) {
                 return;
             }
             throw new RuntimeException('Managed payment identity and settlement history are immutable.');
@@ -406,7 +410,7 @@ final class PaymentWriteGuard
         }
     }
 
-    public function duringSettlement(GatewayPaymentAttempt $attempt, callable $write): mixed
+    public function duringSettlement(GatewayPaymentAttempt $attempt, callable $write, bool $marked = false): mixed
     {
         if (DB::transactionLevel() === 0 || self::$settling !== null || self::$operation !== null) {
             throw new RuntimeException('Settlement requires its verified invoice transaction.');
@@ -423,10 +427,12 @@ final class PaymentWriteGuard
             }
         }
         self::$settling = $stored;
+        self::$markedSettlement = $marked;
         try {
             return $write();
         } finally {
             self::$settling = null;
+            self::$markedSettlement = false;
         }
     }
 }

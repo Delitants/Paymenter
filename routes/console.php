@@ -5,6 +5,7 @@ use App\Console\Commands\CronJob;
 use App\Console\Commands\FetchEmails;
 use App\Console\Commands\ResellerClubSyncPrices;
 use App\Console\Commands\ScheduleHeartbeatCommand;
+use App\Console\Commands\SyncBTCPayPayments;
 use App\Console\Commands\SyncWavePayments;
 use App\Console\Commands\TelemetryCommand;
 use Illuminate\Support\Facades\Schedule;
@@ -23,3 +24,5 @@ Schedule::command(ResellerClubSyncPrices::class, ['--scheduled'])
 
 Schedule::command(SyncWavePayments::class)
     ->description('Confirm pending Wave invoice payments')->everyFiveMinutes()->withoutOverlapping(15)->onOneServer();
+Schedule::command(SyncBTCPayPayments::class)
+    ->description('Confirm pending BTCPay invoice payments')->everyFiveMinutes()->withoutOverlapping(15)->onOneServer();

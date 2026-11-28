@@ -52,15 +52,15 @@ final class PaymentAttempts
         return (string) BigDecimal::of($summary->total)->minus($summary->paid)->toScale(2);
     }
 
-    public function begin(Gateway $gateway, Invoice $invoice, string $merchantFingerprint, ?string $expectedCurrency = null, ?string $expectedReference = null): GatewayPaymentAttempt
+    public function begin(Gateway $gateway, Invoice $invoice, string $merchantFingerprint, ?string $expectedCurrency = null, ?string $expectedReference = null, ?string $minimumAmount = null): GatewayPaymentAttempt
     {
         if (DB::transactionLevel() !== 0) {
             throw new RuntimeException('External payment initiation requires a durable claim outside an enclosing transaction.');
         }
         Gate::authorize('update', $invoice);
 
-        return DB::transaction(function () use ($gateway, $invoice, $merchantFingerprint, $expectedCurrency, $expectedReference) {
-            $run = function () use ($gateway, $invoice, $merchantFingerprint, $expectedCurrency, $expectedReference) {
+        return DB::transaction(function () use ($gateway, $invoice, $merchantFingerprint, $expectedCurrency, $expectedReference, $minimumAmount) {
+            $run = function () use ($gateway, $invoice, $merchantFingerprint, $expectedCurrency, $expectedReference, $minimumAmount) {
                 $gateway = Gateway::whereKey($gateway->id)->lockForUpdate()->firstOrFail();
                 $this->assertCollection($gateway);
                 $dependencies = new InvoicePaymentDependencies;
@@ -98,6 +98,9 @@ final class PaymentAttempts
                 }
                 if ($expectedReference !== null) {
                     throw new RuntimeException('Checkout reference is no longer active.');
+                }
+                if ($minimumAmount !== null && BigDecimal::of($amount)->isLessThan($minimumAmount)) {
+                    throw new RuntimeException('Invoice balance is below the gateway minimum.');
                 }
                 ExtensionHelper::validateRenewalInvoice($invoice);
                 $policy = new GatewayFeePolicy;
@@ -208,12 +211,12 @@ final class PaymentAttempts
         return $attempt;
     }
 
-    public function settle(Gateway $gateway, string $reference, string $merchantFingerprint, string $amount, string $currency, string $transactionId): void
+    public function settle(Gateway $gateway, string $reference, string $merchantFingerprint, string $amount, string $currency, string $transactionId, bool $marked = false): void
     {
         if ($transactionId === '' || strlen($transactionId) > 190) {
             throw new RuntimeException('Provider transaction identity is required');
         }
-        DB::transaction(function () use ($gateway, $reference, $merchantFingerprint, $amount, $currency, $transactionId) {
+        DB::transaction(function () use ($gateway, $reference, $merchantFingerprint, $amount, $currency, $transactionId, $marked) {
             // Merchant, connected invoices in ascending order, then attempt and service.
             $gateway = Gateway::whereKey($gateway->id)->lockForUpdate()->firstOrFail();
             $id = GatewayPaymentAttempt::where('gateway_id', $gateway->id)->where('reference', $reference)->value('invoice_id');
@@ -237,7 +240,18 @@ final class PaymentAttempts
             }
             $invoice = $attempt->invoice;
             $attempt->update(['provider_transaction_id' => $transactionId]);
-            (new PaymentWriteGuard)->duringSettlement($attempt, fn () => ExtensionHelper::addPayment($invoice, $gateway, $attempt->amount, transactionId: 'gateway:' . $gateway->id . ':' . $transactionId));
+            $nativeReference = 'gateway:' . $gateway->id . ':' . $transactionId;
+            (new PaymentWriteGuard)->duringSettlement($attempt, function () use ($invoice, $gateway, $attempt, $nativeReference, $marked): void {
+                if ($marked) {
+                    $invoice->transactions()->create([
+                        'gateway_id' => $gateway->id, 'amount' => $attempt->amount, 'transaction_id' => $nativeReference,
+                        'status' => InvoiceTransactionStatus::Succeeded, 'is_credit_transaction' => false,
+                        'settlement_origin' => 'provider_marked', 'settlement_state' => 'settled',
+                    ]);
+                } else {
+                    ExtensionHelper::addPayment($invoice, $gateway, $attempt->amount, transactionId: $nativeReference);
+                }
+            }, marked: $marked);
             if ($invoice->fresh()->status !== 'paid') {
                 throw new RuntimeException('Native invoice settlement was not completed');
             }

@@ -123,7 +123,7 @@ class InvoiceTransaction extends Model implements Auditable
     {
         return Attribute::make(get: fn () => $this->status !== InvoiceTransactionStatus::Succeeded || $this->settlement_state === 'unsettled' ? 'Unsettled' : match ($this->settlement_origin) {
             'manual_record' => 'Manually settled — admin recorded',
-            'manual_capture' => 'Manually settled — gateway verified',
+            'manual_capture', 'provider_marked' => 'Manually settled — gateway verified',
             default => 'Settled',
         });
     }
