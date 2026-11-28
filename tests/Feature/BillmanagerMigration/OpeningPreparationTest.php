@@ -6,6 +6,8 @@ use App\Services\BillmanagerMigration\Opening\OpeningBackupVerifier;
 use App\Services\BillmanagerMigration\Opening\OpeningBundle;
 use App\Services\BillmanagerMigration\Opening\OpeningPreparation;
 use App\Services\BillmanagerMigration\Opening\OpeningTargetState;
+use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Events\Dispatcher;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use PHPUnit\Framework\Attributes\Group;
@@ -66,6 +68,31 @@ class OpeningPreparationTest extends TestCase
         $input['activation_cutoff'] = '2023-01-01 00:00:00';
         MigrationFixture::writeInput($p['path'], $input);
         $this->denied(fn () => (new OpeningPreparation)->prepare(OpeningBundle::load($p['path'])));
+    }
+
+    public function test_preparation_refuses_changed_holds_before_returning_a_report(): void
+    {
+        $p = MigrationFixture::input();
+        $hold = DB::table('billmanager_holds')->orderBy('id')->first();
+        $connection = DB::connection();
+        $original = $connection->getEventDispatcher();
+        $connection->setEventDispatcher(new Dispatcher);
+        $changed = false;
+        $connection->listen(static function (QueryExecuted $query) use (&$changed, $hold): void {
+            if (!$changed && preg_match('/^select \* from [`"]billmanager_holds[`"] order by [`"]id[`"] asc$/i', $query->sql)) {
+                $changed = true;
+                DB::table('billmanager_holds')->where('id', $hold->id)->update(['reason' => 'Synthetic hold change']);
+            }
+        });
+        try {
+            (new OpeningPreparation)->prepare(OpeningBundle::load($p['path']));
+            self::fail('A preparation report used a hold set that changed during the read.');
+        } catch (RuntimeException $error) {
+            self::assertSame('Migration holds changed during opening preparation.', $error->getMessage());
+            self::assertTrue($changed);
+        } finally {
+            $connection->setEventDispatcher($original);
+        }
     }
 
     public function test_all_target_rows_and_only_receipted_deltas_are_verified(): void

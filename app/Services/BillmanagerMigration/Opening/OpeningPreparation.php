@@ -61,7 +61,9 @@ final class OpeningPreparation
         ProofSchema::keys($population, ['schema_version', 'purpose', 'source_identity', 'snapshot_sha256', 'activation_cutoff', 'selected_account_ids', 'eligible_account_ids', 'eligible_source_user_ids']);
         $eligibleAccounts = [];
         $eligibleUsers = [];
+        $usersByAccount = [];
         foreach ($snapshot->rows('users') as $user) {
+            $usersByAccount[(string) $user['account']][] = $user;
             if ($user['last_login'] >= $data['activation_cutoff']) {
                 $eligibleAccounts[] = (string) $user['account'];
                 $eligibleUsers[] = (string) $user['id'];
@@ -82,14 +84,17 @@ final class OpeningPreparation
         $expectedScope = [];
         $accounts = [];
         $counts = ['candidate' => 0, 'blocked' => 0, 'excluded' => 0];
+        $holdFingerprint = self::holdFingerprint();
         foreach ($preview['entries'] as $row) {
+            $users = $usersByAccount[$row['source_account_id']] ?? [];
             $expectedScope[] = ['source_account' => $row['source_account_id'], 'owner_id' => $row['owner_user_id'], 'members' => $row['member_user_ids'], 'currency' => $row['currency'],
                 'opening' => $row['exact_amount'], 'limit' => $row['credit_limit'], 'reviewed_reasons' => $row['review_reasons']];
             $reasons = array_values(array_diff($row['review_reasons'], $policy['reviewed_reasons']));
             $ownerRecent = false;
-            foreach ($snapshot->rows('users') as $user) {
-                if ((string) $user['account'] === $row['source_account_id'] && $context->mappedId('users', (string) $user['id']) === $row['owner_user_id'] && $user['last_login'] >= $data['activation_cutoff']) {
+            foreach ($users as $user) {
+                if ($context->mappedId('users', (string) $user['id']) === $row['owner_user_id'] && $user['last_login'] >= $data['activation_cutoff']) {
                     $ownerRecent = true;
+                    break;
                 }
             }
             if (!$ownerRecent) {
@@ -98,14 +103,15 @@ final class OpeningPreparation
             if (!in_array($row['currency'], $policy['currencies'], true)) {
                 $reasons[] = 'unsupported_currency';
             }
-            $wallets = AccountWallet::where('user_id', $row['owner_user_id'])->where('currency_code', $row['currency'])->get();
             // An executable replay validates original receipts; preparation never repairs a pre-existing wallet.
-            if ($initial && $wallets->isNotEmpty()) {
-                $reasons[] = 'preexisting_wallet';
-            }
-            $cash = Credit::where('user_id', $row['owner_user_id'])->where('currency_code', $row['currency'])->get();
-            if ($initial && ($cash->count() > 1 || ($cash->isNotEmpty() && AccountAmount::parse($cash->first()->getRawOriginal('amount'))->exact() !== '0.0000'))) {
-                $reasons[] = 'unmatched_cash';
+            if ($initial) {
+                if (AccountWallet::where('user_id', $row['owner_user_id'])->where('currency_code', $row['currency'])->exists()) {
+                    $reasons[] = 'preexisting_wallet';
+                }
+                $cash = Credit::where('user_id', $row['owner_user_id'])->where('currency_code', $row['currency'])->get();
+                if ($cash->count() > 1 || ($cash->isNotEmpty() && AccountAmount::parse($cash->first()->getRawOriginal('amount'))->exact() !== '0.0000')) {
+                    $reasons[] = 'unmatched_cash';
+                }
             }
             $source = AccountAmount::parse($row['exact_amount']);
             $effective = $source->compare(AccountAmount::parse('0')) > 0 ? AccountAmount::parse($source->halfUpCents()) : $source;
@@ -114,7 +120,7 @@ final class OpeningPreparation
             $counts[$disposition]++;
             $archive = [];
             $memberMappings = [];
-            foreach ([['accounts', $row['source_account_id']], ...array_map(fn ($user) => ['users', (string) $user['id']], array_values(array_filter($snapshot->rows('users'), fn ($user) => (string) $user['account'] === $row['source_account_id'])))] as [$table, $id]) {
+            foreach ([['accounts', $row['source_account_id']], ...array_map(fn ($user) => ['users', (string) $user['id']], $users)] as [$table, $id]) {
                 $mapping = DB::table('billmanager_mappings')->where(['source_host' => $data['source_identity'], 'source_table' => $table, 'source_id' => $id])->sole();
                 $record = (array) DB::table('billmanager_records')->where(['import_id' => $mapping->import_id, 'source_table' => $table, 'source_id' => $id])->sole();
                 $archive[] = ['mapping' => (array) $mapping, 'record' => $record];
@@ -124,11 +130,14 @@ final class OpeningPreparation
             }
             $accounts[] = [...end($expectedScope), 'source_system' => 'billmanager:' . $data['source_identity'], 'member_mappings' => $memberMappings, 'effective_opening' => $effective->exact(),
                 'rounding_delta' => $effective->subtract($source)->exact(), 'limit_exact' => $limit->exact(), 'disposition' => $disposition, 'blocked_reasons' => $reasons,
-                'archive_fingerprint' => hash('sha256', CanonicalPolicy::bytes($archive)), 'hold_fingerprint' => self::holdFingerprint(),
+                'archive_fingerprint' => hash('sha256', CanonicalPolicy::bytes($archive)), 'hold_fingerprint' => $holdFingerprint,
                 'receipt_exclusions' => NativeOpeningHistory::current($row['owner_user_id'], $row['currency'])];
         }
         if ($expectedScope !== $bundle->accounts()) {
             throw new RuntimeException('Opening scope or reason acknowledgements changed.');
+        }
+        if ($holdFingerprint !== self::holdFingerprint()) {
+            throw new RuntimeException('Migration holds changed during opening preparation.');
         }
 
         return ['schema_version' => 1, 'purpose' => 'inactive-opening-preparation', 'application_authorized' => false, 'source_identity' => $data['source_identity'],
