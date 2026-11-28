@@ -5,6 +5,7 @@ namespace App\Services\Accounts;
 use App\Enums\InvoiceTransactionStatus;
 use App\Models\AccountMovement;
 use App\Models\AccountWallet;
+use App\Models\Credit;
 use App\Models\Invoice;
 use App\Models\InvoicePaidProcessing;
 use App\Models\InvoiceTransaction;
@@ -31,6 +32,10 @@ final class DepositReversalReceipt
         $hint = AccountMovement::where('kind', 'deposit')->where('reference_type', InvoicePaidProcessing::class)->where('reference_id', $operation->invoice_id)->first();
         if (!$hint) {
             $invoice = Invoice::findOrFail($operation->invoice_id);
+            if ($operation->gateway?->extension === 'BTCPay' && $invoice->items()->where(fn ($items) =>
+                $items->where('kind', 'credit_allocation')->orWhere('reference_type', Credit::class))->exists()) {
+                throw new RuntimeException('BTCPay account top-up reversals require the original managed deposit receipt.');
+            }
             if ($invoice->items()->where('kind', 'credit_allocation')->exists() && AccountWallet::where('user_id', $invoice->user_id)->where('currency_code', $invoice->currency_code)->exists()) {
                 throw new RuntimeException('Managed deposit refunds require already posted original principal.');
             }
@@ -81,7 +86,7 @@ final class DepositReversalReceipt
                 throw new RuntimeException('Refund principal exceeds the original credited slice.');
             }
         } else {
-            if ($transaction->settlement_origin !== 'manual_record' || $operation->amount !== $transaction->amount ||
+            if (!$transaction->hasManualSettlementOrigin() || $operation->amount !== $transaction->amount ||
                 $operation->result_transaction_id !== $transaction->id || $operation->state !== 'succeeded' ||
                 $operation->outcome_code !== ($operation->kind === 'manual_unsettle' ? 'unsettled' : 'settled') ||
                 $transaction->settlement_state !== ($operation->kind === 'manual_unsettle' ? 'unsettled' : 'settled') ||

@@ -109,6 +109,11 @@ class InvoiceTransaction extends Model implements Auditable
         return $this->settlement_origin !== null || $this->original_allocation !== null || PaymentOperation::where(fn ($q) => $q->where('original_transaction_id', $this->id)->orWhere('result_transaction_id', $this->id))->exists();
     }
 
+    public function hasManualSettlementOrigin(): bool
+    {
+        return in_array($this->settlement_origin, ['manual_record', 'provider_marked'], true);
+    }
+
     public function invoice()
     {
         return $this->belongsTo(Invoice::class);

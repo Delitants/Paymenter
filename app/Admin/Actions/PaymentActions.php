@@ -34,6 +34,7 @@ use Filament\Schemas\Components\Utilities\Get;
 use Filament\Tables\Columns\TextColumn;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Paymenter\Extensions\Gateways\BTCPay\Operations as BTCPayOperations;
 use Paymenter\Extensions\Gateways\Klarna\ConversionQuote;
 use RuntimeException;
 
@@ -117,7 +118,11 @@ final class PaymentActions
                 return $record->gateway && self::allowed('refund', $record->invoice, $record->gateway) && !PaymentOperation::where('original_transaction_id', $record->id)->whereIn('state', ['queued', 'processing', 'pending', 'uncertain'])->exists() &&
                     (!$provider || ($record->settlement_origin !== 'manual_record' && (app(GatewayOperations::class)->for($record->gateway)->capabilities()['refund'] ?? false)));
             })
-            ->modalDescription($provider ? 'Submit once against the original provider payment. Unknown or pending results reserve funds until reconciliation. A verified void is distinct from a refund.' : 'Record a refund already completed outside Paymenter. This action does not move money at the gateway.')
+            ->modalDescription(fn (InvoiceTransaction $record) => $provider
+                ? ($record->gateway?->extension === 'BTCPay'
+                    ? 'Create a BTCPay refund claim for this payment. Open the link from Payment Operations. Paymenter records the refund after it verifies the completed payout.'
+                    : 'Submit once against the original provider payment. Unknown or pending results reserve funds until reconciliation. A verified void is distinct from a refund.')
+                : 'Record a refund already completed outside Paymenter.')
             ->schema([
                 Hidden::make('payment_binding')->default(fn (InvoiceTransaction $record) => self::binding($record)),
                 Select::make('refund_mode')->label('Refund amount')->options(['full' => 'Full eligible amount', 'partial' => 'Partial amount'])->default('full')->required()->live(),
@@ -183,10 +188,10 @@ final class PaymentActions
 
     private static function transition(bool $restore): Action
     {
-        return Action::make($restore ? 'manual_restore' : 'manual_unsettle')->label($restore ? 'Restore manual settlement' : 'Mark manual receipt unsettled')
-            ->visible(fn (InvoiceTransaction $record) => $record->settlement_origin === 'manual_record' && $record->settlement_state === ($restore ? 'unsettled' : 'settled') && $record->gateway &&
+        return Action::make($restore ? 'manual_restore' : 'manual_unsettle')->label($restore ? 'Restore manual settlement' : 'Mark manual settlement unsettled')
+            ->visible(fn (InvoiceTransaction $record) => $record->hasManualSettlementOrigin() && $record->settlement_state === ($restore ? 'unsettled' : 'settled') && $record->gateway &&
                 self::allowed($restore ? 'manual_settle' : 'manual_unsettle', $record->invoice, $record->gateway) && !PaymentOperation::where('original_transaction_id', $record->id)->whereIn('kind', ['provider_refund', 'external_refund'])->whereIn('state', RefundAllocation::RESERVED)->exists())
-            ->modalDescription('Record a correction while preserving the original payment and history. No provider refund or void is issued.')
+            ->modalDescription('Update the settlement in Paymenter and keep the original receipt and history.')
             ->schema([Hidden::make('payment_binding')->default(fn (InvoiceTransaction $record) => self::binding($record)), ...self::auditFields()])
             ->action(function (InvoiceTransaction $record, array $data, Action $action) use ($restore) {
                 self::perform(function () use ($record, $data, $restore) {
@@ -271,6 +276,29 @@ final class PaymentActions
             }, $action));
     }
 
+    public static function btcpayRefundClaim(): Action
+    {
+        return Action::make('btcpay_refund_claim')->label('Open BTCPay refund claim')
+            ->visible(fn (PaymentOperation $record) => self::btcpayRefundLink($record) !== null)
+            ->url(fn (PaymentOperation $record) => self::btcpayRefundLink($record), shouldOpenInNewTab: true);
+    }
+
+    public static function btcpayRefundLink(PaymentOperation $record): ?string
+    {
+        $gateway = $record->gateway;
+        if ($gateway?->extension !== 'BTCPay' || $record->kind !== 'provider_refund' || $record->state !== 'pending'
+            || !self::allowed('refund', $record->invoice, $gateway)) {
+            return null;
+        }
+        try {
+            $adapter = app(GatewayOperations::class)->for($gateway);
+
+            return $adapter instanceof BTCPayOperations ? $adapter->claimLink($record) : null;
+        } catch (RuntimeException) {
+            return null;
+        }
+    }
+
     private static function nativePostingRequired(PaymentOperation $record): bool
     {
         return in_array($record->kind, ['provider_refund', 'external_refund'], true) && in_array($record->state, ['succeeded', 'failed'], true) && AccountReversalReservation::where('payment_operation_id', $record->id)->where('state', 'reserved')->where('posting_required', true)->exists();
@@ -281,7 +309,8 @@ final class PaymentActions
         return [
             TextColumn::make('settlement_label')->label('Settlement')->badge(),
             TextColumn::make('settlement_origin')->label('Provenance')->formatStateUsing(fn ($state) => match ($state) {
-                'manual_record' => 'Admin recorded', 'manual_capture' => 'Admin requested / gateway verified', default => 'Automatic / historical',
+                'manual_record' => 'Admin recorded', 'manual_capture' => 'Admin requested / gateway verified',
+                'provider_marked' => 'Manually marked at gateway', default => 'Automatic / historical',
             })->placeholder('Automatic / historical'),
             TextColumn::make('invoice.currency_code')->label('Currency'),
             TextColumn::make('settlement_actor')->label('Administrator')->state(fn (InvoiceTransaction $record) => self::receiptOperation($record)?->actor_snapshot['name'] ?? null)->toggleable(isToggledHiddenByDefault: true),
@@ -325,6 +354,9 @@ final class PaymentActions
         return match ($record->outcome_code) {
             'provider_void' => 'Gateway verified void', 'external_recorded' => 'Completed external refund — admin recorded',
             'manual_recorded' => 'Manually settled — admin recorded', 'unsettled' => 'Unsettled', 'settled' => 'Manual settlement restored',
+            'btcpay_awaiting_claim' => 'BTCPay claim ready',
+            'btcpay_payout_pending' => 'BTCPay payout pending',
+            'btcpay_claim_archived' => 'BTCPay claim closed without payout',
             default => match ($record->state) {
                 'succeeded' => $record->kind === 'provider_capture' ? 'Manually settled — gateway verified' : 'Gateway verified refund',
                 'failed' => 'Failed — provider confirmed', 'queued' => 'Queued — not executed',

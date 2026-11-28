@@ -51,11 +51,14 @@ final class ProviderOperations
         (new RefundAllocation)->quote($transaction, $amount, $includeFee);
         $adapter = app(GatewayOperations::class)->for($gateway);
         $this->capability($adapter, 'refund');
+        $blockingStates = ($adapter->capabilities()['serialized_refunds'] ?? false)
+            ? ['queued', 'processing', 'pending', 'uncertain']
+            : ['processing', 'uncertain'];
         $providerReference = $this->originalReference($transaction);
         $merchantFingerprint = $adapter->fingerprint();
         $context = $adapter->prepare($invoice, $transaction, 'provider_refund', $providerReference, $amount, $invoice->currency_code);
         $this->assertContext($context, $invoice, $gateway, $amount, $providerReference, $transaction);
-        $operation = $this->transaction($invoice->id, $gateway->id, $actor, function () use ($actor, $transaction, $invoice, $gateway, $policy, $journal, $amount, $includeFee, $reason, $effectiveAt, $requestKey, $fingerprint, $identity, $context, $merchantFingerprint) {
+        $operation = $this->transaction($invoice->id, $gateway->id, $actor, function () use ($actor, $transaction, $invoice, $gateway, $policy, $journal, $amount, $includeFee, $reason, $effectiveAt, $requestKey, $fingerprint, $identity, $context, $merchantFingerprint, $blockingStates) {
             [$invoice, $gateway] = $this->lock($invoice->id, $gateway->id);
             $policy->authorize($actor, 'refund', $invoice, $gateway);
             $transaction = InvoiceTransaction::whereKey($transaction->id)->lockForUpdate()->firstOrFail();
@@ -67,8 +70,8 @@ final class ProviderOperations
             }
             $this->sameGateway($gateway, $merchantFingerprint);
             $this->assertContext($context, $invoice, $gateway, $amount, $this->originalReference($transaction), $transaction);
-            if (PaymentOperation::where('original_transaction_id', $transaction->id)->whereIn('state', ['processing', 'uncertain'])->lockForUpdate()->exists()) {
-                throw new RuntimeException('An uncertain refund requires reconciliation before another refundable claim.');
+            if (PaymentOperation::where('original_transaction_id', $transaction->id)->whereIn('state', $blockingStates)->lockForUpdate()->exists()) {
+                throw new RuntimeException('An outstanding refund requires reconciliation before another refundable claim.');
             }
             $quote = (new RefundAllocation)->quote($transaction, $amount, $includeFee);
             if (!BigDecimal::of($context['already_refunded'])->isEqualTo($transaction->refunded_amount)) {
@@ -191,7 +194,17 @@ final class ProviderOperations
 
     private function execute(User $actor, PaymentOperation $operation): PaymentOperation
     {
-        $claimed = $this->transaction($operation->invoice_id, $operation->gateway_id, $actor, function () use ($actor, $operation) {
+        $prepared = null;
+        if ($operation->state === 'queued') {
+            $gateway = $operation->gateway;
+            $adapter = app(GatewayOperations::class)->for($gateway);
+            if ($adapter instanceof PreparedAdapter) {
+                (new OperationPolicy)->authorize($actor, $operation->kind === 'provider_capture' ? 'capture' : 'refund', $operation->invoice, $gateway);
+                $this->sameGateway($gateway, $operation->payload['gateway_fingerprint']);
+                $prepared = $adapter->prepareExecution($operation);
+            }
+        }
+        $claimed = $this->transaction($operation->invoice_id, $operation->gateway_id, $actor, function () use ($actor, $operation, $prepared) {
             [$invoice, $gateway] = $this->lock($operation->invoice_id, $operation->gateway_id);
             (new OperationPolicy)->authorize($actor, $operation->kind === 'provider_capture' ? 'capture' : 'refund', $invoice, $gateway);
             $stored = PaymentOperation::whereKey($operation->id)->lockForUpdate()->firstOrFail();
@@ -205,7 +218,11 @@ final class ProviderOperations
             if ($operation->state !== 'queued') {
                 return false;
             }
-            $this->capability(app(GatewayOperations::class)->for($gateway), $operation->kind === 'provider_capture' ? 'capture' : 'refund');
+            $adapter = app(GatewayOperations::class)->for($gateway);
+            $this->capability($adapter, $operation->kind === 'provider_capture' ? 'capture' : 'refund');
+            if ($adapter instanceof PreparedAdapter && $prepared === null) {
+                throw new RuntimeException('The queued request requires its authenticated preflight before execution.');
+            }
             $this->sameGateway($gateway, $operation->payload['gateway_fingerprint']);
             if ($operation->kind === 'provider_capture') {
                 $attempt = $this->captureAttempt($invoice, $gateway, $operation->payload['provider_context']['original_reference']);
@@ -231,7 +248,9 @@ final class ProviderOperations
             $adapter = app(GatewayOperations::class)->for($operation->gateway);
             $this->sameGateway($operation->gateway, $operation->payload['gateway_fingerprint']);
             (new OperationPolicy)->authorize($actor, $permission, $operation->invoice, $operation->gateway);
-            $result = $adapter->execute($operation);
+            $result = $adapter instanceof PreparedAdapter
+                ? $adapter->executePrepared($operation, $prepared)
+                : $adapter->execute($operation);
             // A write response is only a discovery hint. Separate GET/query is mandatory.
             $hint = new OperationResult($result->state === 'uncertain' ? 'uncertain' : 'pending', $result->providerReference, outcomeCode: 'awaiting_readback');
             $this->finalize($actor, $operation, $hint, $permission);

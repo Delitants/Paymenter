@@ -2,27 +2,38 @@
 
 namespace Tests\Feature\BillmanagerMigration;
 
+use App\Admin\Actions\PaymentActions;
 use App\Helpers\ExtensionHelper;
+use App\Models\AccountWallet;
+use App\Models\Credit;
 use App\Models\Gateway;
 use App\Models\GatewayPaymentAttempt;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
+use App\Models\PaymentOperation;
+use App\Models\Role;
 use App\Models\User;
+use App\Redactors\SecretRedactor;
 use App\Services\Gateways\CollectionDisabledException;
+use App\Services\Gateways\Operations\ManualSettlements;
+use App\Services\Gateways\Operations\ProviderOperations;
 use Illuminate\Http\Client\Factory;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Str;
 use Paymenter\Extensions\Gateways\BTCPay\BTCPay;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
+use Tests\Concerns\UsesAccountWallet;
 use Tests\Concerns\UsesCommittedDatabase;
 use Tests\Concerns\UsesTaxedGatewayInvoice;
 use Tests\TestCase;
 
 class BTCPayTest extends TestCase
 {
-    use UsesCommittedDatabase, UsesTaxedGatewayInvoice;
+    use UsesAccountWallet, UsesCommittedDatabase, UsesTaxedGatewayInvoice;
 
     private const ORIGIN = 'https://btcpay.example.test';
 
@@ -89,6 +100,31 @@ class BTCPayTest extends TestCase
             'CONTENT_TYPE' => 'application/json',
             'HTTP_BTCPAY_SIG' => $signature ?? 'sha256=' . hash_hmac('sha256', $raw, self::SECRET),
         ], $raw);
+    }
+
+    private function admin(): User
+    {
+        $role = Role::create(['name' => 'Synthetic finance administrator', 'permissions' => ['*']]);
+        $admin = User::factory()->create(['role_id' => $role->id]);
+        $this->actingAs($admin);
+
+        return $admin;
+    }
+
+    private function settleConfirmed(Gateway $gateway, string $method): void
+    {
+        $this->fakeProvider(fn (Request $request) => Http::response(str_contains($request->url(), '/payment-methods')
+            ? [['paymentMethodId' => $method, 'due' => '0', 'payments' => [['status' => 'Settled']]]]
+            : $this->providerInvoice(['status' => 'Settled', 'paidAmount' => '12.34'])));
+        $this->webhook($gateway)->assertNoContent();
+    }
+
+    private function deposit(Invoice $invoice): AccountWallet
+    {
+        $wallet = $this->wallet($invoice->user, '0', '10');
+        $invoice->items()->sole()->update(['kind' => 'credit_allocation', 'tax_amount' => '0.00', 'reference_type' => Credit::class]);
+
+        return $wallet;
     }
 
     public function test_configuration_checks_store_identity_read_only(): void
@@ -248,6 +284,191 @@ class BTCPayTest extends TestCase
         $this->assertSame('provider_marked', $payment->settlement_origin);
         $this->assertSame('settled', $payment->settlement_state);
         $this->assertStringContainsString('Manually settled', $payment->settlement_label);
+    }
+
+    public function test_admin_can_correct_and_restore_a_provider_marked_receipt(): void
+    {
+        [$invoice, $gateway] = $this->fixture(['admin_payment_operations_enabled' => '1']);
+        $wallet = $this->deposit($invoice);
+        $this->start($invoice->fresh(), $gateway);
+        $this->fakeProvider(fn () => Http::response($this->providerInvoice(['status' => 'Settled', 'additionalStatus' => 'Marked'])));
+        $this->webhook($gateway)->assertNoContent();
+        $receipt = $invoice->transactions()->sole();
+        $this->assertSame('12.3400', $wallet->fresh()->balance);
+        $reference = $receipt->transaction_id;
+        $admin = $this->admin();
+        $manual = new ManualSettlements;
+        $key = (string) Str::uuid();
+        $correction = $manual->unsettle($admin, $receipt, 'Correct the provider manual mark', '2026-10-01T13:00:00Z', $key);
+        $this->assertSame('succeeded', $correction->state);
+        $this->assertSame($correction->id, $manual->unsettle($admin, $receipt->fresh(), 'Correct the provider manual mark', '2026-10-01T13:00:00Z', $key)->id);
+        $this->assertSame('Unsettled', $receipt->fresh()->settlement_label);
+        $this->webhook($gateway)->assertNoContent();
+        $this->assertSame('pending', $invoice->fresh()->status);
+        $this->assertSame('unsettled', $receipt->fresh()->settlement_state);
+        $this->assertSame('0.0000', $wallet->fresh()->balance);
+
+        $manual->restore($admin, $receipt->fresh(), 'Provider receipt confirmed by finance', '2026-10-01T14:00:00Z', (string) Str::uuid());
+        $this->assertSame('paid', $invoice->fresh()->status);
+        $this->assertSame('provider_marked', $receipt->fresh()->settlement_origin);
+        $this->assertSame('settled', $receipt->fresh()->settlement_state);
+        $this->assertSame($reference, $receipt->fresh()->transaction_id);
+        $this->assertSame(1, $invoice->transactions()->count());
+        $this->assertSame('12.3400', $wallet->fresh()->balance);
+    }
+
+    public function test_legacy_credit_unsettlement_requires_original_managed_deposit(): void
+    {
+        [$invoice, $gateway] = $this->fixture(['admin_payment_operations_enabled' => '1']);
+        $invoice->items()->sole()->update(['kind' => 'credit_allocation', 'tax_amount' => '0.00', 'reference_type' => Credit::class]);
+        $this->start($invoice->fresh(), $gateway);
+        $this->fakeProvider(fn () => Http::response($this->providerInvoice(['status' => 'Settled', 'additionalStatus' => 'Marked'])));
+        $this->webhook($gateway)->assertNoContent();
+        $credit = $invoice->user->credits()->sole();
+        $this->assertSame('12.34', $credit->amount);
+        $receipt = $invoice->transactions()->sole();
+        try {
+            (new ManualSettlements)->unsettle($this->admin(), $receipt, 'Check legacy credit reversal', '2026-10-01T13:00:00Z', (string) Str::uuid());
+            $this->fail('Unsettlement accepted without a reversible original top-up.');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('original managed deposit receipt', $e->getMessage());
+        }
+        $this->assertSame('paid', $invoice->fresh()->status);
+        $this->assertSame('settled', $receipt->fresh()->settlement_state);
+        $this->assertSame('12.34', $credit->fresh()->amount);
+        $this->assertSame(0, PaymentOperation::count());
+    }
+
+    public static function refundPayoutMethods(): array
+    {
+        $preimage = str_repeat('a', 64);
+
+        return [
+            'on-chain' => ['BTC-CHAIN', ['ProofType' => 'PayoutTransactionOnChainBlob', 'TransactionId' => str_repeat('c', 64), 'Accounted' => true]],
+            'lightning' => ['BTC-LN', ['ProofType' => 'PayoutLightningBlob', 'PaymentHash' => hash('sha256', hex2bin($preimage)), 'Preimage' => $preimage]],
+        ];
+    }
+
+    #[DataProvider('refundPayoutMethods')]
+    public function test_refund_reconciles_a_lost_response_and_posts_only_after_verified_payout(string $method, array $proof): void
+    {
+        [$invoice, $gateway] = $this->fixture(['admin_payment_operations_enabled' => '1']);
+        $wallet = $this->deposit($invoice);
+        $this->start($invoice->fresh(), $gateway);
+        $this->settleConfirmed($gateway, $method);
+        $receipt = $invoice->transactions()->sole();
+        $admin = $this->admin();
+        $key = (string) Str::uuid();
+        $created = [];
+        $completed = [];
+        $writes = 0;
+        $pullReads = 0;
+        $failRead = null;
+        $malformedPayout = false;
+        $this->fakeProvider(function (Request $request) use (&$created, &$completed, &$writes, &$pullReads, &$failRead, &$malformedPayout, $method, $proof) {
+            $path = parse_url($request->url(), PHP_URL_PATH);
+            if ($request->method() === 'POST') {
+                $this->assertSame('/api/v1/stores/FixtureStore/invoices/' . self::INVOICE_ID . '/refund', $path);
+                $this->assertSame('Custom', $request['refundVariant']);
+                $this->assertSame('USD', $request['customCurrency']);
+                $this->assertSame($method, $request['payoutMethodId']);
+                $id = 'FixturePullPayment' . ++$writes;
+                $created[$id] = ['id' => $id, 'name' => $request['name'], 'description' => $request['description'],
+                    'currency' => 'USD', 'amount' => $request['customAmount'], 'archived' => false, 'autoApproveClaims' => false];
+
+                // BTCPay accepted the request, then the body was lost in transport.
+                return $writes === 1 ? Http::failedConnection() : Http::response($created[$id]);
+            }
+            if (str_ends_with($path, '/payment-methods')) {
+                return Http::response([['paymentMethodId' => $method, 'due' => '0', 'payments' => [['status' => 'Settled']]]]);
+            }
+            if (str_ends_with($path, '/invoices/' . self::INVOICE_ID)) {
+                return Http::response($this->providerInvoice(['status' => 'Settled', 'paidAmount' => '12.34']));
+            }
+            if ($path === '/api/v1/stores/FixtureStore/pull-payments') {
+                if (++$pullReads === $failRead) {
+                    return Http::failedConnection();
+                }
+
+                return Http::response(array_values($created));
+            }
+            if (preg_match('~/pull-payments/(FixturePullPayment[0-9]+)/payouts$~', $path, $matches)) {
+                $id = $matches[1];
+                if ($malformedPayout) {
+                    return Http::response('{}');
+                }
+                if (!isset($completed[$id])) {
+                    return Http::response([]);
+                }
+
+                return Http::response([$completed[$id] + ['id' => $id . 'Payout', 'pullPaymentId' => $id,
+                    'originalCurrency' => 'USD', 'originalAmount' => $created[$id]['amount'], 'payoutMethodId' => $method,
+                    'payoutCurrency' => 'BTC', 'payoutAmount' => '0.00010000', 'state' => 'Completed',
+                    'paymentProof' => $proof]]);
+            }
+            $this->fail('Unexpected BTCPay refund lookup.');
+        });
+        $operations = new ProviderOperations;
+        $created['ExternalClaim'] = ['id' => 'ExternalClaim', 'name' => 'Refund with a custom name', 'archived' => false];
+        try {
+            $operations->refund($admin, $receipt, '5.00', false, 'Synthetic partial refund', $key);
+            $this->fail('An unmapped external claim was ignored.');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('unbound BTCPay pull payment', $e->getMessage());
+        }
+        $this->assertSame(0, $writes);
+        $this->assertSame(0, PaymentOperation::count());
+        unset($created['ExternalClaim']);
+
+        $failRead = $pullReads + 2;
+        try {
+            $operations->refund($admin, $receipt, '5.00', false, 'Synthetic partial refund', $key);
+            $this->fail('An unsuccessful execution preflight was ignored.');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('could not verify', $e->getMessage());
+        }
+        $queued = PaymentOperation::sole();
+        $this->assertSame('queued', $queued->state);
+        $this->assertSame(0, $writes);
+        $partial = $operations->resume($admin, $queued);
+        $this->assertSame('pending', $partial->state);
+        $this->assertSame('FixturePullPayment1', $partial->provider_reference);
+        $this->assertArrayNotHasKey('provider_reference', $partial->toArray());
+        $this->assertArrayNotHasKey('outcome_evidence', $partial->toArray());
+        $this->assertSame(['provider_reference' => SecretRedactor::class], $partial->getAttributeModifiers());
+        $this->assertSame(self::ORIGIN . '/pull-payments/FixturePullPayment1', PaymentActions::btcpayRefundLink($partial));
+        $this->actingAs($invoice->user);
+        $this->assertNull(PaymentActions::btcpayRefundLink($partial));
+        $this->actingAs($admin);
+        $this->assertSame('0.00', $receipt->fresh()->refunded_amount);
+        $this->assertSame('12.3400', $wallet->fresh()->balance);
+        $this->assertSame($partial->id, $operations->refund($admin, $receipt->fresh(), '5.00', false, 'Synthetic partial refund', $key)->id);
+        $this->assertSame(1, $writes);
+        $created['FixturePullPayment1']['archived'] = true;
+        $malformedPayout = true;
+        $this->assertSame('uncertain', $operations->reconcile($admin, $partial)->state);
+        $this->assertSame('12.3400', $wallet->fresh()->balance);
+        $malformedPayout = false;
+        $completed['FixturePullPayment1'] = ['pullPaymentId' => 'UnrelatedPullPayment'];
+        $this->assertSame('uncertain', $operations->reconcile($admin, $partial)->state);
+        $this->assertSame('12.3400', $wallet->fresh()->balance);
+        $completed['FixturePullPayment1'] = ['paymentProof' => null];
+        $this->assertSame('uncertain', $operations->reconcile($admin, $partial)->state);
+        $this->assertSame('0.00', $receipt->fresh()->refunded_amount);
+        $completed['FixturePullPayment1'] = ['paymentProof' => $proof + ['proofType' => 'ManualPayoutProof']];
+        $this->assertSame('uncertain', $operations->reconcile($admin, $partial)->state);
+        $completed['FixturePullPayment1'] = [];
+        $this->assertSame('succeeded', $operations->reconcile($admin, $partial)->state);
+        $this->assertNull(PaymentActions::btcpayRefundLink($partial->fresh()));
+        $this->assertSame('5.00', $receipt->fresh()->refunded_amount);
+        $this->assertSame('7.3400', $wallet->fresh()->balance);
+        $remaining = $operations->refund($admin, $receipt->fresh(), '7.34', false, 'Synthetic remaining refund', (string) Str::uuid());
+        $this->assertSame('pending', $remaining->state);
+        $completed['FixturePullPayment2'] = [];
+        $this->assertSame('succeeded', $operations->reconcile($admin, $remaining)->state);
+        $this->assertSame('12.34', $receipt->fresh()->refunded_amount);
+        $this->assertSame('0.0000', $wallet->fresh()->balance);
+        $this->assertSame(2, $writes);
     }
 
     public function test_scheduled_reconciliation_recovers_a_missed_confirmation(): void

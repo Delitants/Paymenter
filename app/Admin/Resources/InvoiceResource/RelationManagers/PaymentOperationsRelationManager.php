@@ -43,10 +43,11 @@ class PaymentOperationsRelationManager extends RelationManager
             })->toggleable(isToggledHiddenByDefault: true),
             TextColumn::make('reason')->wrap(),
             TextColumn::make('reference')->state(fn (PaymentOperation $record) => PaymentActions::reference($record))->wrap(),
-            TextColumn::make('provider_reference')->label('Provider result reference')->wrap(),
+            TextColumn::make('provider_reference')->label('Provider result reference')
+                ->state(fn (PaymentOperation $record) => $record->hasBTCPayClaimReference() ? null : $record->provider_reference)->wrap(),
             TextColumn::make('effective_at')->label('Effective time (UTC)')->dateTime()->timezone('UTC'),
             TextColumn::make('created_at')->label('Recorded time (UTC)')->dateTime()->timezone('UTC'),
             TextColumn::make('request_key')->label('Request UUID')->toggleable(isToggledHiddenByDefault: true),
-        ])->defaultSort('id', 'desc')->recordActions([PaymentActions::resume(), PaymentActions::reconcile()]);
+        ])->defaultSort('id', 'desc')->recordActions([PaymentActions::btcpayRefundClaim(), PaymentActions::resume(), PaymentActions::reconcile()]);
     }
 }

@@ -4,11 +4,14 @@ namespace Paymenter\Extensions\Gateways\BTCPay;
 
 use App\Attributes\ExtensionMeta;
 use App\Classes\Extension\Gateway;
+use App\Enums\InvoiceTransactionStatus;
 use App\Models\Gateway as GatewayRecord;
 use App\Models\GatewayPaymentAttempt;
 use App\Models\Invoice;
+use App\Models\PaymentOperation;
 use App\Services\BillmanagerMigration\MigrationHeldException;
 use App\Services\Gateways\CollectionDisabledException;
+use App\Services\Gateways\Operations\Adapter;
 use App\Services\Gateways\PaymentAttempts;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
@@ -43,6 +46,11 @@ final class BTCPay extends Gateway
         return true;
     }
 
+    public function paymentOperations(): ?Adapter
+    {
+        return $this->gatewayRecord ? new Operations($this->gatewayRecord) : null;
+    }
+
     public function canUseGateway($total, $currency, $type, $items): bool
     {
         try {
@@ -75,7 +83,7 @@ final class BTCPay extends Gateway
             ->where('state', 'open')->whereNull('provider_reference')->update(['state' => 'initializing'])) {
             $remote = $store->createInvoice([
                 'type' => 'Standard', 'amount' => $attempt->amount, 'currency' => $attempt->currency_code,
-                'metadata' => ['orderId' => $this->orderId($attempt)],
+                'metadata' => ['orderId' => Greenfield::orderId($attempt)],
                 'checkout' => ['speedPolicy' => 'MediumSpeed', 'paymentTolerance' => 0,
                     'redirectURL' => route('invoices.show', $invoice), 'redirectAutomatically' => false],
             ]);
@@ -105,12 +113,16 @@ final class BTCPay extends Gateway
             throw new RuntimeException('BTCPay merchant identity changed.');
         }
         $ledger->assertInvoice($attempt->invoice);
-        if ($attempt->state !== 'expired') {
+        $unsettled = $this->wasManuallyUnsettled($attempt);
+        if ($attempt->state !== 'expired' && !$unsettled) {
             $ledger->validate($gateway, $reference, $store->merchantFingerprint(), $attempt->amount, $attempt->currency_code);
         }
         $remote = $this->readInvoice($store, $attempt);
         if (!$remote) {
             return 'pending';
+        }
+        if ($unsettled) {
+            return 'review';
         }
         $status = $remote['status'] ?? null;
         $additional = $remote['additionalStatus'] ?? null;
@@ -122,7 +134,7 @@ final class BTCPay extends Gateway
         if ($status === 'Settled') {
             $marked = $additional === 'Marked';
             if (!$marked && ($additional !== 'None' || !$received?->isEqualTo($attempt->amount)
-                || !$this->fullyConfirmed($store->paymentMethods($remote['id'])))) {
+                || !Greenfield::confirmedMethods($store->paymentMethods($remote['id'])))) {
                 return 'review';
             }
             $ledger->settle($gateway, $reference, $store->merchantFingerprint(), $attempt->amount, $attempt->currency_code,
@@ -139,6 +151,22 @@ final class BTCPay extends Gateway
 
         return in_array($status, ['New', 'Processing'], true) && in_array($additional, ['None', 'PaidPartial'], true)
             ? 'pending' : 'review';
+    }
+
+    private function wasManuallyUnsettled(GatewayPaymentAttempt $attempt): bool
+    {
+        if ($attempt->state !== 'paid' || !$attempt->provider_reference || $attempt->provider_transaction_id !== 'invoice:' . $attempt->provider_reference
+            || $attempt->invoice->user_id !== $attempt->user_id || $attempt->invoice->currency_code !== $attempt->currency_code) {
+            return false;
+        }
+        $receipt = $attempt->invoice->transactions()->where('gateway_id', $attempt->gateway_id)
+            ->where('transaction_id', 'gateway:' . $attempt->gateway_id . ':' . $attempt->provider_transaction_id)
+            ->where('amount', $attempt->amount)->where('status', InvoiceTransactionStatus::Succeeded)->where('is_credit_transaction', false)
+            ->where('settlement_origin', 'provider_marked')->where('settlement_state', 'unsettled')->first();
+
+        return $receipt && PaymentOperation::where('invoice_id', $attempt->invoice_id)->where('gateway_id', $attempt->gateway_id)
+            ->where('original_transaction_id', $receipt->id)->where('result_transaction_id', $receipt->id)
+            ->where('kind', 'manual_unsettle')->where('state', 'succeeded')->where('outcome_code', 'unsettled')->exists();
     }
 
     public function notify(Request $request, GatewayRecord $gateway): Response
@@ -189,14 +217,14 @@ final class BTCPay extends Gateway
     {
         if ($attempt->provider_reference) {
             $remote = $store->invoice($attempt->provider_reference);
-            $this->assertInvoice($store, $attempt, $remote);
+            $store->assertInvoice($remote, $attempt);
 
             return $remote;
         }
         if ($attempt->state !== 'initializing') {
             return null;
         }
-        $matches = $store->findInvoiceIds($this->orderId($attempt));
+        $matches = $store->findInvoiceIds(Greenfield::orderId($attempt));
         if ($matches === []) {
             return null;
         }
@@ -214,54 +242,13 @@ final class BTCPay extends Gateway
 
     private function bindInvoice(Greenfield $store, GatewayPaymentAttempt $attempt, array $remote): void
     {
-        $this->assertInvoice($store, $attempt, $remote);
+        $store->assertInvoice($remote, $attempt);
         GatewayPaymentAttempt::whereKey($attempt->id)->where('state', 'initializing')->whereNull('provider_reference')
             ->update(['provider_reference' => $remote['id'], 'provider_webhook_reference' => $remote['id'], 'state' => 'open']);
         $attempt->refresh();
         if ($attempt->provider_reference !== $remote['id'] || $attempt->provider_webhook_reference !== $remote['id']) {
             throw new RuntimeException('BTCPay invoice binding changed during checkout.');
         }
-    }
-
-    private function assertInvoice(Greenfield $store, GatewayPaymentAttempt $attempt, array $remote): void
-    {
-        $id = $remote['id'] ?? null;
-        $amount = Greenfield::decimal($remote['amount'] ?? null);
-        $tolerance = $remote['checkout']['paymentTolerance'] ?? null;
-        if (!Greenfield::validId($id) || ($attempt->provider_reference && $attempt->provider_reference !== $id)
-            || ($remote['storeId'] ?? null) !== $store->storeId || ($remote['type'] ?? null) !== 'Standard'
-            || ($remote['metadata']['orderId'] ?? null) !== $this->orderId($attempt)
-            || ($remote['currency'] ?? null) !== self::CURRENCY || !$amount?->isEqualTo($attempt->amount)
-            || ($remote['checkout']['speedPolicy'] ?? null) !== 'MediumSpeed'
-            || !Greenfield::decimal($tolerance)?->isZero()) {
-            throw new RuntimeException('BTCPay invoice identity or payment terms did not match.');
-        }
-        if (($remote['checkoutLink'] ?? null) !== $store->checkoutLink($id)) {
-            throw new RuntimeException('BTCPay checkout address did not match the stored invoice.');
-        }
-    }
-
-    private function fullyConfirmed(array $methods): bool
-    {
-        if (!array_is_list($methods)) {
-            return false;
-        }
-        $dueSettled = false;
-        foreach ($methods as $method) {
-            if (!is_array($method) || !is_array($method['payments'] ?? null) || !array_is_list($method['payments'])) {
-                return false;
-            }
-            foreach ($method['payments'] as $payment) {
-                if (($payment['status'] ?? null) !== 'Settled') {
-                    return false;
-                }
-            }
-            if ($method['payments'] && Greenfield::decimal($method['due'] ?? null)?->isZero()) {
-                $dueSettled = true;
-            }
-        }
-
-        return $dueSettled;
     }
 
     private function hasNoPayments(array $methods): bool
@@ -276,11 +263,6 @@ final class BTCPay extends Gateway
         }
 
         return true;
-    }
-
-    private function orderId(GatewayPaymentAttempt $attempt): string
-    {
-        return 'paymenter-' . $attempt->reference;
     }
 
     private function minimum(): string

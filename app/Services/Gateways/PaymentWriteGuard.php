@@ -374,7 +374,7 @@ final class PaymentWriteGuard
         }
 
         return in_array($operation->kind, ['manual_unsettle', 'manual_restore'], true) && $record->exists &&
-            $record->id === $operation->original_transaction_id && $record->settlement_origin === 'manual_record' &&
+            $record->id === $operation->original_transaction_id && $record->hasManualSettlementOrigin() &&
             $record->settlement_state === ($operation->kind === 'manual_unsettle' ? 'unsettled' : 'settled') &&
             array_diff(array_keys($record->getDirty()), ['settlement_state', 'updated_at']) === [];
     }

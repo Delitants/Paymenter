@@ -123,11 +123,11 @@ final class ManualSettlements
                     return $existing;
                 }
                 $this->assertNoUnresolved($invoice, allowPaid: true);
-                if ($transaction->settlement_origin !== 'manual_record' || $transaction->status !== InvoiceTransactionStatus::Succeeded ||
+                if (!$transaction->hasManualSettlementOrigin() || $transaction->status !== InvoiceTransactionStatus::Succeeded ||
                     $transaction->settlement_state !== ($state === 'unsettled' ? 'settled' : 'unsettled') ||
                     PaymentOperation::where('original_transaction_id', $transaction->id)->whereIn('kind', ['provider_refund', 'external_refund'])
                         ->whereIn('state', ['queued', 'processing', 'pending', 'uncertain', 'succeeded'])->exists()) {
-                    throw new RuntimeException('Only an unrefunded manually recorded receipt can change settlement state.');
+                    throw new RuntimeException('Only an unrefunded manual settlement can change settlement state.');
                 }
                 $operation = $journal->claim($actor, $invoice, $gateway, $kind, $transaction->amount, $requestKey, $reason, $effectiveAt, $fingerprint,
                     ['target_state' => $state], $transaction);

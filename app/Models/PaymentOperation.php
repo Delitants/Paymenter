@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\InvoiceTransactionStatus;
+use App\Redactors\SecretRedactor;
 use App\Services\Accounts\DepositLifecycle;
 use App\Services\Accounts\DepositReversals;
 use App\Services\Gateways\Operations\OperationPolicy;
@@ -22,6 +23,23 @@ class PaymentOperation extends Model implements Auditable
     protected $casts = ['amount' => 'decimal:2', 'payload' => 'encrypted:array', 'actor_snapshot' => 'encrypted:array', 'effective_at' => 'immutable_datetime', 'outcome_evidence' => 'encrypted:array'];
 
     protected $auditExclude = ['payload', 'actor_snapshot', 'outcome_evidence'];
+
+    public function hasBTCPayClaimReference(): bool
+    {
+        return $this->kind === 'provider_refund' && ($this->payload['gateway_extension'] ?? null) === 'BTCPay';
+    }
+
+    public function getHidden()
+    {
+        $hidden = parent::getHidden();
+
+        return $this->hasBTCPayClaimReference() ? [...$hidden, 'provider_reference', 'outcome_evidence'] : $hidden;
+    }
+
+    public function getAttributeModifiers(): array
+    {
+        return $this->hasBTCPayClaimReference() ? ['provider_reference' => SecretRedactor::class] : [];
+    }
 
     protected static function booted(): void
     {
@@ -176,10 +194,13 @@ class PaymentOperation extends Model implements Auditable
         $expected = match ($this->kind) {
             'manual_receipt' => 'manual_recorded', 'manual_unsettle' => 'unsettled', 'manual_restore' => 'settled', 'external_refund' => 'external_recorded',
         };
+        $originMatches = $this->kind === 'manual_receipt'
+            ? $transaction?->settlement_origin === 'manual_record'
+            : $transaction?->hasManualSettlementOrigin() === true && $transaction->id === $this->original_transaction_id;
         if ($outcomeCode !== $expected || ($this->kind === 'external_refund' ? $transaction !== null :
             (!$transaction || $transaction->invoice_id !== $this->invoice_id || $transaction->gateway_id !== $this->gateway_id ||
                 !BigDecimal::of($transaction->amount)->isEqualTo($this->amount) ||
-                $transaction->settlement_origin !== 'manual_record' || $transaction->settlement_state !== ($this->kind === 'manual_unsettle' ? 'unsettled' : 'settled')))) {
+                !$originMatches || $transaction->settlement_state !== ($this->kind === 'manual_unsettle' ? 'unsettled' : 'settled')))) {
             throw new RuntimeException('Manual outcome does not match the original operation.');
         }
         $this->writeOutcome(['state' => 'succeeded', 'outcome_code' => $outcomeCode, 'result_transaction_id' => $transaction?->id]);
